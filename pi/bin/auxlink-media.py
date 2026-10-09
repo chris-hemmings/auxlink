@@ -645,8 +645,13 @@ class Player(dbus.service.Object):
             log(f"Car {what} ignored: voice search")
             return
         # Play while we already say "Playing" = the person hears nothing: have
-        # the stream restarted. (Play after a pause is an ordinary resume.)
-        if what == "play" and self.status == "Playing" and not self.in_call:
+        # the stream restarted. Play after a pause is an ordinary resume -
+        # unless the pause was only seconds ago: the music's tail still
+        # counts as sound, so the car's stream never stopped and play would
+        # bring no fresh start.
+        quick = (MUSIC_SOURCE != "bluetooth"
+                 and time.monotonic() - getattr(self, "car_paused_at", -99) < 8)
+        if what == "play" and (self.status == "Playing" or quick) and not self.in_call:
             self.kick_audio()
         if what == "play":
             self.paused_for_call = False if not self.in_call else self.paused_for_call
@@ -655,6 +660,7 @@ class Player(dbus.service.Object):
             if self.in_call:
                 return  # the car pausing for the call; we already handle that
             self.paused_for_call = False
+            self.car_paused_at = time.monotonic()
             self.set_playing(False, "pause")
         elif what == "toggle":
             self.set_playing(self.status != "Playing", "play/pause")
