@@ -12,7 +12,7 @@ LOOP=""; LOOP_SINK_ID=""; LOOP_STARTED=0; UNLINKED=0; GONE=0; NO_CARD=0; NOT_ACT
 # the stream, like the setup page's "fix" does. After a reconnect the car
 # can report the stream "active" yet play nothing until it is nudged.
 NEED_KICK=1
-XQ_FAILS=0   # SBC-XQ attempts the car refused, this connection
+XQ_FAILS=0   # SBC-XQ attempts since this script started (never reset by a disconnect)
 I2S=""
 
 stop_loop() { [ -n "$LOOP" ] && kill "$LOOP" 2>/dev/null; LOOP=""; LOOP_SINK_ID=""; }
@@ -51,7 +51,7 @@ while true; do
     GONE=$((GONE + 1))
     if [ "$GONE" -ge 2 ]; then
       [ -n "$LOOP" ] && echo "Car disconnected"
-      stop_loop; NEED_KICK=1; XQ_FAILS=0
+      stop_loop; NEED_KICK=1
     fi
     sleep 2; continue
   fi
@@ -69,19 +69,18 @@ while true; do
   fi
   NO_CARD=0
 
-  # Music profile: SBC-XQ when the car offers it (CAR_SBC_XQ=1). Plain SBC
-  # runs joint stereo and drops its bitpool under radio pressure, which
-  # throws away the left/right difference first - the sound narrows and
-  # loses width. SBC-XQ keeps a high-rate dual-channel stream. PipeWire
-  # ranks plain SBC higher, so it has to be chosen here on every connect.
+  # Music profile: plain SBC unless SBC_XQ=1. SBC-XQ (high-rate dual
+  # channel) keeps the stereo width that plain SBC loses under radio
+  # pressure, but the Tesla DISCONNECTS when the profile is switched to it,
+  # so it is opt-in and tried at most twice per Pi boot, not per connection
+  # (a per-connection retry would knock the car off again on every connect).
   CARDINFO=$(timeout 5 pactl list cards | sed -n "/Name: $CARD/,/^Card #/p")
   ACTIVE=$(echo "$CARDINFO" | awk -F': ' '/Active Profile/ {print $2; exit}')
   WANT=a2dp-sink
-  if [ "${CAR_SBC_XQ:-1}" = 1 ] && [ "$XQ_FAILS" -lt 2 ] &&
+  if [ "${SBC_XQ:-0}" = 1 ] && [ "$XQ_FAILS" -lt 2 ] &&
      echo "$CARDINFO" | grep -q "a2dp-sink-sbc_xq:.*available: yes"; then
     WANT=a2dp-sink-sbc_xq
   fi
-  [ "$ACTIVE" = a2dp-sink-sbc_xq ] && XQ_FAILS=0
   if [ "$ACTIVE" != "$WANT" ] && { [[ "$ACTIVE" != a2dp* ]] || ! in_call; }; then
     echo "Switching the car to $WANT"
     # Count every SBC-XQ attempt (cleared once it is actually active): a car
