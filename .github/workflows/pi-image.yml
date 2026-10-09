@@ -23,7 +23,7 @@ jobs:
         run: sudo AUXLINK_VERSION=${{ inputs.version }} bash pi/image/build-image.sh auxlink-pi-${{ inputs.version }}.img
       - name: Compress
         run: |
-          sudo chown "$USER" auxlink-pi-${{ inputs.version }}.img
+          sudo chown "$(id -u):$(id -g)" auxlink-pi-${{ inputs.version }}.img
           xz -T0 -6 auxlink-pi-${{ inputs.version }}.img
           sha256sum auxlink-pi-${{ inputs.version }}.img.xz > auxlink-pi-${{ inputs.version }}.img.xz.sha256
       - name: Update zip

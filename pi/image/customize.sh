@@ -24,10 +24,21 @@ echo "-- bluetoothd with album art"
 bash $A/extras/build-bluetoothd-cover.sh --image
 
 echo "-- tidying up"
+# Keep every library the two compiled programs use (e.g. libical for the
+# contacts server) when the build tools are removed below.
+BINS="/usr/local/libexec/obexd-dummy /usr/local/libexec/bluetoothd-auxlink"
+keep=$(for lib in $(ldd $BINS | awk '/=> \//{print $3}' | sort -u); do
+         dpkg -S "$lib" 2>/dev/null || dpkg -S "$(readlink -f "$lib")" 2>/dev/null || dpkg -S "/usr$lib" 2>/dev/null || true
+       done | sed 's/: .*//' | tr ',' '\n' | sed 's/^ *//' | sort -u)
+echo "keeping: $keep"
+[ -z "$keep" ] || apt-mark manual $keep >/dev/null
 apt-get purge -y build-essential libglib2.0-dev libdbus-1-dev libical-dev libreadline-dev libudev-dev
 apt-get autoremove -y --purge
 apt-get clean
 rm -rf /var/lib/apt/lists/* /usr/local/src/auxlink
+if ldd $BINS | grep -q "not found"; then
+  ldd $BINS | grep "not found"; echo "a library the programs need was removed"; exit 1
+fi
 
 echo "-- first-boot setup"
 install -m 644 $A/image/auxlink-firstboot.service /etc/systemd/system/
