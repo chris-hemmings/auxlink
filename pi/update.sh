@@ -30,6 +30,8 @@ install -D -m 644 "$HERE/share/cover-test.jpg" /usr/local/share/auxlink/cover-te
 install -m 755 "$HERE"/bin/* /usr/local/bin/
 install -o "$U" -g "$U" -m 755 "$HERE"/user-bin/* "$H/.local/bin/"
 install -m 644 "$HERE"/systemd/system/*.service /etc/systemd/system/
+# Setup Wi-Fi as a captive portal: phones open the setup page by themselves.
+install -D -m 644 "$HERE/etc/captive-portal.conf" /etc/NetworkManager/dnsmasq-shared.d/auxlink-captive.conf
 install -o "$U" -g "$U" -m 644 "$HERE"/systemd/user/*.service "$H/.config/systemd/user/"
 install -o "$U" -g "$U" -m 644 "$HERE"/wireplumber/*.conf "$H/.config/wireplumber/wireplumber.conf.d/"
 echo "Programs and services copied"

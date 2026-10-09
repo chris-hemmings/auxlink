@@ -91,6 +91,8 @@ step "Bluetooth: power on at boot, no USB power-saving on the dongles"
 sed -i 's/^#\?AutoEnable=.*/AutoEnable=true/' /etc/bluetooth/main.conf
 grep -q '^AutoEnable=true' /etc/bluetooth/main.conf || printf '\n[Policy]\nAutoEnable=true\n' >> /etc/bluetooth/main.conf
 install -m 644 "$HERE/modprobe/btusb.conf" /etc/modprobe.d/btusb.conf
+# Setup Wi-Fi as a captive portal: phones open the setup page by themselves.
+install -D -m 644 "$HERE/etc/captive-portal.conf" /etc/NetworkManager/dnsmasq-shared.d/auxlink-captive.conf
 echo "ok"
 
 step "PipeWire (music only; calls belong to hfp-relay)"

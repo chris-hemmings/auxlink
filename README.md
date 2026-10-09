@@ -228,8 +228,10 @@ the Android device's USB port. Connect only the 6 wires below.
 ## 4. First setup on the web page
 
 1. After the reboot, the Pi turns on its own Wi-Fi, **`AuxLink-setup`**
-   (password **`auxlink-setup`**). Join it from a phone or the Android device
-   and open **http://10.42.0.1**.
+   (password **`auxlink-setup`**). Join it from a phone or the Android device.
+   The setup page opens **by itself**, like a hotel Wi-Fi sign-in page. If
+   it doesn't, tap the "Sign in to network" notification or open
+   **http://10.42.0.1**.
    - At home on the same Wi-Fi as the Pi, use **http://auxlink.local**.
    - The setup Wi-Fi is on whenever no car is paired, for 10 minutes after
      each boot, and for 15 minutes after holding the setup button. You can

@@ -16,6 +16,7 @@ import glob
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import threading
@@ -626,8 +627,27 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def foreign_host(self):
+        """True for a request meant for some other website: on the setup
+        Wi-Fi every name points here (captive portal), so this is a phone's
+        connectivity check (or any page the person tried to open)."""
+        host = (self.headers.get("Host") or "").split(":")[0].strip("[]").lower()
+        if not host or re.fullmatch(r"[\d.]+|[0-9a-f:]+", host):
+            return False                  # an IP address: it's us
+        return not (host.endswith(".local") or host == socket.gethostname().lower()
+                    or host == "localhost")
+
     def do_GET(self):
         STATE["last_hit"] = time.monotonic()
+        if STATE.get("ap") and self.foreign_host() and not self.path.startswith("/api/"):
+            # Phones see this instead of their "internet ok" answer and open
+            # the setup page by themselves ("Sign in to network").
+            self.send_response(302)
+            self.send_header("Location", "http://10.42.0.1/")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         if not self.authorised():
             return
         if self.path in ("/", "/index.html") or not self.path.startswith("/api/"):
