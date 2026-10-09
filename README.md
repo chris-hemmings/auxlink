@@ -412,7 +412,9 @@ signed with the same key.
      settings**, then try again. Android 13+ does this for apps installed
      outside the Play Store.
    Allow **Nearby devices / Bluetooth** if the app asks: that's only used for
-   the Bluetooth music source.
+   the Bluetooth music source. Allow **Microphone** too: nothing is recorded,
+   but without it Android's USB prompt (the XIAO is also a USB sound card)
+   has no **Always** option and comes back at every plug-in.
 2. Plug in the XIAO (or connect the device to the Pi's USB-C). Android asks
    **"Open AuxLink (USB) when this device is connected?"** Tick
    **Always** and tap **OK**.
