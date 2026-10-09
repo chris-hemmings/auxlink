@@ -86,6 +86,13 @@ nudge() {
   timeout 5 pactl suspend-sink "$1" 1; sleep 0.5; timeout 5 pactl suspend-sink "$1" 0
   sleep 1; stop_loop
 }
+# The quick version for the planned restarts: the same pause/resume with
+# music flowing, but the loopback is recreated straight after the resume, so
+# the mono moment it causes is a fraction of a second, not audible.
+quick_restart() {
+  timeout 5 pactl suspend-sink "$1" 1; sleep 0.3; timeout 5 pactl suspend-sink "$1" 0
+  sleep 0.3; stop_loop
+}
 smo_playing() { [ "$(cat "$PLAY_FILE" 2>/dev/null || echo 1)" != 0 ]; }
 # Is sound arriving from the XIAO? 0.4 s sample; the SMO sends digital
 # silence when nothing plays, so a very low threshold is enough.
@@ -269,8 +276,8 @@ while true; do
     LOOP=$!; LOOP_SINK_ID=$SINK_ID; LOOP_INPUT=$INPUT; LOOP_STARTED=$(date +%s); UNLINKED=0; NOT_ACTIVE=0; STEREO_BAD=0
     NEXT_STEREO=$((LOOP_STARTED + 3))
     echo "Streaming to $SINK"
-    # One restart a few seconds in, with music flowing (see the top).
-    [ -n "$RECHECK" ] && RECHECK_AT=$((LOOP_STARTED + 4))
+    # One restart just after music starts flowing (see the top).
+    [ -n "$RECHECK" ] && RECHECK_AT=$((LOOP_STARTED + 1))
     sleep 1; continue
   fi
 
@@ -286,12 +293,12 @@ while true; do
 
   now=$(date +%s)
   if [ "$RECHECK_AT" -gt 0 ] && [ "$now" -ge "$RECHECK_AT" ]; then
-    if [ "$PRESENT" = 1 ]; then
+    if [ "$PRESENT" = 1 ] || smo_playing; then
       echo "Restarting the car's stream once ($RECHECK), so a car that took it silently plays it"
       RECHECK=""; RECHECK_AT=0
-      nudge "$SINK"; continue
+      quick_restart "$SINK"; continue
     fi
-    RECHECK_AT=$((now + 2))       # wait for music before restarting
+    RECHECK_AT=$now               # wait for music before restarting
   fi
   # Both channels really reaching the car? (two bad checks in a row = act)
   if [ "$now" -ge "$NEXT_STEREO" ]; then
