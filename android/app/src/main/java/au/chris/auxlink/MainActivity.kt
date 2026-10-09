@@ -14,6 +14,9 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.Socket
 
 class MainActivity : Activity() {
     private lateinit var status: TextView
@@ -53,13 +56,7 @@ class MainActivity : Activity() {
         }
         val open = Button(this).apply {
             text = "Open setup page"
-            setOnClickListener {
-                try {
-                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("http://10.42.0.1/")))
-                } catch (e: Exception) {
-                    Toast.makeText(this@MainActivity, "No web browser on this device", Toast.LENGTH_LONG).show()
-                }
-            }
+            setOnClickListener { openSetup() }
         }
         setContentView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -74,6 +71,32 @@ class MainActivity : Activity() {
         // Bluetooth music source: the app reaches the Pi over Bluetooth.
         if (Build.VERSION.SDK_INT >= 31 && !BtLink(this).permitted())
             requestPermissions(arrayOf(Manifest.permission.BLUETOOTH_CONNECT), 1)
+    }
+
+    /** The setup page wherever the Pi is: its setup Wi-Fi (10.42.0.1), else
+     *  the same network as this device (auxlink.local, looked up here and
+     *  opened by address - browsers often can't find .local names). */
+    private fun openSetup() {
+        note.text = "Looking for the Pi..."
+        Thread {
+            fun answers(host: String) = try {
+                Socket().use { it.connect(InetSocketAddress(host, 80), 1500) }; true
+            } catch (e: Exception) { false }
+            val url = if (answers("10.42.0.1")) "http://10.42.0.1/" else {
+                val ip = try { InetAddress.getByName("auxlink.local").hostAddress } catch (e: Exception) { null }
+                if (ip != null && answers(ip)) "http://$ip/" else null
+            }
+            main.post {
+                note.text = if (url != null) "Opening $url" else
+                    "Pi not found. Tap Setup, join the AuxLink-setup Wi-Fi, then try again. " +
+                    "(On home Wi-Fi: http://auxlink.local, or the Pi's address from your router.)"
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url ?: "http://auxlink.local/")))
+                } catch (e: Exception) {
+                    Toast.makeText(this, "No web browser on this device", Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
     }
 
     private fun send(cmd: String, ok: String) {
