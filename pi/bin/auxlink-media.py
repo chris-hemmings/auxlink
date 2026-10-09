@@ -70,7 +70,10 @@ PATH = "/auxlink/player"
 IFACE = "org.mpris.MediaPlayer2.Player"
 BLUEZ = "org.bluez"
 CALL_STATE_FILE = "/run/auxlink/call"   # written by hfp-relay
-KICK_FILE = "/run/auxlink/audio-kick"   # read by auxlink-audio (play pressed in the car)
+KICK_FILE = "/run/auxlink/audio-kick"
+# "1" while hfp-relay has the car's mic borrowed for the source's voice search
+MIC_ACTIVE_FILE = "/run/auxlink/mic-active"
+VOICE_GRACE = 4.0     # s after voice search in which the car's play/pause is ignored   # read by auxlink-audio (play pressed in the car)
 CALL_POLL_MS = 250                          # how quickly a call is noticed
 # s after the call ends; at least 3 - the car plays no music sooner than
 # that after a call (auxlink-audio waits the same), so none is missed.
@@ -345,6 +348,7 @@ class Player(dbus.service.Object):
         self.call_ended_at = 0.0      # monotonic time the last call ended
         self.paused_at = 0.0          # monotonic time of the last pause sent to the source
         self.pending_play = 0.0       # wall time a held-back play was asked for (0 = none)
+        self.voice_until = 0.0        # car's play/pause ignored until then (voice search)
         self.img_handle = ""          # cover art served by auxlink-cover (AVRCP 1.6)
         # What the car is told combines two things: the state the SMO app
         # reports, and whether sound is actually arriving (apps like YouTube
@@ -625,7 +629,21 @@ class Player(dbus.service.Object):
         except OSError as e:
             log(f"Cannot write {KICK_FILE}: {e}")
 
+    def voice_check(self):
+        """Called a few times a second: is voice search using the car's mic?"""
+        try:
+            if open(MIC_ACTIVE_FILE).read().strip() == "1":
+                self.voice_until = time.monotonic() + VOICE_GRACE
+        except OSError:
+            pass
+
     def wheel(self, what):
+        if what in ("play", "pause", "toggle") and time.monotonic() < self.voice_until:
+            # The car pauses and plays by itself around the "call" that voice
+            # search is shown as; the source's voice app handles its own
+            # music. Passing those on (a toggle for the XIAO) fought it.
+            log(f"Car {what} ignored: voice search")
+            return
         # Play while we already say "Playing" = the person hears nothing: have
         # the stream restarted. (Play after a pause is an ordinary resume.)
         if what == "play" and self.status == "Playing" and not self.in_call:
@@ -1276,6 +1294,7 @@ def main():
             present = False
         player.sound_check(present)
         player.check_pending_play()
+        player.voice_check()
         return True
 
     GLib.timeout_add(CALL_POLL_MS, poll_call)
