@@ -352,7 +352,11 @@ class Player(dbus.service.Object):
         self.present = False
         self.ignore_sound_until = 0.0  # after the car pauses: the tail of the sound doesn't count
         self.art_id = None            # artwork id last received from the SMO app
-        self.art_seq = 0
+        # Image handles must not repeat across restarts: the car caches
+        # pictures by handle, so a reused one shows the OLD picture (and a
+        # new file under the current handle isn't even announced). Start
+        # from the clock, which moves on between restarts.
+        self.art_seq = int(time.time()) % 899999
 
     # ---------- what the car sees ----------
     def metadata(self):
