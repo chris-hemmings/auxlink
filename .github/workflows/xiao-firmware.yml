@@ -1,0 +1,31 @@
+name: Build AuxLink XIAO firmware
+# Builds firmware/rp2040 for the Seeed XIAO RP2040 and publishes it as a
+# release "AuxLink XIAO firmware <version>" tagged xiao-v<version>.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version, e.g. 1.0.0"
+        required: true
+permissions:
+  contents: write
+jobs:
+  firmware:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: firmware/rp2040
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (toolchain from rust-toolchain.toml)
+        run: cargo build --release --bin source --features rp2040-zero,smo-mic,ultra-low
+      - name: UF2
+        run: python3 uf2.py target/thumbv6m-none-eabi/release/source auxlink-xiao-${{ inputs.version }}.uf2
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: xiao-v${{ inputs.version }}
+          name: AuxLink XIAO firmware ${{ inputs.version }}
+          target_commitish: ${{ github.sha }}
+          body: |
+            For the wired music source. Hold the XIAO's B (BOOT) button while plugging it into a computer, then copy **auxlink-xiao-${{ inputs.version }}.uf2** onto the RPI-RP2 drive. Wiring: see the README, section 3.
+          files: firmware/rp2040/auxlink-xiao-${{ inputs.version }}.uf2

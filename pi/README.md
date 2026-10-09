@@ -6,14 +6,14 @@ calls and contacts relayed from the phone, self-healing, starts at boot. And
 page, and the Pi is only pairable when you open a pairing window.
 
 ## Install (Pi 4; wiring and full guide in the main README)
-    unzip auxlink-pi.zip && cd pi
+    unzip auxlink-pi-update-X.zip && cd pi
     sudo ./install.sh
     sudo reboot
 Your existing /etc/auxlink.conf is kept (new settings are added), so the
 car and phone stay paired. On a fresh Pi nothing is paired yet.
 
 ## Updating an installed Pi
-    unzip -o auxlink-pi.zip && cd pi
+    unzip -o auxlink-pi-update-X.zip && cd pi
     sudo ./update.sh
 Copies the programs and service files and restarts the AuxLink
 services. No internet or reboot needed, and the car and phone stay connected

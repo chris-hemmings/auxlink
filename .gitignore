@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 firmware/rp2040/target/
+*.img
+*.img.xz
+*.uf2

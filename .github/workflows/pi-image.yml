@@ -1,0 +1,43 @@
+name: Build AuxLink Pi image
+# The one-file SD-card image for the Pi (plus the update zip for the setup
+# page). Run it from the Actions tab with a version number; it publishes a
+# release "AuxLink Pi image <version>" tagged pi-v<version>.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version, e.g. 1.0.0"
+        required: true
+permissions:
+  contents: write
+jobs:
+  image:
+    # Native arm64, so the image's own programs run (and compile) at full speed.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: sudo apt-get update && sudo apt-get install -y parted xz-utils e2fsprogs fdisk zip
+      - name: Build the image
+        run: sudo AUXLINK_VERSION=${{ inputs.version }} bash pi/image/build-image.sh auxlink-pi-${{ inputs.version }}.img
+      - name: Compress
+        run: |
+          sudo chown "$USER" auxlink-pi-${{ inputs.version }}.img
+          xz -T0 -6 auxlink-pi-${{ inputs.version }}.img
+          sha256sum auxlink-pi-${{ inputs.version }}.img.xz > auxlink-pi-${{ inputs.version }}.img.xz.sha256
+      - name: Update zip
+        run: zip -qr -X auxlink-pi-update-${{ inputs.version }}.zip pi -x '*/__pycache__/*'
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: pi-v${{ inputs.version }}
+          name: AuxLink Pi image ${{ inputs.version }}
+          target_commitish: ${{ github.sha }}
+          body: |
+            **auxlink-pi-${{ inputs.version }}.img.xz**: flash with Raspberry Pi Imager (Choose OS → Use custom), Raspberry Pi 4. In Imager's settings set the hostname `auxlink`, a username/password and the Wi-Fi country. First boot takes a few minutes and reboots once; then join the Wi-Fi **AuxLink-setup** (password `auxlink-setup`) and open http://10.42.0.1.
+
+            **auxlink-pi-update-${{ inputs.version }}.zip**: to update a Pi that is already running AuxLink: setup page → Update.
+          files: |
+            auxlink-pi-${{ inputs.version }}.img.xz
+            auxlink-pi-${{ inputs.version }}.img.xz.sha256
+            auxlink-pi-update-${{ inputs.version }}.zip

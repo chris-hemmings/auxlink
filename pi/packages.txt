@@ -1,0 +1,17 @@
+# Debian packages AuxLink needs on the Pi (install.sh and the image build)
+pipewire
+pipewire-pulse
+wireplumber
+libspa-0.2-bluetooth
+bluez
+bluez-obexd
+python3-dbus
+python3-gi
+uhubctl
+device-tree-compiler
+sox
+pulseaudio-utils
+alsa-utils
+network-manager
+avahi-daemon
+curl

@@ -1,0 +1,13 @@
+[Unit]
+Description=AuxLink: finish setting up on the first boot (prebuilt image)
+After=network.target systemd-logind.service
+ConditionPathExists=!/var/lib/auxlink-installed
+
+[Service]
+# simple, not oneshot: it waits for the Imager-made user and must not hold
+# up the boot meanwhile.
+Type=simple
+ExecStart=/bin/bash /opt/auxlink/firstboot.sh
+
+[Install]
+WantedBy=multi-user.target

@@ -15,9 +15,13 @@ asuser() { runuser -u "$U" -- env XDG_RUNTIME_DIR=/run/user/$UID_U "$@"; }
 step() { echo; echo "== $*"; }
 
 step "Packages"
-apt-get install -y pipewire pipewire-pulse wireplumber libspa-0.2-bluetooth \
-  bluez bluez-obexd python3-dbus python3-gi uhubctl device-tree-compiler \
-  sox pulseaudio-utils network-manager avahi-daemon >/dev/null
+# (packages.txt is also what the prebuilt SD-card image installs)
+missing=""
+for p in $(grep -v '^#' "$HERE/packages.txt"); do
+  dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q "ok installed" || missing="$missing $p"
+done
+# Nothing missing (e.g. the prebuilt image) = no apt, so no internet needed.
+[ -z "$missing" ] || apt-get install -y $missing >/dev/null
 echo "ok"
 
 step "Wi-Fi manager (NetworkManager)"

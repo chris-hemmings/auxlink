@@ -1,7 +1,11 @@
-name: Build and release APK
+name: Build AuxLink app
+# The AuxLink Android app: every push to main that changes android/ publishes
+# a signed APK as release "AuxLink app v1.0.N" (tag v1.0.N) - what Obtainium
+# follows (filter release titles by "AuxLink app").
 on:
   push:
     branches: [main]
+    paths: ["android/**", ".github/workflows/release.yml"]
   workflow_dispatch:
 permissions:
   contents: write

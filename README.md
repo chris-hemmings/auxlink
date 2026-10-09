@@ -28,15 +28,25 @@ or a tablet):
                                        (+ "AuxLink" app)
 ```
 
-What is in this repository:
+### Downloads
 
-| Folder / file | What it is |
+Everything is on the [Releases page](https://github.com/chris-hemmings/auxlink/releases),
+as three separate kinds of release:
+
+| Release | File | What it is |
+|---|---|---|
+| **AuxLink Pi image** | `auxlink-pi-X.img.xz` | The whole Pi: Raspberry Pi OS Lite with AuxLink installed. One file, flashed with Raspberry Pi Imager. |
+| | `auxlink-pi-update-X.zip` | Updates a running Pi from its setup page. |
+| **AuxLink app** | `auxlink-v1.0.N.apk` | The Android app (now playing, album art). Install with Obtainium. |
+| **AuxLink XIAO firmware** | `auxlink-xiao-X.uf2` | Firmware for the Seeed XIAO RP2040 (wired source only). |
+
+### Source
+
+| Folder | What it is |
 |---|---|
-| `pi/` | Everything that runs on the Pi (installer, services, web setup page). See also `pi/README.md`. |
-| `auxlink-pi.zip` | The `pi` folder zipped, for copying to the Pi or uploading on the setup page. |
-| `android/` | Source of the **AuxLink** Android app. Signed APKs are on the [Releases page](https://github.com/chris-hemmings/auxlink/releases). |
-| `firmware/auxlink-xiao.uf2` | Ready-to-flash firmware for the **Seeed XIAO RP2040** (wired source). |
-| `firmware/rp2040/` | Source for that firmware (Rust, based on [TeslAux](https://github.com/jbschooley/TeslAux), MIT). |
+| `pi/` | Everything that runs on the Pi (installer, services, setup page), and `pi/image/`, which builds the SD-card image. See also `pi/README.md`. |
+| `android/` | The **AuxLink** Android app. |
+| `firmware/rp2040/` | The XIAO firmware (Rust, based on [TeslAux](https://github.com/jbschooley/TeslAux), MIT). |
 
 ---
 
@@ -62,7 +72,6 @@ What is in this repository:
 ### Optional
 - **Push button** between GPIO26 (pin 37) and GND (pin 34). Hold it 3 s to
   turn the setup Wi-Fi on.
-- **Ethernet cable** for the first install (or use your phone's hotspot).
 - **Short USB extension lead** for one dongle, to keep the two dongles apart.
 
 ### Bluetooth dongles
@@ -90,21 +99,33 @@ testing.
 
 ## 2. Install the Pi
 
-### 2.1 Flash the SD card
-1. Install **Raspberry Pi Imager** on your PC.
-2. Choose **Raspberry Pi 4** and **Raspberry Pi OS Lite (64-bit)**.
-3. In the settings (cog / "Edit settings"):
+### 2.1 Flash the AuxLink image (recommended)
+1. Download the latest **`auxlink-pi-X.img.xz`** from the
+   [Releases page](https://github.com/chris-hemmings/auxlink/releases)
+   (the "AuxLink Pi image" release).
+2. Open **Raspberry Pi Imager** on your PC:
+   - **Device:** Raspberry Pi 4.
+   - **OS:** scroll to the bottom → **Use custom** → choose the
+     `.img.xz` file. There's no need to unzip it.
+   - **Storage:** your microSD card.
+3. When Imager asks to **apply OS customisation settings**, choose
+   **Edit settings**:
    - **hostname:** `auxlink`
-   - **username and password:** your choice; this user owns the audio.
-   - **Wi-Fi:** your home Wi-Fi, or your phone's hotspot. It needs internet
-     once, for the install. Set the **Wi-Fi country**.
-   - **Services:** enable **SSH**.
-4. Write the card.
+   - **username and password:** your choice. This user owns the audio.
+   - **Wi-Fi country:** yours. A Wi-Fi network is optional; add your home
+     one if you like.
+   - **Services:** enable **SSH** if you want to log in later. This is
+     optional.
+4. Write the card, put it in the Pi and power it on.
+5. The first boot takes **a few minutes** and reboots once by itself. No
+   internet is needed: everything is already on the card. A log is written to
+   `bootfs/auxlink-install.log`.
+6. Then carry on with **section 4**: join the Wi-Fi **AuxLink-setup**.
 
-### 2.2 Install AuxLink
-
-**Option A: over SSH (recommended).** Boot the Pi, then from your PC run
-`ssh <user>@auxlink.local`, followed by:
+### 2.2 Or install onto Raspberry Pi OS yourself
+Use this if you already have Raspberry Pi OS Lite (64-bit) running. It
+needs internet and takes about 45 minutes, because the two BlueZ extras are
+compiled on the Pi. Over SSH:
 
 ```bash
 sudo apt update && sudo apt -y full-upgrade && sudo apt install -y git
@@ -124,24 +145,7 @@ sudo reboot
   Everything else works.
 - To undo the album-art build: `sudo ./extras/build-bluetoothd-cover.sh --undo`.
 
-**Option B: without SSH (first boot does it).**
-1. Before ejecting the card from your PC, open its **bootfs** drive.
-2. Copy the whole **`pi`** folder onto it. Unzip `auxlink-pi.zip`
-   from this repository to get it.
-3. Open **`user-data`** in a text editor and add this at the end. If a
-   `runcmd:` line already exists, add only the second line under it:
-   ```yaml
-   runcmd:
-     - [ systemd-run, --unit=auxlink-firstboot, bash, /boot/firmware/pi/firstboot.sh ]
-   ```
-4. Put the card in the Pi and boot it with internet (Ethernet or the Wi-Fi
-   set in Imager). Wait **30–40 minutes**. It installs everything, including
-   the contacts server, and reboots by itself.
-5. The progress log is `bootfs/auxlink-install.log`, readable on a PC.
-6. Album art still needs `sudo pi/extras/build-bluetoothd-cover.sh`,
-   run once over SSH.
-
-### 2.3 What the installer changes
+### 2.3 What gets set up
 - It installs PipeWire, WirePlumber, BlueZ, NetworkManager, Avahi, sox and a
   few Python modules.
 - It adds the following to `/boot/firmware/config.txt`:
@@ -159,7 +163,9 @@ sudo reboot
 ## 3. Wire the XIAO RP2040 (wired source only)
 
 ### 3.1 Flash the firmware
-1. Download **`firmware/auxlink-xiao.uf2`** from this repository.
+1. Download the latest **`auxlink-xiao-X.uf2`** from the
+   [Releases page](https://github.com/chris-hemmings/auxlink/releases)
+   (the "AuxLink XIAO firmware" release).
 2. Hold the XIAO's **B (BOOT)** button while plugging it into a PC. A drive
    called **RPI-RP2** appears.
 3. Copy the `.uf2` file onto that drive. The XIAO restarts by itself, and
@@ -338,17 +344,17 @@ straight from GitHub releases.
 2. Open Obtainium, tap **Add App** and paste
    `https://github.com/chris-hemmings/auxlink`. Leave the source as
    **GitHub** and tap **Add**.
+   - Before tapping **Add**, open the additional options and set
+     **Filter release titles by regular expression** to `AuxLink app`. The
+     same Releases page also has the Pi image and XIAO firmware, and this
+     makes Obtainium look only at the app's releases.
 3. Tap **Install**. Allow Obtainium to install apps when Android asks
    ("Install unknown apps").
-4. New releases appear in Obtainium as updates. Each push to `main` builds
-   and publishes a new signed APK (`v1.0.N`).
-   - You can turn on background update checks in Obtainium's settings.
-   - Optionally, under the app's **Additional options** in Obtainium, set
-     the APK filter (regular expression) to `auxlink` so that it only
-     ever picks the app.
+4. New app releases appear in Obtainium as updates. You can turn on
+   background update checks in Obtainium's settings.
 
 ### 6.2 Or install by hand
-Download the latest `auxlink-v1.0.N.apk` from the
+Download the latest `auxlink-v1.0.N.apk` (an "AuxLink app" release) from the
 [Releases page](https://github.com/chris-hemmings/auxlink/releases) on
 the device and open it. To update, install the newer APK over the top; it is
 signed with the same key.
@@ -394,13 +400,16 @@ If the car ever shows an old track, play/pause once; the app re-checks every
 ## 7. Updating
 
 - **The Pi:**
-  - **From the web page:** go to **Update**, choose `auxlink-pi.zip`
-    (or GitHub's "Download ZIP" of this repository) and tap **Install update**.
+  - **From the web page:** go to **Update**, choose `auxlink-pi-update-X.zip`
+    from the latest "AuxLink Pi image" release (or GitHub's "Download ZIP" of
+    this repository) and tap **Install update**.
     No reboot is needed, and the car and phone stay connected.
-  - **Over SSH:** `cd auxlink && git pull && cd pi && sudo ./update.sh`.
+  - **Over SSH:** `git clone` (or `git pull`) this repository, then
+    `cd auxlink/pi && sudo ./update.sh`.
+  - Or flash the newest image again (it starts unpaired).
 - **The app:** Obtainium (or install the newer APK).
-- **The XIAO:** only when `firmware/auxlink-xiao.uf2` changes. Flash it
-  again with BOOT held, as in 3.1.
+- **The XIAO:** only when there's a new "AuxLink XIAO firmware" release.
+  Flash it again with BOOT held, as in 3.1.
 
 ---
 
@@ -412,8 +421,8 @@ If the car ever shows an old track, play/pause once; the app re-checks every
 | No music in the car | Setup page → Music → **Check audio**, then **Check and fix**. Check that the car's media source is **Bluetooth / AuxLink**. |
 | Silent or only one side | **Check and fix** recreates the audio path. With the wired source, check the three I2S wires and their ground. |
 | No track info (wired) | App status: notification access granted, XIAO plugged in, data link open. Re-plug the XIAO. Check the serial wires (D6 → pin 10, D7 ← pin 8). |
-| No album art | The album-art bluetoothd must be built (`build-bluetoothd-cover.sh`). Test with `sudo cover-test.sh` on the Pi, then turn the car's Bluetooth off and on once. |
-| No contacts / recent calls in the car | Build the contacts server (2.2), allow contacts and call history on the phone, then on the setup page restart the services. |
+| No album art | With the image it is built in; on a manual install run `build-bluetoothd-cover.sh` (2.2). Test with `sudo cover-test.sh` on the Pi, then turn the car's Bluetooth off and on once. |
+| No contacts / recent calls in the car | With a manual install, build the contacts server (2.2). Allow contacts and call history on the phone, then on the setup page restart the services. |
 | Car doesn't reconnect | It reconnects by itself when it wakes. If not, open **Recent events / Logs** on the setup page. |
 | Logs over SSH | `journalctl -u auxlink-media -u hfp-relay -u auxlink-pairing -f` and `journalctl --user -u auxlink-audio -f` |
 
@@ -425,13 +434,20 @@ If the car ever shows an old track, play/pause once; the app re-checks every
 ```bash
 cd firmware/rp2040
 cargo build --release --bin source --features rp2040-zero,smo-mic,ultra-low
-# convert to UF2, for example with elf2uf2-rs:
-cargo install elf2uf2-rs
-elf2uf2-rs target/thumbv6m-none-eabi/release/source auxlink-xiao.uf2
+python3 uf2.py target/thumbv6m-none-eabi/release/source auxlink-xiao.uf2
 ```
 `smo-mic` includes `media-keys`, and `ultra-low` includes `clock-steered`,
 which is the build the pinout above is for. `rp2040-zero` selects the
 RGB-LED status code that the XIAO also uses.
+
+**Releases** are built by GitHub Actions (Actions tab → workflow → **Run
+workflow**):
+- **Build AuxLink Pi image** (`pi-image.yml`, asks for a version): builds
+  the SD-card image on a native ARM runner (`pi/image/build-image.sh`, about
+  an hour) and publishes it with the update zip.
+- **Build AuxLink XIAO firmware** (`xiao-firmware.yml`, asks for a version).
+- **Build AuxLink app** (`release.yml`): runs by itself on every push to
+  `main` that changes `android/`.
 
 **Android app**: open `android/` in Android Studio, or run
 `gradle assembleRelease`. The GitHub Actions workflow

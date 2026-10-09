@@ -6,6 +6,7 @@
 # Takes ~15-20 min on a Pi 4 and needs internet once.
 #   sudo extras/build-bluetoothd-cover.sh          build + switch to it
 #   sudo extras/build-bluetoothd-cover.sh --undo   back to the stock bluetoothd
+#   extras/build-bluetoothd-cover.sh --image       (image build, in a chroot) build + set up only
 set -e
 [ "$(id -u)" = 0 ] || { echo "Run with sudo"; exit 1; }
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -20,6 +21,7 @@ if [ "$1" = "--undo" ]; then
   exit 0
 fi
 
+IMAGE=0; [ "$1" = --image ] && IMAGE=1
 VER=$(dpkg-query -W -f='${Version}' bluez | sed 's/-.*//')   # e.g. 5.82
 echo "Building bluetoothd from BlueZ $VER with cover art"
 apt-get install -y build-essential pkg-config wget xz-utils \
@@ -51,7 +53,8 @@ echo "== Installing and switching the Bluetooth service over"
 install -D -m 755 src/bluetoothd "$BIN"
 
 # Start it exactly like the stock one (same arguments), plus the cover-art PSM.
-STOCK=$(systemctl cat bluetooth.service | sed -n 's/^ExecStart=\(\/[^ ]*bluetoothd\)\(.*\)$/\1\2/p' | head -1)
+UNIT=/usr/lib/systemd/system/bluetooth.service; [ -f $UNIT ] || UNIT=/lib/systemd/system/bluetooth.service
+STOCK=$(sed -n 's/^ExecStart=\(\/[^ ]*bluetoothd\)\(.*\)$/\1\2/p' $UNIT | head -1)
 ARGS=${STOCK#* }; [ "$ARGS" = "$STOCK" ] && ARGS=""
 mkdir -p "$(dirname "$DROPIN")"
 cat > "$DROPIN" <<CONF
@@ -61,6 +64,7 @@ Environment=AUXLINK_COVER_ART_PSM=0x1025
 ExecStart=
 ExecStart=$BIN $ARGS
 CONF
+[ $IMAGE = 1 ] && { echo "bluetoothd with cover art installed"; exit 0; }
 systemctl daemon-reload
 systemctl enable auxlink-cover >/dev/null 2>&1 || true
 systemctl restart bluetooth
