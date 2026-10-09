@@ -50,6 +50,10 @@ CALL_POLL_MS = 250                          # how quickly a call is noticed
 RESUME_AFTER_CALL = float(CONF.get("CALL_RESUME_DELAY", "1.5"))  # s after the call ends
 PAUSE_FOR_CALLS = CONF.get("PAUSE_FOR_CALLS", "1") == "1"
 COVER_CURRENT = "/run/teslabridge/cover/current"  # 7-digit handle of the art to show
+# "1" while the SMO plays, "0" when paused/stopped: tesla-audio runs the car's
+# music stream only while this says 1, so the car sees a pause and a fresh
+# start like it does with a phone. Written after the car is told the status.
+PLAY_FILE = "/run/teslabridge/play"
 MIC_REQUEST_FILE = "/run/teslabridge/mic"   # read by hfp-relay
 MIC_SOCKET = "/run/teslabridge/mic.sock"    # hfp-relay sends the car's mic here
 MIC_TIMEOUT = 1.5    # s without a "mic on" refresh from the XIAO = closed
@@ -200,6 +204,19 @@ class Player(dbus.service.Object):
             "PlaybackStatus": self.status,
             "Position": dbus.Int64(self.position_us),
         }, signature="sv"), [])
+        self.write_play_state()
+
+    def write_play_state(self):
+        want = "1" if self.status == "Playing" else "0"
+        if getattr(self, "_play_written", None) == want:
+            return
+        try:
+            os.makedirs(os.path.dirname(PLAY_FILE), exist_ok=True)
+            with open(PLAY_FILE, "w") as f:
+                f.write(want)
+            self._play_written = want
+        except OSError as e:
+            log(f"Cannot write {PLAY_FILE}: {e}")
 
     # ---------- SMO state (JSON lines from the app) ----------
     def smo_update(self, info):
@@ -450,6 +467,7 @@ def main():
         return True
 
     GLib.timeout_add(CALL_POLL_MS, poll_call)
+    player.write_play_state()
     player.cover_check()
     GLib.timeout_add(1000, player.cover_check)
     GLib.MainLoop().run()

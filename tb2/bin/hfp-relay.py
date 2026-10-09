@@ -19,7 +19,6 @@ Every AT line is logged with its direction for debugging.
 import os
 import re
 import socket
-import subprocess
 import time
 
 import dbus
@@ -72,11 +71,12 @@ DEFAULT_CIND = ('("call",(0,1)),("callsetup",(0-3)),("service",(0-1)),'
                 '("signal",(0-5)),("roam",(0,1)),("battchg",(0-5)),("callheld",(0-2))')
 DEFAULT_CHLD = "(0,1,2,3)"
 
-# After a call the car often leaves its music stream "playing" but silent.
-# Pausing and resuming the stream (AVDTP suspend/start) wakes it up again.
 AUDIO_USER = CONF.get("AUDIO_USER", "chris")
-RESUME_MUSIC_DELAY = 1  # seconds after the call ends
 CALL_STATE_FILE = "/run/teslabridge/call"  # "1" during a call, "0" otherwise
+# "1" once the car's HFP link is set up (SLC complete): tesla-audio waits for
+# it after a reconnect before starting music, so the car sees the stream start
+# when it is ready to play it rather than mid-connect.
+CAR_SLC_FILE = "/run/teslabridge/car-slc"
 # Car microphone for the SMO (voice search / navigation): while this file
 # holds "1", the car is put in voice-recognition mode and its cabin mic is
 # streamed to the Pi. Raw 8 kHz 16-bit mono PCM is written to MIC_DUMP (for
@@ -94,14 +94,6 @@ MIC_MODE = CONF.get("CAR_MIC_MODE", "call")
 # Never hold the car's mic longer than this per request (an app that keeps
 # the SMO mic open, like always-on "Hey Google", must not lock the car).
 MIC_MAX_SECONDS = 30
-CAR_RE = CAR.replace(":", "[:_]")
-RESUME_MUSIC_CMD = (
-    f'S=$(pactl list sinks short | grep -E "bluez_output\\.{CAR_RE}" | cut -f1); '
-    '[ -n "$S" ] && pactl suspend-sink "$S" 1 && sleep 0.5 && pactl suspend-sink "$S" 0; '
-    # The suspend leaves the music loopback with a silent right channel; end it
-    # and tesla-audio starts a fresh (stereo) one within ~2 s.
-    'pkill -f "[n]ode.name=smo_capture"'
-)
 
 # Car commands we can safely answer "OK" to while no phone is bridged.
 OK_WHEN_ALONE = ("AT+CLIP", "AT+CCWA", "AT+CMEE", "AT+NREC", "AT+VGS", "AT+VGM",
@@ -197,7 +189,6 @@ class Relay:
         self.sco_car = None
         self.sco_watches = []
         self.in_call = False
-        self.music_timer = None
         self.mic = False         # car-mic session for the SMO is open
         self.mic_sco = None
         self.mic_watch = None
@@ -227,6 +218,7 @@ class Relay:
         log("Car HFP disconnected")
         self.car = None
         self.car_slc = False
+        self.write_flag(CAR_SLC_FILE, "0")
         self.sco_close_car()
         if self.mic:
             self.mic_stop("car disconnected")
@@ -296,6 +288,16 @@ class Relay:
         if not self.car_slc:
             self.car_slc = True
             log("Car SLC complete")
+            self.write_flag(CAR_SLC_FILE, "1")
+
+    @staticmethod
+    def write_flag(path, value):
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                f.write(value)
+        except OSError as e:
+            log(f"Could not write {path}: {e}")
 
     # ------------------------------------------------- car mic for the SMO
     def mic_poll(self):
@@ -520,9 +522,6 @@ class Relay:
             self.in_call = True
             if self.mic:
                 self.mic_stop("a call started")   # calls always win
-            if self.music_timer:
-                GLib.source_remove(self.music_timer)
-                self.music_timer = None
         elif not busy and self.in_call:
             self.in_call = False
             # Close call audio ourselves rather than waiting on the far end's
@@ -532,21 +531,10 @@ class Relay:
             if self.sco_phone or self.sco_car:
                 log("Call over; closing call audio")
                 self.sco_close_all()
-            log(f"Call over; waking the car's music stream in {RESUME_MUSIC_DELAY} s")
-            self.music_timer = GLib.timeout_add_seconds(RESUME_MUSIC_DELAY, self.resume_music)
-
-    def resume_music(self):
-        self.music_timer = None
-        import pwd
-        uid = pwd.getpwnam(AUDIO_USER).pw_uid
-        env = {"XDG_RUNTIME_DIR": f"/run/user/{uid}", "PATH": "/usr/sbin:/usr/bin:/sbin:/bin"}
-        try:
-            subprocess.Popen(["/usr/sbin/runuser", "-u", AUDIO_USER, "--", "sh", "-c", RESUME_MUSIC_CMD],
-                             env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            log("Music stream paused and resumed")
-        except OSError as e:
-            log(f"Could not wake the music stream: {e}")
-        return False
+            # No music nudge any more: tesla-audio stops the car's music
+            # stream for the call and starts a fresh one once the call file
+            # says 0 (and the SMO plays), which the car plays like a phone's.
+            log("Call over")
 
     # --------------------------------------------------------------- audio
     def sco_start_listening(self):

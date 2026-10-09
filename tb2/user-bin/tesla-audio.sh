@@ -1,17 +1,27 @@
 #!/bin/bash
 # Keeps SMO music flowing to the car:
 #   XIAO I2S input --pw-loopback--> car's Bluetooth (A2DP) output
-# It opens the car's music channel when missing, (re)starts the loopback,
-# relinks it if the car's output is recreated or links drop, and nudges a car
-# stream that stops taking audio. It never touches anything during a call.
+#
+# It behaves like a phone: the car only plays a Bluetooth stream it sees START
+# (AVDTP start) while it is ready and the source says "Playing". A stream that
+# started too early - mid-reconnect, or one that simply ran on through a call -
+# is accepted but stays silent. So the stream runs only while the car is
+# ready AND the SMO is playing AND there is no call, and every start is a
+# fresh one (new loopback) with music in it:
+#   * car (re)connects  -> wait until it is ready (HFP set up, or 12 s)
+#   * SMO plays         -> start (teslabridge-keys has already told the car
+#                          "Playing" when it writes PLAY_FILE)
+#   * SMO pauses / call -> stop, and suspend the car output (car sees pause)
+# While streaming, both channels are checked every 60 s: a suspend/resume of
+# the car's output (the car can do that too) leaves a running pw-loopback
+# with a silent RIGHT channel until it is recreated.
 . /usr/local/lib/teslabridge/common.sh
 while [ -z "$CAR" ] || [ -z "$CAR_ADAPTER" ]; do sleep 5; . /etc/teslabridge.conf; done
 
-LOOP=""; LOOP_SINK_ID=""; LOOP_STARTED=0; UNLINKED=0; GONE=0; NO_CARD=0; NOT_ACTIVE=0; LAST_NUDGE=0
-# Set whenever the car (re)connects: as soon as music is linked, unmute and nudge
-# the stream, like the setup page's "fix" does. After a reconnect the car
-# can report the stream "active" yet play nothing until it is nudged.
-NEED_KICK=1
+PLAY_FILE=/run/teslabridge/play          # "1"/"0" from teslabridge-keys (missing = play)
+CAR_SLC_FILE=/run/teslabridge/car-slc    # "1" once hfp-relay has the car's HFP set up
+LOOP=""; LOOP_SINK_ID=""; LOOP_STARTED=0; UNLINKED=0; GONE=2; NO_CARD=0; NOT_ACTIVE=0; LAST_NUDGE=0
+CONNECTED_AT=0; WAITING_SAID=""; NEXT_STEREO=0; STEREO_BAD=0; STOPPED_FOR=""
 XQ_FAILS=0   # SBC-XQ attempts since this script started (never reset by a disconnect)
 I2S=""
 
@@ -23,16 +33,29 @@ linked() {
   echo "$links" | grep -A2 "^to_tesla:output_FL" | grep -q "bluez_output" &&
   echo "$links" | grep -A2 "^to_tesla:output_FR" | grep -q "bluez_output"
 }
-# Pause/resume the stream (AVDTP suspend/start): wakes a car that is
-# "playing" but silent. Short, so it is barely audible.
-# Pause/resume the car's stream, WITH music flowing: a car whose stream
-# resumes to silence stays silent (measured). But the suspend leaves the
-# running pw-loopback with a silent RIGHT channel until it is recreated, so
-# end it right after; the caller loops straight round and starts a fresh,
-# stereo one. Same order as audio-check --fix, which is proven to work.
+# Last resort only (rate-limited): pause/resume the car's stream WITH music
+# flowing (a car whose stream resumes to silence stays silent), then recreate
+# the loopback (the suspend silences its right channel).
 nudge() {
   timeout 5 pactl suspend-sink "$1" 1; sleep 0.5; timeout 5 pactl suspend-sink "$1" 0
   sleep 1; stop_loop
+}
+smo_playing() { [ "$(cat "$PLAY_FILE" 2>/dev/null || echo 1)" != 0 ]; }
+car_ready() {
+  local up=$(( $(date +%s) - CONNECTED_AT ))
+  [ "$up" -ge 3 ] && { [ "$(cat "$CAR_SLC_FILE" 2>/dev/null)" = 1 ] || [ "$up" -ge 12 ]; }
+}
+# What the car is actually sent, 1 s of it: false if the right channel is
+# silent while the left carries music (can't judge quiet passages: true).
+stereo_ok() {
+  local f=/tmp/tb-stereo-check.wav l r
+  rm -f "$f"
+  pw-record --target "$1" -P stream.capture.sink=true --channels 2 --format s16 "$f" &
+  local p=$!; sleep 1.2; kill "$p" 2>/dev/null; wait "$p" 2>/dev/null
+  l=$(sox "$f" -n remix 1 stat 2>&1 | awk '/RMS +amplitude/ {print $3}')
+  r=$(sox "$f" -n remix 2 stat 2>&1 | awk '/RMS +amplitude/ {print $3}')
+  [ -z "$l" ] || [ -z "$r" ] && return 0
+  awk "BEGIN{exit !($l < 0.005 || $r > $l / 20)}"
 }
 trap 'stop_loop' EXIT
 
@@ -47,23 +70,18 @@ while true; do
     echo "XIAO I2S input not found (is the xiao-i2s-in overlay loaded? check: arecord -l)"
     sleep 5; continue
   fi
-  # Safety net against PipeWire graph staleness (seen when the loopback's
-  # source carries silence for a long stretch, e.g. SMO unplugged from the
-  # XIAO): recycle the loopback node periodically regardless of anything
-  # else looking fine, rather than trusting "the process is still running".
-  now_ts=$(date +%s)
-  if [ -n "$LOOP" ] && [ $((now_ts - ${LOOP_STARTED:-0})) -ge 600 ]; then
-    echo "Recycling the loopback (periodic refresh)"
-    stop_loop
-  fi
 
   if ! $BT "$CAR_ADAPTER" "$CAR" connected 2>/dev/null; then
     GONE=$((GONE + 1))
-    if [ "$GONE" -ge 2 ]; then
+    if [ "$GONE" -eq 2 ]; then
       [ -n "$LOOP" ] && echo "Car disconnected"
-      stop_loop; NEED_KICK=1
+      stop_loop
     fi
     sleep 2; continue
+  fi
+  if [ "$GONE" -ge 2 ]; then
+    CONNECTED_AT=$(date +%s); WAITING_SAID=""
+    echo "Car connected; waiting until it is ready before starting music"
   fi
   GONE=0
 
@@ -93,9 +111,8 @@ while true; do
   fi
   if [ "$ACTIVE" != "$WANT" ] && { [[ "$ACTIVE" != a2dp* ]] || ! in_call; }; then
     echo "Switching the car to $WANT"
-    # Count every SBC-XQ attempt (per boot): a car
-    # that refuses it, or quietly stays on SBC, gets plain SBC after two
-    # tries instead of a switch - and a music dropout - every 2 s.
+    # Count every SBC-XQ attempt (per boot): a car that refuses it, or
+    # quietly stays on SBC, gets plain SBC after two tries.
     [ "$WANT" = a2dp-sink-sbc_xq ] && XQ_FAILS=$((XQ_FAILS + 1))
     timeout 5 pactl set-card-profile "$CARD" "$WANT" 2>/dev/null
     sleep 2; continue
@@ -109,25 +126,54 @@ while true; do
   fi
 
   if [ -n "$LOOP_SINK_ID" ] && [ "$SINK_ID" != "$LOOP_SINK_ID" ]; then
-    echo "Car output was recreated; relinking"
-    stop_loop; NEED_KICK=1; continue
+    echo "Car output was recreated; restarting the stream"
+    stop_loop; continue
   fi
 
+  # ---- should music be streaming right now? ----
+  WHY=""
+  if in_call; then WHY="a call"
+  elif ! smo_playing; then WHY="the SMO is paused"
+  elif ! car_ready; then WHY="the car is still connecting"
+  fi
+
+  if [ -n "$WHY" ]; then
+    if [ -n "$LOOP" ]; then
+      echo "Stopping the music stream: $WHY"
+      stop_loop
+      # A phone suspends its stream on pause; the car sees it stop.
+      [ "$WHY" != "the car is still connecting" ] && timeout 5 pactl suspend-sink "$SINK" 1
+    fi
+    if [ "$WHY" != "$WAITING_SAID" ]; then
+      [ "$WHY" = "the car is still connecting" ] || echo "Not streaming: $WHY"
+      WAITING_SAID=$WHY
+    fi
+    sleep 0.5; continue
+  fi
+  WAITING_SAID=""
+
   if [ -z "$LOOP" ] || ! kill -0 "$LOOP" 2>/dev/null; then
-    # Channel layout spelled out on both sides: left unspecified, the right
-    # channel was dropped inside the loopback (all four ports linked, right
-    # always silent at the car) - the car only ever got the left channel.
+    # A fresh start every time. Channel layout spelled out on both sides
+    # (left unspecified, the right channel was dropped inside the loopback).
     # Only ever one loopback: strays (e.g. one started by hand for a test)
-    # feed the car the same music again on their own timing, which sounds
-    # like a skip every few seconds as they drift against each other.
+    # feed the car the same music on their own timing - a skip every few s.
     pkill -f "[n]ode.name=smo_capture" && sleep 0.5
+    if [ "$(timeout 5 pactl get-sink-mute "$SINK" | awk '{print $2}')" = yes ]; then
+      echo "Car output was muted; unmuting"
+      timeout 5 pactl set-sink-mute "$SINK" 0
+    fi
+    # Lift a pause-time suspend BEFORE the loopback exists: resuming under a
+    # running loopback is what silences its right channel. With nothing
+    # playing yet this starts nothing; the car sees START when the loopback
+    # links, with music in it.
+    timeout 5 pactl suspend-sink "$SINK" 0
     pw-loopback -c 2 -m '[ FL FR ]' \
                 --capture-props="target.object=$I2S node.name=smo_capture audio.position=[ FL FR ]" \
                 --playback-props="target.object=$SINK node.name=to_tesla audio.position=[ FL FR ]" &
-    LOOP=$!; LOOP_SINK_ID=$SINK_ID; LOOP_STARTED=$(date +%s); UNLINKED=0; NOT_ACTIVE=0
+    LOOP=$!; LOOP_SINK_ID=$SINK_ID; LOOP_STARTED=$(date +%s); UNLINKED=0; NOT_ACTIVE=0; STEREO_BAD=0
+    NEXT_STEREO=$((LOOP_STARTED + 3))
     echo "Streaming to $SINK"
-    # Check again quickly while a reconnect nudge is still due.
-    [ "$NEED_KICK" = 1 ] && sleep 0.5 || sleep 2; continue
+    sleep 1; continue
   fi
 
   if ! linked; then
@@ -136,37 +182,37 @@ while true; do
       echo "Link to the car dropped; restarting it"
       UNLINKED=0; stop_loop; continue
     fi
-  else
-    UNLINKED=0
-    # Nudge as soon as the car's stream is up (or after 3 s at most).
-    if [ "$NEED_KICK" = 1 ] && ! in_call && { [ "$(car_transport_state)" = active ] ||
-         [ $(( $(date +%s) - LOOP_STARTED )) -ge 3 ]; }; then
-      if [ "$(timeout 5 pactl get-sink-mute "$SINK" | awk '{print $2}')" = yes ]; then
-        echo "Car output was muted; unmuting"
-        timeout 5 pactl set-sink-mute "$SINK" 0
+    sleep 1; continue
+  fi
+  UNLINKED=0
+
+  now=$(date +%s)
+  # Both channels really reaching the car? (two bad checks in a row = act)
+  if [ "$now" -ge "$NEXT_STEREO" ]; then
+    NEXT_STEREO=$((now + 60))
+    if stereo_ok "$SINK"; then
+      STEREO_BAD=0
+    else
+      STEREO_BAD=$((STEREO_BAD + 1))
+      if [ "$STEREO_BAD" -ge 2 ]; then
+        echo "Right channel silent at the car; recreating the loopback"
+        stop_loop; continue
       fi
-      echo "Car (re)connected; nudging the stream so it starts playing"
-      nudge "$SINK"; LAST_NUDGE=$(date +%s); NEED_KICK=0
-      continue                   # start the fresh loopback now, not in 2 s
+      NEXT_STEREO=$((now + 3))
     fi
   fi
 
-  # During a call the car pauses music on purpose; leave it alone.
-  if in_call; then
-    NOT_ACTIVE=0
+  # Last resort: the car's stream is not taking audio at all.
+  ts=$(car_transport_state)
+  if [ -n "$ts" ] && [ "$ts" != active ]; then
+    NOT_ACTIVE=$((NOT_ACTIVE + 1))
   else
-    ts=$(car_transport_state)
-    if [ -n "$ts" ] && [ "$ts" != active ]; then
-      NOT_ACTIVE=$((NOT_ACTIVE + 1))
-    else
-      NOT_ACTIVE=0
-    fi
-    now=$(date +%s)
-    if [ "$NOT_ACTIVE" -ge 2 ] && [ $((now - LAST_NUDGE)) -ge 20 ]; then
-      echo "Car stream is '$ts' while we are sending audio; nudging it"
-      nudge "$SINK"; LAST_NUDGE=$now; NOT_ACTIVE=0
-      continue
-    fi
+    NOT_ACTIVE=0
   fi
-  [ "$NEED_KICK" = 1 ] && sleep 0.5 || sleep 2
+  if [ "$NOT_ACTIVE" -ge 3 ] && [ $((now - LAST_NUDGE)) -ge 60 ]; then
+    echo "Car stream is '$ts' while we are sending audio; nudging it (last resort)"
+    nudge "$SINK"; LAST_NUDGE=$now; NOT_ACTIVE=0
+    continue
+  fi
+  sleep 2
 done
