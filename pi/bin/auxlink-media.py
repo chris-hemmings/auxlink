@@ -29,6 +29,7 @@ import subprocess
 import sys
 import termios
 import time
+import zlib
 
 import dbus
 import dbus.mainloop.glib
@@ -821,7 +822,10 @@ class BtArt:
                 self.say(f"Bluetooth album art: cannot read the image: {e}")
                 return True
             self.done = msg["got"]
-            self.player.smo_art({"art": base64.b64encode(jpeg).decode(), "art_id": "bt-" + msg["got"]})
+            # The id includes the picture itself: a reused handle with new
+            # art must still count as new.
+            art_id = f'bt-{msg["got"]}-{zlib.crc32(jpeg):08x}'
+            self.player.smo_art({"art": base64.b64encode(jpeg).decode(), "art_id": art_id})
         elif msg.get("error"):
             self.say(f"Bluetooth album art: {msg.get('cmd')} failed: {msg['error']}")
             if msg.get("cmd") == "connect":
@@ -830,8 +834,14 @@ class BtArt:
                 self.done, self.pending = msg.get("handle"), None   # don't retry this one
         return True
 
-    def update(self, have_player, handle):
-        """Called with the source's current state every few seconds and on changes."""
+    def update(self, have_player, handle, track_key=""):
+        """Called with the source's current state every few seconds and on
+        changes. track_key identifies the song: some devices reuse the same
+        image handle for a new song's art, so a new song refetches anyway."""
+        if track_key != getattr(self, "track_key", None):
+            self.track_key = track_key
+            if self.done not in (None, "none"):
+                self.done = None          # same handle, new song: fetch again
         if APP_LINK["sock"] is not None:
             return                                # the app is sending art itself
         if not have_player:
@@ -921,7 +931,8 @@ def setup_bt_source(bus, om, player):
 
     def report(props):
         track = props.get("Track", {}) or {}
-        art.update(True, str(track.get("ImgHandle", "") or ""))
+        art.update(True, str(track.get("ImgHandle", "") or ""),
+                   f'{track.get("Title", "")}|{track.get("Artist", "")}|{track.get("Album", "")}')
         if APP_LINK["sock"] is not None:
             return                     # the app is sending richer info itself
         player.smo_update({
