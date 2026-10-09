@@ -701,6 +701,7 @@ async fn main(spawner: Spawner) {
         spawner.spawn(info_bridge_mic(info_ep).unwrap());
         spawner.spawn(mic_state().unwrap());
         spawner.spawn(mic_stream(mic_ep).unwrap());
+        spawner.spawn(replug_if_unused().unwrap());
     }
     #[cfg(feature = "clock-locked")]
     spawner.spawn(feedback(feedback_ep).unwrap());
@@ -1170,11 +1171,55 @@ impl Handler for MicHandler {
     }
     fn reset(&mut self) {
         MIC_ON.store(false, core::sync::atomic::Ordering::Relaxed);
+        USB_UP.store(false, core::sync::atomic::Ordering::Relaxed);
     }
     fn configured(&mut self, configured: bool) {
+        USB_UP.store(configured, core::sync::atomic::Ordering::Relaxed);
         if !configured {
             MIC_ON.store(false, core::sync::atomic::Ordering::Relaxed);
         }
+    }
+}
+
+/// The SMO has configured us (USB is up).
+#[cfg(feature = "smo-mic")]
+static USB_UP: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// A line from the AuxLink app has arrived on the vendor endpoint.
+#[cfg(feature = "smo-mic")]
+static INFO_SEEN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Android hands the app this board (its "Always" choice) only when it sees
+/// the board being plugged in. A board already plugged in while the SMO
+/// boots can come up without that: the app never gets its link, and nothing
+/// arrives on the vendor endpoint. So if nothing has arrived 45 s after the
+/// SMO configured us, drop off the bus for a moment, once per power-up:
+/// Android then sees a fresh plug-in and gives the app the board.
+#[cfg(feature = "smo-mic")]
+#[embassy_executor::task]
+async fn replug_if_unused() -> ! {
+    use core::sync::atomic::Ordering::Relaxed;
+    loop {
+        while !USB_UP.load(Relaxed) {
+            Timer::after(Duration::from_secs(1)).await;
+        }
+        let mut waited = 0u32;
+        while waited < 45 && USB_UP.load(Relaxed) && !INFO_SEEN.load(Relaxed) {
+            Timer::after(Duration::from_secs(1)).await;
+            waited += 1;
+        }
+        if INFO_SEEN.load(Relaxed) {
+            break;
+        }
+        if !USB_UP.load(Relaxed) {
+            continue; // the SMO let go of us meanwhile: start over
+        }
+        embassy_rp::pac::USB.sie_ctrl().modify(|w| w.set_pullup_en(false));
+        Timer::after(Duration::from_millis(800)).await;
+        embassy_rp::pac::USB.sie_ctrl().modify(|w| w.set_pullup_en(true));
+        break;
+    }
+    loop {
+        Timer::after(Duration::from_secs(3600)).await;
     }
 }
 
@@ -1349,6 +1394,9 @@ async fn info_bridge_mic(mut ep: InfoEp) -> ! {
         loop {
             match ep.read(&mut buf).await {
                 Ok(n) => {
+                    if n > 0 {
+                        INFO_SEEN.store(true, core::sync::atomic::Ordering::Relaxed);
+                    }
                     if let Some(tx) = SERIAL_TX.lock().await.as_mut() {
                         let _ = tx.write_all(&buf[..n]).await;
                     }
