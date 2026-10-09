@@ -571,7 +571,12 @@ class Player(dbus.service.Object):
             log("Call ended")
             self.call_ended_at = time.monotonic()
             if self.paused_for_call:
-                self.resume_timer = GLib.timeout_add(int(RESUME_AFTER_CALL * 1000), self.resume_after_call)
+                # A Bluetooth source takes a few seconds to reopen its audio
+                # stream: resume it at once, so that overlaps the car's own
+                # post-call settle time (auxlink-audio still starts the car's
+                # stream no sooner than 3 s after the call).
+                delay = 0.5 if MUSIC_SOURCE == "bluetooth" else RESUME_AFTER_CALL
+                self.resume_timer = GLib.timeout_add(int(delay * 1000), self.resume_after_call)
 
     def check_pending_play(self):
         if not self.pending_play:
