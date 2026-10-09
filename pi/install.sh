@@ -64,6 +64,12 @@ else
   install -m 644 "$HERE/etc/auxlink.conf" /etc/auxlink.conf; echo "installed (nothing paired yet: use the setup page)"
 fi
 sed -i "s/^AUDIO_USER=.*/AUDIO_USER=$U/" /etc/auxlink.conf
+# The login user needs a real shell (Raspberry Pi OS's placeholder "pi"
+# has none), or SSH says "This account is currently not available".
+case "$(getent passwd "$U" | cut -d: -f7)" in
+  */nologin|*/false|"") usermod -s /bin/bash "$U" ;;
+esac
+rm -f /etc/ssh/sshd_config.d/rename_user.conf
 # Re-write values so anything with spaces is quoted (bash must be able to source it).
 PYTHONPATH="$HERE/lib" python3 -c 'import auxconf; auxconf.save(auxconf.load())'
 

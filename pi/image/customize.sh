@@ -44,6 +44,24 @@ echo "-- user and hostname (Raspberry Pi Imager can't customise a custom image)"
 # A ready user, so the card works with no Imager settings and no keyboard:
 # auxlink / auxlink (change it with passwd). If Imager settings are used
 # anyway, their user is made as well; AuxLink keeps using this one.
+# Raspberry Pi OS ships a placeholder "pi" (uid 1000, no login shell) that
+# its first-boot wizard renames; turn that into auxlink instead.
+old=$(getent passwd 1000 | cut -d: -f1)
+if [ -n "$old" ] && [ "$old" != auxlink ]; then
+  oldhome=$(getent passwd "$old" | cut -d: -f6)
+  usermod -l auxlink -s /bin/bash "$old"
+  getent group "$old" >/dev/null && groupmod -n auxlink "$old"
+  if [ -d "$oldhome" ] && [ "$oldhome" != / ]; then
+    usermod -d /home/auxlink -m auxlink
+  else
+    mkdir -p /home/auxlink && cp -rT /etc/skel /home/auxlink
+    usermod -d /home/auxlink auxlink
+  fi
+  chown -R auxlink:auxlink /home/auxlink
+  echo "auxlink:auxlink" | chpasswd
+  touch /etc/auxlink-default-password
+fi
+rm -f /etc/ssh/sshd_config.d/rename_user.conf   # "SSH may not work until..." banner
 if ! getent passwd 1000 >/dev/null; then
   groups=""
   for g in sudo adm audio video plugdev netdev bluetooth dialout gpio i2c spi input render users; do
