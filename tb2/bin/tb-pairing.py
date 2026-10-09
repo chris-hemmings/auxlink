@@ -13,10 +13,12 @@
   Otherwise it stays hidden but connectable, so known devices still reconnect.
 Window file: /run/teslabridge/pair.json  {"role": "car"|"phone", "until": epoch}
 """
+import ctypes
 import json
 import os
 import signal
-import subprocess
+import socket
+import struct
 import sys
 import time
 
@@ -32,6 +34,44 @@ BLUEZ = "org.bluez"
 AGENT_PATH = "/teslabridge/agent"
 WINDOW_FILE = "/run/teslabridge/pair.json"
 ROLE_KEYS = {"car": ("CAR", "CAR_ADAPTER"), "phone": ("PHONE", "PHONE_ADAPTER")}
+
+
+# Kernel Bluetooth management interface (what btmgmt uses), spoken directly.
+AF_BLUETOOTH, BTPROTO_HCI = 31, 1
+HCI_DEV_NONE, HCI_CHANNEL_CONTROL = 0xFFFF, 3
+MGMT_OP_READ_INFO, MGMT_OP_SET_CONNECTABLE = 0x0004, 0x0007
+MGMT_EV_CMD_COMPLETE, MGMT_EV_CMD_STATUS = 0x0001, 0x0002
+MGMT_SETTING_CONNECTABLE = 0x00000002
+_libc = ctypes.CDLL(None, use_errno=True)
+
+
+def mgmt(opcode, index, params=b"", timeout=3):
+    """Send one management command; returns (status, reply data).
+    Python's bind() can't select the control channel, hence libc."""
+    s = socket.socket(AF_BLUETOOTH, socket.SOCK_RAW | socket.SOCK_CLOEXEC, BTPROTO_HCI)
+    try:
+        sa = struct.pack("=HHH", AF_BLUETOOTH, HCI_DEV_NONE, HCI_CHANNEL_CONTROL)
+        if _libc.bind(s.fileno(), sa, len(sa)) < 0:
+            err = ctypes.get_errno()
+            raise OSError(err, f"bind: {os.strerror(err)}")
+        s.settimeout(timeout)
+        s.send(struct.pack("<HHH", opcode, index, len(params)) + params)
+        deadline = time.time() + timeout
+        while True:
+            s.settimeout(max(deadline - time.time(), 0.01))
+            try:
+                pkt = s.recv(1024)
+            except socket.timeout:
+                raise OSError(f"no reply to mgmt command 0x{opcode:04x}")
+            if len(pkt) < 9:
+                continue
+            ev, idx, plen = struct.unpack_from("<HHH", pkt)
+            op, status = struct.unpack_from("<HB", pkt, 6)
+            # Other events (settings changes, connections...) arrive too.
+            if ev in (MGMT_EV_CMD_COMPLETE, MGMT_EV_CMD_STATUS) and idx == index and op == opcode:
+                return status, pkt[9:6 + plen]
+    finally:
+        s.close()
 
 
 def log(msg):
@@ -242,27 +282,6 @@ class Pairing:
                 pass
         self._unused_streak = streak
 
-    @staticmethod
-    def current_settings(info, addr):
-        """The "current settings" of controller `addr` from `btmgmt info`
-        output, or None if that controller isn't in it.
-
-        btmgmt info can list EVERY controller even when given --index, so the
-        first "current settings:" line may belong to another adapter (the
-        phone dongle, which is connectable - that hid the car adapter's
-        missing connectable). Only the line inside the block whose
-        "addr" matches counts."""
-        mine = False
-        for line in info.splitlines():
-            words = line.split()
-            if words[:1] == ["addr"] and len(words) > 1:
-                mine = words[1].upper() == addr
-            elif line and not line[0].isspace():
-                mine = False          # "hciN:" header: a new controller block
-            elif mine and line.strip().startswith("current settings:"):
-                return line.split(":", 1)[1].split()
-        return None
-
     def ensure_connectable(self, adapter_path, addr, force=False):
         """Make sure the controller accepts incoming connections (page scan).
 
@@ -272,45 +291,40 @@ class Pairing:
         costly: the Tesla (and most phones) only try the initial connect
         once, with no retry of their own, so a connectable gap that survives
         even a few seconds right then causes a hard pairing failure, not
-        just a delay."""
+        just a delay.
+
+        Talks to the kernel's management interface directly: btmgmt hangs
+        when run from a service (no terminal) and always timed out here."""
         idx = adapter_path.rsplit("hci", 1)[-1]
         if not idx.isdigit():
             return
+        idx = int(idx)
         last = getattr(self, "_conn_checked", {})
         if not force and time.time() - last.get(idx, 0) < 10:
             return
         last[idx] = time.time()
         self._conn_checked = last
         try:
-            out = subprocess.run(["btmgmt", "--index", idx, "info"], capture_output=True,
-                                 stdin=subprocess.DEVNULL, text=True, timeout=5).stdout
-        except (OSError, subprocess.TimeoutExpired) as e:
-            log(f"hci{idx}: btmgmt info failed: {e}")
+            status, info = mgmt(MGMT_OP_READ_INFO, idx)
+            if status or len(info) < 17:
+                log(f"hci{idx}: read info failed (status {status})")
+                return
+            # bdaddr(6, reversed) version(1) manufacturer(2) supported(4) current(4)
+            got = ":".join(f"{b:02X}" for b in reversed(info[:6]))
+            if got != addr:
+                log(f"hci{idx} is {got}, not {addr}; skipping connectable check")
+                return
+            current = struct.unpack_from("<I", info, 13)[0]
+            if current & MGMT_SETTING_CONNECTABLE:
+                return
+            status, _ = mgmt(MGMT_OP_SET_CONNECTABLE, idx, b"\x01")
+        except OSError as e:
+            log(f"hci{idx}: management socket failed: {e}")
             return
-        cur = self.current_settings(out, addr)
-        if cur is not None and "connectable" in cur:
-            self._conn_unknown = getattr(self, "_conn_unknown", set()) - {idx}
-            return
-        if cur is None:
-            # Can't tell (no block for this address): turning connectable on
-            # is harmless if it already is, and missing it strands the car.
-            unknown = getattr(self, "_conn_unknown", set())
-            if idx not in unknown:
-                log(f"hci{idx}: no btmgmt settings for {addr}; forcing connectable on")
-                unknown.add(idx)
-            self._conn_unknown = unknown
-        try:
-            r = subprocess.run(["btmgmt", "--index", idx, "connectable", "on"],
-                               capture_output=True, stdin=subprocess.DEVNULL,
-                               text=True, timeout=5)
-        except (OSError, subprocess.TimeoutExpired) as e:
-            log(f"hci{idx}: btmgmt connectable on failed: {e}")
-            return
-        if cur is not None:
-            if r.returncode == 0:
-                log(f"hci{idx} ({addr}): switched connectable back on")
-            else:
-                log(f"hci{idx} ({addr}): connectable on failed: {(r.stderr or r.stdout).strip()}")
+        if status:
+            log(f"hci{idx} ({addr}): connectable on failed (status {status})")
+        else:
+            log(f"hci{idx} ({addr}): switched connectable back on")
 
     # ---------------- discoverability ----------------
     def adopt_finished(self, objs):
