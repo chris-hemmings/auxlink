@@ -11,7 +11,12 @@
 * Discoverability: an adapter is visible + pairable only while its window is
   open (or, with AUTO_PAIRABLE=1, while its known device is missing).
   Otherwise it stays hidden but connectable, so known devices still reconnect.
-Window file: /run/teslabridge/pair.json  {"role": "car"|"phone", "until": epoch}
+* Music source (MUSIC_SOURCE=bluetooth): a third role, "source" - a phone or
+  player that streams music to the Pi. Its adapter may be shared with the
+  phone side; a new source is only ever accepted through an explicit
+  pairing window (never "open because none yet", which on a shared adapter
+  would let any device in).
+Window file: /run/teslabridge/pair.json  {"role": "car"|"phone"|"source", "until": epoch}
 """
 import ctypes
 import json
@@ -33,7 +38,9 @@ from gi.repository import GLib  # noqa: E402
 BLUEZ = "org.bluez"
 AGENT_PATH = "/teslabridge/agent"
 WINDOW_FILE = "/run/teslabridge/pair.json"
-ROLE_KEYS = {"car": ("CAR", "CAR_ADAPTER"), "phone": ("PHONE", "PHONE_ADAPTER")}
+ROLE_KEYS = {"car": ("CAR", "CAR_ADAPTER"), "phone": ("PHONE", "PHONE_ADAPTER"),
+             "source": ("SOURCE", "SOURCE_ADAPTER")}
+NAME_KEYS = {"car": "CAR_NAME", "phone": "PHONE_NAME", "source": "SOURCE_NAME"}
 
 
 # Kernel Bluetooth management interface (what btmgmt uses), spoken directly.
@@ -103,6 +110,8 @@ class Pairing:
         for role, (dk, ak) in ROLE_KEYS.items():
             if role == "phone" and c.get("PHONE_ENABLED", "1") != "1":
                 continue
+            if role == "source" and c.get("MUSIC_SOURCE", "wired") != "bluetooth":
+                continue
             if c.get(ak):
                 out[role] = (c[ak].upper(), c.get(dk, "").upper())
         return out
@@ -120,6 +129,8 @@ class Pairing:
 
     def window_open(self, role):
         r = self.roles().get(role)
+        if role == "source":                 # explicit windows only (see top)
+            return self.window() == role and r is not None
         return self.window() == role or (r is not None and not r[1])
 
     def close_window(self, role):
@@ -129,13 +140,20 @@ class Pairing:
             except OSError:
                 pass
 
-    def role_of_adapter(self, adapter_path):
+    def roles_of_adapter(self, adapter_path):
+        """Every role on this adapter (the source can share the phone's)."""
         a = self.om.GetManagedObjects().get(dbus.ObjectPath(adapter_path), {}).get("org.bluez.Adapter1")
         addr = str(a["Address"]).upper() if a else None
-        for role, (ad, _) in self.roles().items():
-            if ad == addr:
+        return [role for role, (ad, _) in self.roles().items() if ad == addr]
+
+    def role_for(self, adapter_path, addr):
+        """Which role a device on this adapter is: the one it is saved as or
+        pairing for, else the role whose pairing window is open, else None."""
+        roles = self.roles_of_adapter(adapter_path)
+        for role in roles:
+            if addr == self.roles()[role][1] or self.pending.get(role) == addr:
                 return role
-        return None
+        return next((r for r in roles if self.window_open(r)), roles[0] if roles else None)
 
     # ---------------- decisions ----------------
     def decide(self, device_path, pairing):
@@ -143,8 +161,8 @@ class Pairing:
         # ago must already count (a stale copy caused "unknown adapter").
         self.conf = tbconf.load()
         adapter_path = str(device_path).rpartition("/dev_")[0]
-        role = self.role_of_adapter(adapter_path)
         addr = dev_addr(device_path)
+        role = self.role_for(adapter_path, addr)
         if role is None:
             return False, addr, None
         known = self.roles()[role][1]
@@ -217,7 +235,7 @@ class Pairing:
         addr = dev_addr(device_path)
         # Pairings that never asked the agent (e.g. "just works") still count
         # if they happened on an adapter whose window is open.
-        role = self.role_of_adapter(str(device_path).rpartition("/dev_")[0])
+        role = self.role_for(str(device_path).rpartition("/dev_")[0], addr)
         if role and role not in self.pending and self.window_open(role) \
                 and addr != self.roles()[role][1]:
             self.pending[role] = addr
@@ -353,7 +371,7 @@ class Pairing:
                 d = ifaces.get("org.bluez.Device1")
                 if not d or str(d.get("Address", "")).upper() != addr:
                     continue
-                if not str(d.get("Adapter", "")) or self.role_of_adapter(str(d["Adapter"])) != role:
+                if not str(d.get("Adapter", "")) or role not in self.roles_of_adapter(str(d["Adapter"])):
                     continue
                 if d.get("Paired") and (d.get("Connected") or d.get("Bonded")):
                     self.paired(str(path))
@@ -369,22 +387,35 @@ class Pairing:
         objs = self.om.GetManagedObjects()
         known_roles = getattr(self, "_known_role_adapters", set())
         current_roles = {ad for ad, _ in self.roles().values()}
+        # Group by adapter: the music source can share the phone's adapter,
+        # and both roles must agree on visibility (any window open = visible).
+        by_adapter = {}
         for role, (ad, target) in self.roles().items():
+            by_adapter.setdefault(ad, []).append((role, target))
+        for ad, entries in by_adapter.items():
             newly_assigned = ad not in known_roles
             path = next((p for p, i in objs.items()
                          if str(i.get("org.bluez.Adapter1", {}).get("Address", "")).upper() == ad), None)
             if not path:
                 continue
             a = objs[path]["org.bluez.Adapter1"]
-            dev = objs.get(dbus.ObjectPath(f"{path}/dev_{target.replace(':', '_')}"), {}).get("org.bluez.Device1") if target else None
-            connected = bool(dev and dev.get("Connected"))
-            visible = self.window_open(role) or (auto and target and not connected)
+            visible = False
+            devs = []
+            for role, target in entries:
+                dev = objs.get(dbus.ObjectPath(f"{path}/dev_{target.replace(':', '_')}"), {}).get("org.bluez.Device1") if target else None
+                connected = bool(dev and dev.get("Connected"))
+                if self.window_open(role) or (auto and role != "source" and target and not connected):
+                    visible = True
+                if dev and dev.get("Paired") and not dev.get("Trusted"):
+                    devs.append(f"{path}/dev_{target.replace(':', '_')}")
+            role = entries[0][0]       # car, then phone, then source: its name wins
+            label = "+".join(r for r, _ in entries)
             props = dbus.Interface(self.bus.get_object(BLUEZ, path), "org.freedesktop.DBus.Properties")
-            want_name = self.conf.get("CAR_NAME" if role == "car" else "PHONE_NAME", "")
+            want_name = self.conf.get(NAME_KEYS[role], "")
             try:
                 if want_name and str(a.get("Alias", "")) != want_name:
                     props.Set("org.bluez.Adapter1", "Alias", dbus.String(want_name))
-                    log(f"{role} adapter renamed to '{want_name}'")
+                    log(f"{label} adapter renamed to '{want_name}'")
                 just_powered_on = False
                 if not a.get("Powered"):
                     props.Set("org.bluez.Adapter1", "Powered", dbus.Boolean(True))
@@ -404,15 +435,15 @@ class Pairing:
                     if not a.get("Pairable"):
                         props.Set("org.bluez.Adapter1", "Pairable", dbus.Boolean(True))
                 self.ensure_connectable(str(path), ad, role, force=(newly_assigned or just_powered_on))
-                if dev and dev.get("Paired") and not dev.get("Trusted"):
-                    self.trust(f"{path}/dev_{target.replace(':', '_')}")
+                for d in devs:
+                    self.trust(d)
             except dbus.DBusException as e:
-                log(f"{role} adapter: {e.get_dbus_message()}")
+                log(f"{label} adapter: {e.get_dbus_message()}")
                 continue
             st = "visible" if visible else "hidden"
-            if self.state.get(role) != st:
-                self.state[role] = st
-                log(f"{role} adapter {ad}: {st}")
+            if self.state.get(ad) != st:
+                self.state[ad] = st
+                log(f"{label} adapter {ad}: {st}")
         self._known_role_adapters = current_roles
         return True
 

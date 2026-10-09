@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 
 PATH = "/etc/teslabridge.conf"
-SYSTEM_UNITS = ["tesla-reconnect", "hfp-relay", "teslabridge-keys", "tb-pairing", "tb-cover"]
+SYSTEM_UNITS = ["tesla-reconnect", "hfp-relay", "teslabridge-keys", "tb-pairing", "tb-cover", "tb-usb-gadget"]
 USER_UNITS = ["tesla-audio", "pbap-sync"]
 
 

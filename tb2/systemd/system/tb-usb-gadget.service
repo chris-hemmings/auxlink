@@ -1,0 +1,13 @@
+[Unit]
+Description=teslabridge: USB-C music source (Pi as USB sound card), when selected
+After=sys-kernel-config.mount
+Before=teslabridge-keys.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/tb-usb-gadget.sh
+ExecStop=/usr/local/bin/tb-usb-gadget.sh stop
+
+[Install]
+WantedBy=multi-user.target

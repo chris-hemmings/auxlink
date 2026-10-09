@@ -103,8 +103,24 @@ The page's **Home Wi-Fi** section saves networks for the Pi to join by itself
 First-time setup: with no car paired the car side is already open.
 Outside a window, only the paired car and phone are accepted.
 
+## Music source
+Pick what plays into the car on the setup page's **Music source** card:
+- **Wired: XIAO RP2040 (I²S)**: the default, as before. Track info and keys go
+  over the XIAO's serial link (the now-playing app on the player).
+- **Bluetooth (phone or player)**: choose an adapter (not the car's; it may
+  share the phone side's), **Save**, then **Pair a music source** and pair the
+  player with **teslabridge-music**. Track info, play state and the car's
+  play/pause/skip keys go over Bluetooth, so no app is needed. It reconnects by
+  itself.
+- **USB-C (Pi as a USB sound card)**: plug the player into the Pi's USB-C
+  port, where it appears as a USB sound card plus a serial link for the
+  now-playing app (v1.0.5+). **The Pi must then be powered externally**
+  (5 V on the GPIO pins or a USB-C power/data splitter), because the USB-C
+  port is now a data port. Switching to it needs **one reboot** (the page
+  says so).
+
 ## Page sections
-Devices · Music check/fix · Services · Bluetooth adapters (which dongle is the
+Devices · Music source · Music check/fix · Services · Bluetooth adapters (which dongle is the
 car side / phone side) · Settings (phone features, pause SMO for calls,
 contacts sync, auto-pairable like release 1, resume delay, names, setup
 Wi-Fi, page password, button GPIO) · Recent events · Logs.

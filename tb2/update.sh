@@ -35,7 +35,8 @@ install -o "$U" -g "$U" -m 644 "$HERE"/wireplumber/*.conf "$H/.config/wireplumbe
 echo "Programs and services copied"
 
 systemctl daemon-reload
-systemctl enable tb-cover >/dev/null 2>&1 || true
+systemctl enable tb-cover tb-usb-gadget >/dev/null 2>&1 || true
+systemctl restart tb-usb-gadget
 systemctl restart tb-pairing tesla-reconnect hfp-relay teslabridge-keys tb-web tb-cover
 asuser systemctl --user daemon-reload
 asuser systemctl --user restart tesla-audio pbap-sync

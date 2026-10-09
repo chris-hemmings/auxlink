@@ -13,13 +13,18 @@ import android.os.Build
 import android.util.Log
 
 /**
- * Writes lines to the XIAO's vendor bulk-OUT endpoint. The XIAO forwards the
- * bytes out of its UART to the Pi. Opens lazily and reopens after any failure.
+ * Writes lines to the teslabridge over USB. Two kinds of device:
+ *  - the XIAO (PID 0x0001): a vendor bulk-OUT endpoint; the XIAO forwards the
+ *    bytes out of its UART to the Pi,
+ *  - the Pi itself on its USB-C port (PID 0x0002, MUSIC_SOURCE=usbc): a
+ *    standard USB serial port (CDC ACM); the bytes arrive on /dev/ttyGS0.
+ * Opens lazily and reopens after any failure.
  */
 class UsbLink(private val context: Context) {
     companion object {
         const val VID = 0x1209
-        const val PID = 0x0001
+        const val PID = 0x0001          // the XIAO
+        const val PID_PI = 0x0002       // the Pi's USB-C port (gadget mode)
         const val ACTION_PERMISSION = "au.chris.smonowplaying.USB_PERMISSION"
         private const val TAG = "SmoUsbLink"
     }
@@ -31,7 +36,7 @@ class UsbLink(private val context: Context) {
     private var asked = false
 
     fun findDevice(): UsbDevice? =
-        usb.deviceList.values.firstOrNull { it.vendorId == VID && it.productId == PID }
+        usb.deviceList.values.firstOrNull { it.vendorId == VID && (it.productId == PID || it.productId == PID_PI) }
 
     fun isOpen() = conn != null
 
@@ -71,7 +76,8 @@ class UsbLink(private val context: Context) {
         }
         for (i in 0 until dev.interfaceCount) {
             val itf = dev.getInterface(i)
-            if (itf.interfaceClass != UsbConstants.USB_CLASS_VENDOR_SPEC) continue
+            if (itf.interfaceClass != UsbConstants.USB_CLASS_VENDOR_SPEC &&
+                itf.interfaceClass != UsbConstants.USB_CLASS_CDC_DATA) continue
             for (e in 0 until itf.endpointCount) {
                 val end = itf.getEndpoint(e)
                 if (end.type == UsbConstants.USB_ENDPOINT_XFER_BULK &&
@@ -82,7 +88,15 @@ class UsbLink(private val context: Context) {
                         c.close(); return false
                     }
                     conn = c; iface = itf; ep = end
-                    Log.i(TAG, "Opened XIAO data interface")
+                    if (itf.interfaceClass == UsbConstants.USB_CLASS_CDC_DATA) {
+                        // Serial port on the Pi: raise DTR/RTS on its control
+                        // interface (the one before the data interface), as a
+                        // terminal would, so the Pi side sees the line open.
+                        c.controlTransfer(0x21, 0x22, 0x03, itf.id - 1, null, 0, 250)
+                        Log.i(TAG, "Opened teslabridge serial port (USB-C)")
+                    } else {
+                        Log.i(TAG, "Opened XIAO data interface")
+                    }
                     return true
                 }
             }

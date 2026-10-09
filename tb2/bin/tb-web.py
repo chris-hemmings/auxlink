@@ -39,8 +39,13 @@ EDITABLE = {
     "CONTACTS_SYNC": r"[01]", "CALL_RESUME_DELAY": r"\d{1,2}(\.\d)?",
     "SETUP_WIFI_SSID": r"[\w\-]{1,32}", "SETUP_WIFI_PASS": r"[^\s'\"]{8,63}",
     "SETUP_WIFI_MINUTES": r"\d{1,3}", "WEB_PASSWORD": r"[^\s'\"]{0,63}",
-    "SETUP_BUTTON_GPIO": r"\d{0,2}",
+    "SETUP_BUTTON_GPIO": r"\d{0,2}", "SOURCE_NAME": r"[\w .\-]{1,30}",
 }
+ROLE_KEYS = {"car": ("CAR", "CAR_ADAPTER"), "phone": ("PHONE", "PHONE_ADAPTER"),
+             "source": ("SOURCE", "SOURCE_ADAPTER")}
+NAME_KEYS = {"car": "CAR_NAME", "phone": "PHONE_NAME", "source": "SOURCE_NAME"}
+BOOT_CONFIG = "/boot/firmware/config.txt"
+GADGET_OVERLAY = "dtoverlay=dwc2,dr_mode=peripheral"
 BOOT = time.monotonic()
 STATE = {"ap": False, "button_until": 0.0, "last_hit": 0.0, "connect_after": None}
 HOME_PREFIX = "home-"   # NetworkManager profiles created from the page
@@ -183,25 +188,30 @@ def state():
         ads = adapters(objs)
         car = device(objs, c.get("CAR_ADAPTER", "").upper(), c.get("CAR", "").upper())
         phone = device(objs, c.get("PHONE_ADAPTER", "").upper(), c.get("PHONE", "").upper())
+        source = device(objs, c.get("SOURCE_ADAPTER", "").upper(), c.get("SOURCE", "").upper())
         bt_error = None
     except dbus.DBusException as e:
-        ads, car, phone, bt_error = [], None, None, e.get_dbus_message()
-    for d in (car, phone):
+        ads, car, phone, source, bt_error = [], None, None, None, e.get_dbus_message()
+    for d in (car, phone, source):
         if d:
             d.pop("path", None)
             d.pop("adapter_path", None)
+    bt_source = c.get("MUSIC_SOURCE", "wired") == "bluetooth"
     for a in ads:
-        a["role"] = "car" if a["address"] == c.get("CAR_ADAPTER", "").upper() else \
-                    "phone" if a["address"] == c.get("PHONE_ADAPTER", "").upper() else ""
+        roles = [r for r, (_, ak) in ROLE_KEYS.items()
+                 if a["address"] == c.get(ak, "").upper() and (r != "source" or bt_source)]
+        a["role"] = "+".join(roles)
     try:
         events = open(tbconf.EVENTS).read().splitlines()[-30:]
     except OSError:
         events = []
     conf = {k: c.get(k, "") for k in EDITABLE}
     conf["WEB_PASSWORD"] = "set" if c.get("WEB_PASSWORD") else ""
-    conf.update({k: c.get(k, "") for k in ("CAR", "CAR_ADAPTER", "PHONE", "PHONE_ADAPTER")})
+    conf.update({k: c.get(k, "") for k in ("CAR", "CAR_ADAPTER", "PHONE", "PHONE_ADAPTER",
+                                            "MUSIC_SOURCE", "SOURCE", "SOURCE_ADAPTER")})
     return {
-        "conf": conf, "adapters": ads, "car": car, "phone": phone, "bt_error": bt_error,
+        "conf": conf, "adapters": ads, "car": car, "phone": phone, "source": source,
+        "bt_error": bt_error, "usbc": usbc_state(c),
         "window": window(), "in_call": open(CALL_FILE).read().strip() == "1" if os.path.exists(CALL_FILE) else False,
         "services": unit_states(user), "events": events, "setup_wifi": STATE["ap"],
         "home_wifi": home_networks(), "wifi_client": wifi_client_connected(),
@@ -209,16 +219,85 @@ def state():
 
 
 # ------------------------------------------------------------- actions
+def usbc_state(c):
+    """USB-C source status for the page: is the port in device mode yet?"""
+    try:
+        overlay = any(l.strip() == GADGET_OVERLAY for l in open(BOOT_CONFIG))
+    except OSError:
+        overlay = False
+    udc = bool(glob.glob("/sys/class/udc/*"))
+    return {"overlay": overlay, "udc": udc,
+            "gadget": os.path.isdir("/sys/kernel/config/usb_gadget/teslabridge"),
+            "reboot_needed": c.get("MUSIC_SOURCE") == "usbc" and not udc}
+
+
+def adapter_name(c, adapter):
+    """The Bluetooth name an adapter shows: the first role on it wins."""
+    for role, (_, ak) in ROLE_KEYS.items():
+        if c.get(ak, "").upper() == adapter:
+            return c.get(NAME_KEYS[role], "teslabridge")
+    return "teslabridge"
+
+
 def act_pair(body):
     role = body.get("role")
-    if role not in ("car", "phone"):
-        raise ValueError("role must be car or phone")
+    if role not in ROLE_KEYS:
+        raise ValueError("role must be car, phone or source")
+    c = tbconf.load()
+    if role == "source" and (c.get("MUSIC_SOURCE") != "bluetooth" or not c.get("SOURCE_ADAPTER")):
+        raise ValueError("choose Bluetooth as the music source and save it first")
     secs = max(30, min(int(body.get("seconds", 120)), 600))
     os.makedirs(os.path.dirname(WINDOW_FILE), exist_ok=True)
     json.dump({"role": role, "until": time.time() + secs}, open(WINDOW_FILE, "w"))
-    name = tbconf.load().get("CAR_NAME" if role == "car" else "PHONE_NAME", "teslabridge")
-    tbconf.event(f"Pairing window open for the {role} ({secs} s): on the {role}, add Bluetooth device '{name}'")
+    name = adapter_name(c, c.get(ROLE_KEYS[role][1], "").upper())
+    who = "music source" if role == "source" else role
+    tbconf.event(f"Pairing window open for the {who} ({secs} s): on it, add Bluetooth device '{name}'")
     return {"ok": True}
+
+
+def act_source(body):
+    """Choose the music source: wired (XIAO I2S), bluetooth (+adapter), usbc."""
+    src = str(body.get("source", ""))
+    if src not in ("wired", "bluetooth", "usbc"):
+        raise ValueError("source must be wired, bluetooth or usbc")
+    c = tbconf.load()
+    upd = {"MUSIC_SOURCE": src}
+    msg = f"Music source: {src}"
+    if src == "bluetooth":
+        ad = str(body.get("adapter", "")).upper()
+        _, objs = bluez()
+        if ad not in {a["address"] for a in adapters(objs)}:
+            raise ValueError("pick an adapter that is present")
+        if ad == c.get("CAR_ADAPTER", "").upper():
+            raise ValueError("the car's adapter can't also be the music source's")
+        upd["SOURCE_ADAPTER"] = ad
+        if c.get("SOURCE_ADAPTER", "").upper() != ad:
+            upd["SOURCE"] = ""            # pairings belong to an adapter
+        msg += f" on {ad}; now use Pair a music source"
+    reboot = False
+    if src == "usbc":
+        reboot = enable_gadget_overlay()
+        msg += ("; the Pi must be powered externally" +
+                ("; REBOOT to switch the USB-C port to device mode" if reboot else ""))
+    tbconf.save(upd)
+    tbconf.event(msg)
+    sh("systemctl", "restart", "tb-usb-gadget")
+    tbconf.restart_all(delay=1, skip=("tb-pairing",))
+    return {"ok": True, "reboot_needed": reboot}
+
+
+def enable_gadget_overlay():
+    """Put the USB-C port in device mode at the next boot. True if a reboot is
+    needed for it. Harmless to leave in when another source is chosen."""
+    try:
+        lines = open(BOOT_CONFIG).read().splitlines()
+    except OSError as e:
+        raise ValueError(f"cannot read {BOOT_CONFIG}: {e}")
+    if any(l.strip() == GADGET_OVERLAY for l in lines):
+        return not glob.glob("/sys/class/udc/*")
+    with open(BOOT_CONFIG, "a") as f:
+        f.write(f"\n[all]\n# teslabridge: USB-C music source (Pi as a USB sound card)\n{GADGET_OVERLAY}\n")
+    return True
 
 
 def act_pair_cancel(body):
@@ -232,9 +311,9 @@ def act_pair_cancel(body):
 
 def act_forget(body):
     role = body.get("role")
-    keys = {"car": ("CAR", "CAR_ADAPTER"), "phone": ("PHONE", "PHONE_ADAPTER")}
+    keys = ROLE_KEYS
     if role not in keys:
-        raise ValueError("role must be car or phone")
+        raise ValueError("role must be car, phone or source")
     c = tbconf.load()
     dk, ak = keys[role]
     addr = c.get(dk, "").upper()
@@ -280,6 +359,8 @@ def act_adapters(body):
     if car not in present or (phone and phone not in present) or car == phone:
         raise ValueError("pick two different adapters that are present")
     c = tbconf.load()
+    if c.get("MUSIC_SOURCE") == "bluetooth" and car == c.get("SOURCE_ADAPTER", "").upper():
+        raise ValueError("that adapter is the music source's; choose another source adapter first")
     upd = {"CAR_ADAPTER": car, "PHONE_ADAPTER": phone}
     upd.update(bus_keys(ads, car, phone))
     if c.get("CAR_ADAPTER", "").upper() != car:
@@ -469,6 +550,7 @@ def act_wifi_connect(body):
 
 
 ACTIONS = {"pair": act_pair, "pair/cancel": act_pair_cancel, "forget": act_forget,
+           "source": act_source,
            "config": act_config, "adapters": act_adapters, "check": act_check,
            "restart": act_restart, "wifi/off": act_wifi_off,
            "wifi/add": act_wifi_add, "wifi/remove": act_wifi_remove,

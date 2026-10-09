@@ -1,6 +1,9 @@
 #!/bin/bash
-# Keeps SMO music flowing to the car:
-#   XIAO I2S input --pw-loopback--> car's Bluetooth (A2DP) output
+# Keeps music flowing to the car:
+#   music input --pw-loopback--> car's Bluetooth (A2DP) output
+# The music input is whatever MUSIC_SOURCE selects: the XIAO over I2S
+# (wired), a phone/player streaming to the Pi over Bluetooth, or the Pi's
+# USB-C port as a USB sound card.
 #
 # It behaves like a phone: the car only plays a Bluetooth stream it sees START
 # (AVDTP start) while it is ready and the source says "Playing". A stream that
@@ -20,21 +23,47 @@ while [ -z "$CAR" ] || [ -z "$CAR_ADAPTER" ]; do sleep 5; . /etc/teslabridge.con
 
 PLAY_FILE=/run/teslabridge/play          # "1"/"0" from teslabridge-keys (missing = play)
 # Not every app reports its play state to the SMO app (YouTube often does
-# not), so sound actually arriving from the XIAO also counts as playing.
+# not), so sound actually arriving on the music input also counts as playing.
 # Published for teslabridge-keys, which then tells the car "Playing".
 PRESENT_FILE=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/tb-audio-present
 PRESENT=0; LAST_SOUND=0; NEXT_LEVEL=0
 CAR_SLC_FILE=/run/teslabridge/car-slc    # "1" once hfp-relay has the car's HFP set up
-LOOP=""; LOOP_SINK_ID=""; LOOP_STARTED=0; UNLINKED=0; GONE=2; NO_CARD=0; NOT_ACTIVE=0; LAST_NUDGE=0
+LOOP=""; LOOP_SINK_ID=""; LOOP_INPUT=""; LOOP_STARTED=0; UNLINKED=0; GONE=2; NO_CARD=0; NOT_ACTIVE=0; LAST_NUDGE=0
 CONNECTED_AT=0; WAITING_SAID=""; NEXT_STEREO=0; STEREO_BAD=0; STOPPED_FOR=""
 XQ_FAILS=0   # SBC-XQ attempts since this script started (never reset by a disconnect)
-I2S=""
+INPUT=""; INPUT_SAID=""
+# A Bluetooth music source must become an INPUT (not a stream WirePlumber
+# plays straight to the default speaker, which may be the car - that would
+# bypass this loopback and play twice). Only that one device: other phones'
+# media (e.g. the Oppo's) still mixes into the car's audio as before.
+WP_RULE=${XDG_CONFIG_HOME:-$HOME/.config}/wireplumber/wireplumber.conf.d/83-tb-music-source.conf
+wp_rule() {
+  local want=""
+  if [ "${MUSIC_SOURCE:-wired}" = bluetooth ] && [ -n "$SOURCE" ]; then
+    want="# Written by tesla-audio: the music source is an input, not a playback stream.
+monitor.bluez.rules = [
+  {
+    matches = [ { node.name = \"~bluez_input.${SOURCE//:/_}.*\" } ]
+    actions = { update-props = { bluez5.media-source-role = \"input\", node.autoconnect = false } }
+  }
+]"
+  fi
+  local have; have=$(cat "$WP_RULE" 2>/dev/null)
+  [ "$have" = "$want" ] && return
+  if [ -n "$want" ]; then mkdir -p "$(dirname "$WP_RULE")"; printf '%s\n' "$want" > "$WP_RULE"
+  else rm -f "$WP_RULE"; fi
+  [ -z "$have" ] && [ -z "$want" ] && return
+  echo "Music source changed: restarting WirePlumber to apply it"
+  stop_loop
+  systemctl --user restart wireplumber
+  sleep 3
+}
 
 stop_loop() { [ -n "$LOOP" ] && kill "$LOOP" 2>/dev/null; LOOP=""; LOOP_SINK_ID=""; }
 linked() {
   local links; links=$(timeout 5 pw-link -l 2>/dev/null)
-  echo "$links" | grep -A2 "^$I2S:capture_FL" | grep -q "smo_capture:" &&
-  echo "$links" | grep -A2 "^$I2S:capture_FR" | grep -q "smo_capture:" &&
+  echo "$links" | grep -A2 "^$INPUT:capture_FL" | grep -q "smo_capture:" &&
+  echo "$links" | grep -A2 "^$INPUT:capture_FR" | grep -q "smo_capture:" &&
   echo "$links" | grep -A2 "^to_tesla:output_FL" | grep -q "bluez_output" &&
   echo "$links" | grep -A2 "^to_tesla:output_FR" | grep -q "bluez_output"
 }
@@ -51,7 +80,7 @@ smo_playing() { [ "$(cat "$PLAY_FILE" 2>/dev/null || echo 1)" != 0 ]; }
 sound_now() {
   local f=/tmp/tb-level.wav rms
   rm -f "$f"
-  pw-record --target "$I2S" --channels 2 --format s16 "$f" &
+  pw-record --target "$INPUT" --channels 2 --format s16 "$f" &
   local p=$!; sleep 0.4; kill "$p" 2>/dev/null; wait "$p" 2>/dev/null
   rms=$(sox "$f" -n stat 2>&1 | awk '/RMS +amplitude/ {print $3}')
   [ -n "$rms" ] && awk "BEGIN{exit !($rms > 0.0003)}"
@@ -90,14 +119,27 @@ trap 'stop_loop' EXIT
 
 while true; do
   . /etc/teslabridge.conf; CARD=bluez_card.${CAR//:/_}; CAR_RE=${CAR//:/[:_]}
+  wp_rule
   # Note: the "xiaoi2s" ALSA device is the Pi<->XIAO hardware I2S link (fixed
   # by the device-tree overlay) and stays present whether or not the SMO
   # itself is plugged into the XIAO's USB-C port - so it is not a reliable
-  # signal for "SMO disconnected". Only treat it as a real outage.
-  [ -z "$I2S" ] && I2S=$(i2s_source)
-  if [ -z "$I2S" ]; then
-    echo "XIAO I2S input not found (is the xiao-i2s-in overlay loaded? check: arecord -l)"
-    sleep 5; continue
+  # signal for "SMO disconnected". A Bluetooth source's input only exists
+  # while it is connected, and the USB-C one only once the port is in
+  # gadget mode.
+  INPUT=$(music_input)
+  if [ -z "$INPUT" ]; then
+    case "${MUSIC_SOURCE:-wired}" in
+      bluetooth) why="Waiting for the Bluetooth music source${SOURCE:+ ($SOURCE)} to connect" ;;
+      usbc) why="USB-C music input not found (gadget mode needs a reboot after selecting USB-C)" ;;
+      *) why="XIAO I2S input not found (is the xiao-i2s-in overlay loaded? check: arecord -l)" ;;
+    esac
+    [ "$why" != "$INPUT_SAID" ] && echo "$why"; INPUT_SAID=$why
+    stop_loop; sleep 3; continue
+  fi
+  INPUT_SAID=""
+  if [ -n "$LOOP" ] && [ "$INPUT" != "$LOOP_INPUT" ]; then
+    echo "Music input is now $INPUT; restarting the stream"
+    stop_loop
   fi
 
   if ! $BT "$CAR_ADAPTER" "$CAR" connected 2>/dev/null; then
@@ -198,9 +240,9 @@ while true; do
     # links, with music in it.
     timeout 5 pactl suspend-sink "$SINK" 0
     pw-loopback -c 2 -m '[ FL FR ]' \
-                --capture-props="target.object=$I2S node.name=smo_capture audio.position=[ FL FR ]" \
+                --capture-props="target.object=$INPUT node.name=smo_capture audio.position=[ FL FR ]" \
                 --playback-props="target.object=$SINK node.name=to_tesla audio.position=[ FL FR ]" &
-    LOOP=$!; LOOP_SINK_ID=$SINK_ID; LOOP_STARTED=$(date +%s); UNLINKED=0; NOT_ACTIVE=0; STEREO_BAD=0
+    LOOP=$!; LOOP_SINK_ID=$SINK_ID; LOOP_INPUT=$INPUT; LOOP_STARTED=$(date +%s); UNLINKED=0; NOT_ACTIVE=0; STEREO_BAD=0
     NEXT_STEREO=$((LOOP_STARTED + 3))
     echo "Streaming to $SINK"
     sleep 1; continue

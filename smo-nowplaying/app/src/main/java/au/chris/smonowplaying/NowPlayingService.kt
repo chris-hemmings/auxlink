@@ -69,12 +69,14 @@ class NowPlayingService : NotificationListenerService() {
         }
     }
 
-    // Resend every few seconds so the car's position stays right and a Pi
-    // that rebooted catches up without waiting for a track change.
+    // Every few seconds: follow whichever player is actually playing (a
+    // player already in the session list that starts playing changes no
+    // list, so nothing else would switch to it - the app kept following the
+    // old one until reopened), and resend so the car's position stays right
+    // and a Pi that rebooted catches up.
     private val heartbeat = object : Runnable {
         override fun run() {
-            lastLine = ""
-            push()
+            pickController()          // also resends (clears lastLine, pushes)
             main.postDelayed(this, 5000)
         }
     }
@@ -108,7 +110,10 @@ class NowPlayingService : NotificationListenerService() {
         val list = try {
             sessions?.getActiveSessions(ComponentName(this, NowPlayingService::class.java))
         } catch (e: SecurityException) { null } ?: emptyList()
-        val best = list.firstOrNull { it.playbackState?.state == PlaybackState.STATE_PLAYING }
+        val playing = { c: MediaController? -> c?.playbackState?.state == PlaybackState.STATE_PLAYING }
+        val best = controller?.takeIf { cur -> playing(cur) && list.any { it.sessionToken == cur.sessionToken } }
+            ?: list.firstOrNull { playing(it) }
+            ?: controller?.takeIf { cur -> list.any { it.sessionToken == cur.sessionToken } }
             ?: list.firstOrNull()
         if (best?.sessionToken != controller?.sessionToken) {
             controller?.unregisterCallback(callback)

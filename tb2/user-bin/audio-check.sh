@@ -9,16 +9,21 @@ bad()  { printf '  \033[31mFAIL\033[0m  %s\n' "$*"; PROBLEM=yes; }
 warn() { printf '  \033[33mWARN\033[0m  %s\n' "$*"; }
 PROBLEM=no
 
-echo "1. SMO -> XIAO -> Pi input"
-I2S=$(i2s_source)
-if [ -z "$I2S" ]; then bad "XIAO I2S input not found (overlay xiao-i2s-in loaded? arecord -l)"
+echo "1. Music source -> Pi input (source: ${MUSIC_SOURCE:-wired})"
+I2S=$(music_input)
+if [ -z "$I2S" ]; then
+  case "${MUSIC_SOURCE:-wired}" in
+    bluetooth) bad "Bluetooth music source not connected or not streaming${SOURCE:+ ($SOURCE)}" ;;
+    usbc) bad "USB-C input not found (reboot after choosing USB-C? source plugged into the Pi's USB-C?)" ;;
+    *) bad "XIAO I2S input not found (overlay xiao-i2s-in loaded? arecord -l)" ;;
+  esac
 else
   rm -f /tmp/audio-check.wav
   timeout 2 pw-record --target "$I2S" /tmp/audio-check.wav 2>/dev/null
   rms=$(sox /tmp/audio-check.wav -n stat 2>&1 | awk '/RMS +amplitude/ {print $3}')
   if [ -z "$rms" ]; then bad "could not read the I2S input"
   elif awk "BEGIN{exit !($rms > 0.002)}"; then ok "audio arriving (RMS $rms)"
-  else bad "input is silent (RMS $rms): SMO paused? output set to TeslAux Bridge? volume up?"; fi
+  else bad "input is silent (RMS $rms): source paused? (wired: output set to TeslAux Bridge?) volume up?"; fi
 fi
 
 echo "2. Bluetooth link to the car"

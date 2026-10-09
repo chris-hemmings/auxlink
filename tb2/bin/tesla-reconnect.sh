@@ -13,7 +13,7 @@
 while [ -z "$CAR" ] || [ -z "$CAR_ADAPTER" ]; do sleep 5; . /etc/teslabridge.conf; done
 [ -z "$PHONE" ] || [ -z "$PHONE_ADAPTER" ] && PHONE_ENABLED=0
 
-car_was=no; phone_was=no; phone_warned=no; car_err=
+car_was=no; phone_was=no; phone_warned=no; car_err=; source_was=no; source_next=0
 # Calls the Pi makes to the car: first one 45 s after start (the car usually
 # connects by itself first), then backing off 60 s -> 5 min.
 CAR_FIRST_WAIT=45; CAR_MIN_WAIT=60; CAR_MAX_WAIT=300
@@ -97,6 +97,23 @@ while true; do
         car_err=$err
         car_next=$(( $(date +%s) + car_wait ))
         car_wait=$((car_wait * 2)); [ "$car_wait" -gt "$CAR_MAX_WAIT" ] && car_wait=$CAR_MAX_WAIT
+      fi
+    fi
+  fi
+
+  # --- Bluetooth music source (every ~60 s; sources reconnect by themselves too) ---
+  if [ "${MUSIC_SOURCE:-wired}" = bluetooth ] && [ -n "$SOURCE" ] && [ -n "$SOURCE_ADAPTER" ] &&
+     $BT "$SOURCE_ADAPTER" present 2>/dev/null; then
+    if $BT "$SOURCE_ADAPTER" "$SOURCE" connected; then
+      [ "$source_was" = no ] && echo "Music source connected"
+      source_was=yes
+    else
+      [ "$source_was" = yes ] && echo "Music source disconnected, will keep trying"
+      source_was=no
+      now=$(date +%s)
+      if [ "$now" -ge "$source_next" ]; then
+        source_next=$((now + 60))
+        timeout 25 $BT "$SOURCE_ADAPTER" "$SOURCE" connect >/dev/null 2>&1 && echo "Reconnected to the music source"
       fi
     fi
   fi

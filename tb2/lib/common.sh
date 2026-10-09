@@ -11,6 +11,25 @@ i2s_source() {
   timeout 5 pactl list sources 2>/dev/null |
     awk '/^[ \t]*Name: /{n=$2} /alsa.card_name = "xiaoi2s"/{print n; exit}'
 }
+# The Pi's USB-C port as a USB sound card (MUSIC_SOURCE=usbc): its ALSA card.
+usbc_source() {
+  timeout 5 pactl list sources 2>/dev/null |
+    awk '/^[ \t]*Name: /{n=$2} /alsa.card_name = "UAC1Gadget"/{print n; exit}'
+}
+# A Bluetooth music source's input node (MUSIC_SOURCE=bluetooth), if streaming
+# is set up: bluez_input.<MAC with _>.<n>.
+bt_source() {
+  [ -n "$SOURCE" ] || return 0
+  timeout 5 pactl list sources short 2>/dev/null | awk -v m="bluez_input.${SOURCE//:/_}" 'index($2, m) == 1 {print $2; exit}'
+}
+# Whichever input MUSIC_SOURCE selects (empty if it is not there right now).
+music_input() {
+  case "${MUSIC_SOURCE:-wired}" in
+    bluetooth) bt_source ;;
+    usbc) usbc_source ;;
+    *) i2s_source ;;
+  esac
+}
 # "id<TAB>name<TAB>...<TAB>STATE" line for the car's Bluetooth output, if any.
 car_sink_line() {
   timeout 5 pactl list sinks short 2>/dev/null | grep -E "bluez_output\.$CAR_RE" | head -1

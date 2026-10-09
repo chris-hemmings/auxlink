@@ -45,6 +45,23 @@ label.f{display:grid;gap:4px;margin:8px 0}label.f span{color:var(--dim);font-siz
     </div>
   </section>
 
+  <section class="card"><h2>Music source</h2>
+    <div class="k" style="font-size:13px">What plays into the car. Calls and the car connection are not affected by switching.</div>
+    <label class="f"><span>Source</span><select id="selSource" onchange="sourceForm()">
+      <option value="wired">Wired: XIAO RP2040 (I&sup2;S)</option>
+      <option value="bluetooth">Bluetooth (phone or player)</option>
+      <option value="usbc">USB-C (Pi as a USB sound card)</option>
+    </select></label>
+    <div id="srcBt" class="hide">
+      <label class="f"><span>Adapter for the music source (not the car's; can share the phone's)</span><select id="selSrcAd"></select></label>
+      <div class="row"><span class="k">Source</span><span id="sourceState">&ndash;</span></div>
+      <div class="row"><span class="k">Address</span><span class="mono" id="sourceAddr">&ndash;</span></div>
+    </div>
+    <div id="srcUsb" class="banner hide"><b>The Pi must be powered externally</b> &mdash; its USB-C port becomes the music input, so power it through the 5&nbsp;V GPIO pins (pin 2/4 + ground) or a USB-C power/data splitter. The source device plugs into the Pi's USB-C port. <span id="usbState"></span></div>
+    <div class="btns"><button class="ghost" onclick="saveSource()">Save music source</button>
+      <span id="srcPairBtns" class="btns hide" style="margin:0"><button onclick="pair('source')">Pair a music source</button><button class="ghost" onclick="forget('source')">Forget</button></span></div>
+  </section>
+
   <section class="card"><h2>Music</h2>
     <div class="row"><span class="k">Call in progress</span><span id="inCall">–</span></div>
     <div class="btns"><button onclick="check(false)">Check audio</button><button class="ghost" onclick="check(true)">Check and fix</button></div>
@@ -109,7 +126,7 @@ label.f{display:grid;gap:4px;margin:8px 0}label.f span{color:var(--dim);font-siz
 </main>
 <div id="msg"></div>
 <script>
-let S=null, settingsLoaded=false;
+let S=null, settingsLoaded=false, srcLoaded=false;
 const $=id=>document.getElementById(id);
 function toast(t){const m=$('msg');m.textContent=t;m.style.display='block';clearTimeout(m._t);m._t=setTimeout(()=>m.style.display='none',3500)}
 async function api(path,body){const r=await fetch('/api/'+path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
@@ -118,6 +135,11 @@ async function post(path,body,ok){try{await api(path,body);toast(ok||'Done');set
 function dev(el,d,label){const e=$(el);if(!d||!d.address){e.innerHTML='<span class="dot warn"></span>not paired';return}
   e.className=d.connected?'ok':'bad';e.innerHTML='<span class="dot"></span>'+(d.connected?'connected':'not connected')+(d.name?' · '+d.name:'')}
 function pair(role){post('pair',{role,seconds:120},'Pairing window open for 2 minutes')}
+function sourceForm(){const v=$('selSource').value;$('srcBt').classList.toggle('hide',v!=='bluetooth');$('srcUsb').classList.toggle('hide',v!=='usbc');
+  $('srcPairBtns').classList.toggle('hide',!(v==='bluetooth'&&S&&S.conf.MUSIC_SOURCE==='bluetooth'))}
+async function saveSource(){const source=$('selSource').value,adapter=$('selSrcAd').value;
+  if(source==='usbc'&&!confirm('USB-C turns the Pi\'s power port into the music input: the Pi must be powered through the GPIO pins or a power/data splitter. Continue?'))return;
+  try{const j=await api('source',{source,adapter});srcLoaded=false;toast(j.reboot_needed?'Saved. Reboot the Pi to switch the USB-C port to device mode':'Music source saved; services restarting');setTimeout(load,1500)}catch(e){toast('Error: '+e.message)}}
 function forget(role){if(confirm('Forget the '+role+'? You will need to pair it again.'))post('forget',{role},'Forgotten')}
 async function check(fix){const o=$('checkOut');o.classList.remove('hide');o.textContent=fix?'Checking and fixing…':'Checking…';
   try{const j=await api('check',{fix});o.textContent=j.output}catch(e){o.textContent='Error: '+e.message}}
@@ -145,8 +167,14 @@ async function logs(u){const o=$('logOut');o.classList.remove('hide');o.textCont
 function render(){const c=S.conf;
   $('sub').textContent=(S.setup_wifi?'Setup Wi-Fi on · ':'')+(c.CAR?'car '+c.CAR:'no car paired yet');
   dev('carState',S.car);dev('phoneState',S.phone);$('carAddr').textContent=c.CAR||'–';$('phoneAddr').textContent=c.PHONE||'–';
-  const w=$('window');if(S.window){w.classList.remove('hide');const n=S.window.role==='car'?c.CAR_NAME:c.PHONE_NAME;
-    w.innerHTML='<b>Pairing the '+S.window.role+'</b> — '+S.window.seconds_left+' s left. On the '+S.window.role+', open Bluetooth, add a new device and choose <b>'+n+'</b>, then confirm the code shown there. <div class="btns"><button class="ghost" onclick="post(\'pair/cancel\',{})">Cancel</button></div>'}else w.classList.add('hide');
+  dev('sourceState',S.source);$('sourceAddr').textContent=c.SOURCE||'–';
+  if(!srcLoaded&&document.activeElement!==$('selSource')){$('selSource').value=c.MUSIC_SOURCE||'wired';srcLoaded=true}
+  {const s=$('selSrcAd');if(document.activeElement!==s){let n=0;s.innerHTML=S.adapters.filter(a=>a.address!==c.CAR_ADAPTER).map(a=>'<option value="'+a.address+'">'+(a.bus==='USB'?'USB dongle':'Built-in Bluetooth')+' &middot; '+a.address+(a.role?' ('+a.role+')':'')+'</option>').join('');s.value=c.SOURCE_ADAPTER||c.PHONE_ADAPTER||''}}
+  {const u=S.usbc||{};$('usbState').textContent=c.MUSIC_SOURCE!=='usbc'?'':u.reboot_needed?'Reboot the Pi to finish switching the port.':u.gadget?'USB-C input is ready.':''}
+  sourceForm();
+  const w=$('window');if(S.window){w.classList.remove('hide');const n=S.window.role==='car'?c.CAR_NAME:S.window.role==='phone'?c.PHONE_NAME:(c.SOURCE_ADAPTER===c.PHONE_ADAPTER?c.PHONE_NAME:c.SOURCE_NAME);
+    const who=S.window.role==='source'?'music source':S.window.role;
+    w.innerHTML='<b>Pairing the '+who+'</b> — '+S.window.seconds_left+' s left. On the '+who+', open Bluetooth, add a new device and choose <b>'+n+'</b>, then confirm the code shown there. <div class="btns"><button class="ghost" onclick="post(\'pair/cancel\',{})">Cancel</button></div>'}else w.classList.add('hide');
   const h=$('setupHint');if(!c.CAR&&!S.window){h.classList.remove('hide');h.innerHTML='<b>First-time setup:</b> the car side is ready to pair now. On the car, add a new Bluetooth device and choose <b>'+(c.CAR_NAME||'teslabridge')+'</b>.'}else h.classList.add('hide');
   $('inCall').textContent=S.in_call?'yes':'no';
   $('services').innerHTML=Object.entries(S.services).map(([k,v])=>'<div class="row '+(v==='active'?'ok':v==='inactive'?'warn':'bad')+'"><span><span class="dot"></span>'+k+'</span><span class="k">'+v+'</span></div>').join('');

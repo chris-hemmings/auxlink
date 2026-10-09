@@ -42,7 +42,15 @@ def load_conf(path="/etc/teslabridge.conf"):
 
 CONF = load_conf()
 CAR_ADAPTER = CONF.get("CAR_ADAPTER", "").upper()
-PORT = CONF.get("SERIAL_PORT", "/dev/serial0")
+# Where track info comes from and where the wheel buttons go, per source:
+#   wired     - the XIAO's serial link (JSON lines in, key bytes out)
+#   usbc      - the USB-C gadget's serial port (JSON in) + HID media keys out
+#   bluetooth - the source's own AVRCP player (no serial at all)
+MUSIC_SOURCE = CONF.get("MUSIC_SOURCE", "wired")
+SOURCE = CONF.get("SOURCE", "").upper()
+PORT = {"usbc": "/dev/ttyGS0", "bluetooth": None}.get(MUSIC_SOURCE, CONF.get("SERIAL_PORT", "/dev/serial0"))
+HID_DEV = "/dev/hidg0"
+KEY_USAGE = {b"P": 0x00CD, b"N": 0x00B5, b"B": 0x00B6, b"S": 0x00B7, b"+": 0x00E9, b"-": 0x00EA}
 PATH = "/teslabridge/player"
 IFACE = "org.mpris.MediaPlayer2.Player"
 BLUEZ = "org.bluez"
@@ -95,7 +103,15 @@ def log(msg):
 
 
 def open_port():
-    fd = os.open(PORT, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+    """The serial port, or None if this source has none or it isn't there
+    yet (the USB-C gadget's port appears only once the gadget is up)."""
+    if not PORT:
+        return None
+    try:
+        fd = os.open(PORT, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+    except OSError as e:
+        log(f"Serial port {PORT} not available yet ({e.strerror}); will retry")
+        return None
     a = termios.tcgetattr(fd)
     a[0] = 0
     a[1] = 0
@@ -119,6 +135,9 @@ def flush_out(*_):
     """Write what the port takes; keep the rest. Frames are queued whole, so a
     key byte can never land inside a mic frame."""
     global OUT_WATCH
+    if FD is None:
+        OUT.clear()
+        return False
     try:
         n = os.write(FD, OUT)
         del OUT[:n]
@@ -142,9 +161,38 @@ def send(data):
         flush_out()
 
 
+BT_KEYS = None     # set in main() for MUSIC_SOURCE=bluetooth
+
+
+def hid_key(cmd):
+    """USB-C source: press and release a media key on the gadget keyboard."""
+    usage = KEY_USAGE.get(cmd)
+    if usage is None:
+        return
+
+    def write(report):
+        try:
+            fd = os.open(HID_DEV, os.O_WRONLY | os.O_NONBLOCK)
+            try:
+                os.write(fd, report)
+            finally:
+                os.close(fd)
+        except OSError as e:
+            log(f"Media key failed ({HID_DEV}: {e.strerror})")
+        return False
+    write(usage.to_bytes(2, "little"))
+    GLib.timeout_add(30, write, b"\0\0")
+
+
 def smo_key(cmd, why):
-    send(cmd)
-    log(f"SMO {why} -> {cmd.decode()}")
+    if MUSIC_SOURCE == "usbc":
+        hid_key(cmd)
+    elif MUSIC_SOURCE == "bluetooth":
+        if BT_KEYS:
+            BT_KEYS(cmd)
+    else:
+        send(cmd)
+    log(f"Source {why} -> {cmd.decode()}")
 
 
 class Player(dbus.service.Object):
@@ -433,6 +481,74 @@ class Player(dbus.service.Object):
         pass
 
 
+# ---------------------------------------------------------- Bluetooth source
+BT_STATUS = {"playing": "Playing", "forward-seek": "Playing", "reverse-seek": "Playing",
+             "paused": "Paused", "stopped": "Stopped", "error": "Stopped"}
+
+
+def setup_bt_source(bus, om, player):
+    """MUSIC_SOURCE=bluetooth: the source's AVRCP player (org.bluez.MediaPlayer1
+    under its device object) gives track info and play state, and receives
+    the wheel buttons - the same jobs the SMO app and the XIAO do when wired."""
+    global BT_KEYS
+    dev_part = "/dev_" + SOURCE.replace(":", "_")
+
+    def find_player():
+        for path, ifaces in om.GetManagedObjects().items():
+            if dev_part in str(path) and "org.bluez.MediaPlayer1" in ifaces:
+                return str(path), ifaces["org.bluez.MediaPlayer1"]
+        return None, None
+
+    def report(props):
+        track = props.get("Track", {}) or {}
+        player.smo_update({
+            "title": str(track.get("Title", "")),
+            "artist": str(track.get("Artist", "")),
+            "album": str(track.get("Album", "")),
+            "dur": int(track.get("Duration", 0) or 0),
+            "pos": int(props.get("Position", 0) or 0),
+            "state": BT_STATUS.get(str(props.get("Status", "")), "Stopped"),
+        })
+
+    def poll():
+        if not SOURCE:
+            return True
+        try:
+            path, props = find_player()
+        except dbus.DBusException:
+            return True
+        if path:
+            report(props)
+        return True
+
+    def changed(iface, changes, invalidated, path=None):
+        if iface == "org.bluez.MediaPlayer1" and dev_part in str(path):
+            poll()
+
+    def keys(cmd):
+        path, props = find_player()
+        if not path:
+            log("Bluetooth source has no media player connected; key ignored")
+            return
+        ctl = dbus.Interface(bus.get_object(BLUEZ, path), "org.bluez.MediaPlayer1")
+        method = {b"N": "Next", b"B": "Previous", b"S": "Stop"}.get(cmd)
+        if cmd == b"P":
+            method = "Pause" if str(props.get("Status", "")) == "playing" else "Play"
+        if method:
+            try:
+                getattr(ctl, method)()
+            except dbus.DBusException as e:
+                log(f"Bluetooth source {method} failed: {e.get_dbus_message()}")
+
+    BT_KEYS = keys
+    bus.add_signal_receiver(changed, signal_name="PropertiesChanged",
+                            dbus_interface=dbus.PROPERTIES_IFACE, bus_name=BLUEZ,
+                            path_keyword="path")
+    poll()
+    GLib.timeout_add_seconds(3, poll)
+    log(f"Music source: Bluetooth ({SOURCE or 'not paired yet'})")
+
+
 def main():
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
     bus = dbus.SystemBus()
@@ -533,7 +649,35 @@ def main():
             buf = bytearray()
         return True
 
-    GLib.io_add_watch(FD, GLib.IO_IN, readable)
+    def watch_port():
+        global FD
+        if FD is None:
+            FD = open_port()
+            if FD is None:
+                return True               # try again shortly
+        GLib.io_add_watch(FD, GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR, port_event)
+        log(f"Reading track info from {PORT}")
+        return False
+
+    def port_event(fd, cond):
+        global FD
+        if cond & (GLib.IO_HUP | GLib.IO_ERR) and not cond & GLib.IO_IN:
+            # The USB-C host went away (or the port vanished): reopen later.
+            try:
+                os.close(FD)
+            except OSError:
+                pass
+            FD = None
+            GLib.timeout_add_seconds(3, watch_port)
+            return False
+        return readable(fd, cond)
+
+    if PORT:
+        if watch_port():
+            GLib.timeout_add_seconds(3, watch_port)
+
+    if MUSIC_SOURCE == "bluetooth":
+        setup_bt_source(bus, om, player)
 
     # The car's mic from hfp-relay (8 kHz s16le) -> mu-law frames to the XIAO.
     try:
