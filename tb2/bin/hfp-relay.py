@@ -77,6 +77,12 @@ DEFAULT_CHLD = "(0,1,2,3)"
 AUDIO_USER = CONF.get("AUDIO_USER", "chris")
 RESUME_MUSIC_DELAY = 1  # seconds after the call ends
 CALL_STATE_FILE = "/run/teslabridge/call"  # "1" during a call, "0" otherwise
+# Car microphone for the SMO (voice search / navigation): while this file
+# holds "1", the car is put in voice-recognition mode and its cabin mic is
+# streamed to the Pi. Raw 8 kHz 16-bit mono PCM is written to MIC_DUMP (for
+# testing; the route to the SMO comes later).
+MIC_REQUEST_FILE = "/run/teslabridge/mic"
+MIC_DUMP = "/run/teslabridge/car-mic.raw"
 CAR_RE = CAR.replace(":", "[:_]")
 RESUME_MUSIC_CMD = (
     f'S=$(pactl list sinks short | grep -E "bluez_output\\.{CAR_RE}" | cut -f1); '
@@ -178,6 +184,13 @@ class Relay:
         self.sco_watches = []
         self.in_call = False
         self.music_timer = None
+        self.mic = False         # car-mic session for the SMO is open
+        self.mic_sco = None
+        self.mic_watch = None
+        self.mic_out = None
+        self.mic_bytes = 0
+        self.mic_hold = 0.0      # after a failure / car cancel: don't retry until then
+        self.mic_note = ""       # last "can't start" reason logged (no repeats)
         try:
             os.makedirs(os.path.dirname(CALL_STATE_FILE), exist_ok=True)
             with open(CALL_STATE_FILE, "w") as f:
@@ -199,6 +212,8 @@ class Relay:
         self.car = None
         self.car_slc = False
         self.sco_close_car()
+        if self.mic:
+            self.mic_stop("car disconnected")
 
     def to_car(self, line):
         if self.car:
@@ -234,6 +249,13 @@ class Relay:
             self.car_slc_done()
         elif up.startswith("AT+BIND") or up.startswith("AT+BIEV"):
             self.to_car("OK")
+        elif up.startswith("AT+BVRA") and self.mic:
+            # During our own mic session voice recognition belongs to us, not
+            # the Oppo. =0 means the car ended it (e.g. cancelled on screen).
+            self.to_car("OK")
+            if up.endswith("=0"):
+                self.mic_stop("ended by the car", tell_car=False)
+                self.mic_hold = float("inf")   # until the SMO stops asking
         elif self.phone and self.phone_slc:
             self.phone.send(line + "\r")   # pass straight through
             log(f"  -> phone {line}")
@@ -251,6 +273,101 @@ class Relay:
         if not self.car_slc:
             self.car_slc = True
             log("Car SLC complete")
+
+    # ------------------------------------------------- car mic for the SMO
+    def mic_poll(self):
+        """Follow MIC_REQUEST_FILE: start/stop the car-mic session."""
+        try:
+            want = open(MIC_REQUEST_FILE).read().strip() == "1"
+        except OSError:
+            want = False
+        if not want:
+            self.mic_hold = 0.0
+            self.mic_note = ""
+            if self.mic:
+                self.mic_stop("SMO stopped listening")
+        elif not self.mic and time.time() >= self.mic_hold:
+            self.mic_start()
+        return True
+
+    def mic_cant(self, why):
+        if why != self.mic_note:
+            log(f"Car mic requested but {why}")
+            self.mic_note = why
+
+    def mic_start(self):
+        if not (self.car and self.car_slc):
+            return self.mic_cant("the car is not connected")
+        if self.in_call or self.sco_car or self.sco_phone:
+            return self.mic_cant("a call is in progress")
+        self.mic_note = ""
+        log("Car mic: starting voice recognition on the car")
+        self.to_car("+BVRA: 1")
+        try:
+            s = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_SEQPACKET, socket.BTPROTO_SCO)
+            s.bind(CAR_ADAPTER)
+            s.settimeout(5)
+            s.connect(CAR)
+            s.setblocking(False)
+        except OSError as e:
+            log(f"Car mic: could not open the audio link to the car: {e}")
+            self.to_car("+BVRA: 0")
+            self.mic_hold = time.time() + 10
+            return
+        try:
+            self.mic_out = open(MIC_DUMP, "wb")
+        except OSError as e:
+            log(f"Car mic: cannot write {MIC_DUMP}: {e}")
+            self.mic_out = None
+        self.mic, self.mic_sco, self.mic_bytes = True, s, 0
+        self.mic_watch = GLib.io_add_watch(s.fileno(), GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR,
+                                           self.mic_pump)
+        log("Car mic: open")
+
+    def mic_pump(self, fd, cond):
+        if self.mic_sco is None:
+            return False
+        if cond & (GLib.IO_HUP | GLib.IO_ERR):
+            self.mic_watch = None
+            self.mic_stop("audio link closed by the car")
+            return False
+        try:
+            data = self.mic_sco.recv(1024)
+        except BlockingIOError:
+            return True
+        except OSError:
+            data = b""
+        if not data:
+            self.mic_watch = None
+            self.mic_stop("audio link closed")
+            return False
+        self.mic_bytes += len(data)
+        if self.mic_out:
+            self.mic_out.write(data)
+        try:
+            self.mic_sco.send(bytes(len(data)))   # silence to the car's speakers
+        except OSError:
+            pass
+        return True
+
+    def mic_stop(self, why, tell_car=True):
+        if self.mic_watch:
+            GLib.source_remove(self.mic_watch)
+            self.mic_watch = None
+        if self.mic_sco:
+            try:
+                self.mic_sco.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            self.mic_sco.close()
+            self.mic_sco = None
+        if self.mic_out:
+            self.mic_out.close()
+            self.mic_out = None
+        if tell_car and self.car and self.car_slc:
+            self.to_car("+BVRA: 0")
+        self.mic = False
+        log(f"Car mic: closed ({why}); {self.mic_bytes // 16000:.0f} s of audio received")
 
     # ---------------------------------------------------------- phone side
     def phone_connected(self, sock):
@@ -347,6 +464,8 @@ class Relay:
                 log(f"Could not write {CALL_STATE_FILE}: {e}")
         if busy and not self.in_call:
             self.in_call = True
+            if self.mic:
+                self.mic_stop("a call started")   # calls always win
             if self.music_timer:
                 GLib.source_remove(self.music_timer)
                 self.music_timer = None
@@ -605,6 +724,7 @@ def main():
             ensure(CAR, CAR_ADAPTER, HFP_HF_UUID, lambda: relay.car is not None)
         return True
 
+    GLib.timeout_add(200, relay.mic_poll)   # react quickly: the SMO is listening
     GLib.timeout_add_seconds(10, tick)
     GLib.timeout_add_seconds(3, lambda: (tick(), False)[1])
     GLib.MainLoop().run()
