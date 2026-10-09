@@ -5,6 +5,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.graphics.Bitmap
 import android.hardware.usb.UsbManager
 import android.media.MediaMetadata
 import android.media.session.MediaController
@@ -14,13 +15,22 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.service.notification.NotificationListenerService
+import android.util.Base64
 import android.util.Log
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
+import java.util.concurrent.Executors
+import java.util.zip.CRC32
 
 /**
  * Notification access is what lets an app read other apps' media sessions.
  * This service watches the active one and sends its now-playing info to the
  * XIAO, and from there to the Pi and the car.
+ *
+ * Album art goes as its own line, {"art": base64 JPEG, "art_id": crc}, only
+ * when it changes (and once a minute, in case the Pi restarted): a 200x200
+ * JPEG, which is what cars display. At the serial link's speed one image
+ * takes about 1.5 s, so all sending happens on a background thread.
  */
 class NowPlayingService : NotificationListenerService() {
     companion object {
@@ -34,6 +44,12 @@ class NowPlayingService : NotificationListenerService() {
     private var sessions: MediaSessionManager? = null
     private var controller: MediaController? = null
     private var lastLine = ""
+    // Sends run here, in order, off the main thread (an image takes ~1.5 s).
+    private val io = Executors.newSingleThreadExecutor()
+    private var artKey = ""          // what the cached image was made from
+    private var artLine = ""         // {"art":...} line for the current artwork
+    private var artSentId = ""
+    private var artSentAt = 0L
 
     private val callback = object : MediaController.Callback() {
         override fun onMetadataChanged(metadata: MediaMetadata?) = push()
@@ -47,8 +63,8 @@ class NowPlayingService : NotificationListenerService() {
     private val usbEvents = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
             when (i.action) {
-                UsbManager.ACTION_USB_DEVICE_DETACHED -> { link.close(); link.resetPermissionPrompt() }
-                else -> { lastLine = ""; push() } // attached or permission granted: resend
+                UsbManager.ACTION_USB_DEVICE_DETACHED -> io.execute { link.close(); link.resetPermissionPrompt() }
+                else -> { lastLine = ""; artSentId = ""; push() } // attached or permission granted: resend
             }
         }
     }
@@ -85,7 +101,7 @@ class NowPlayingService : NotificationListenerService() {
         sessions?.removeOnActiveSessionsChangedListener(sessionsChanged)
         controller?.unregisterCallback(callback)
         try { unregisterReceiver(usbEvents) } catch (_: Exception) {}
-        link.close()
+        io.execute { link.close() }
     }
 
     private fun pickController() {
@@ -123,13 +139,59 @@ class NowPlayingService : NotificationListenerService() {
             put("state", state)
         }
         val line = json.toString()
+        val art = artFor(md)
         // Skip exact repeats, but always let the heartbeat through (it clears lastLine).
-        if (line == lastLine) return
-        if (link.send(line)) {
+        if (line != lastLine) {
             lastLine = line
-            lastSent = line
+            io.execute {
+                if (link.send(line)) lastSent = line else lastLine = ""
+                linkOpen = link.isOpen()
+            }
         }
-        linkOpen = link.isOpen()
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (art.first != artSentId || now - artSentAt > 60_000) {
+            val (id, artJson) = art
+            artSentId = id
+            artSentAt = now
+            io.execute {
+                if (!link.send(artJson)) artSentId = ""   // try again next push
+            }
+        }
+    }
+
+    /** (id, line) for the current track's artwork; cached per track. */
+    private fun artFor(md: MediaMetadata?): Pair<String, String> {
+        val bmp = md?.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)
+            ?: md?.getBitmap(MediaMetadata.METADATA_KEY_ART)
+            ?: md?.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON)
+        val key = if (bmp == null) "none" else
+            "${md?.getString(MediaMetadata.METADATA_KEY_TITLE)}|${md?.getString(MediaMetadata.METADATA_KEY_ALBUM)}|" +
+                "${bmp.width}x${bmp.height}|${bmp.generationId}"
+        if (key == artKey && artLine.isNotEmpty()) return artIdOf(artLine) to artLine
+        artKey = key
+        artLine = if (bmp == null) {
+            JSONObject().put("art", "").put("art_id", "none").toString()
+        } else {
+            val jpeg = thumbnail(bmp)
+            val crc = CRC32().apply { update(jpeg) }.value.toString(16)
+            JSONObject().put("art", Base64.encodeToString(jpeg, Base64.NO_WRAP))
+                .put("art_id", crc).toString()
+        }
+        return artIdOf(artLine) to artLine
+    }
+
+    private fun artIdOf(line: String) = try { JSONObject(line).getString("art_id") } catch (_: Exception) { "" }
+
+    /** Centre-cropped square, 200x200, JPEG - the size cars show. */
+    private fun thumbnail(src: Bitmap): ByteArray {
+        val side = minOf(src.width, src.height)
+        val sq = Bitmap.createBitmap(src, (src.width - side) / 2, (src.height - side) / 2, side, side)
+        val small = Bitmap.createScaledBitmap(sq, 200, 200, true)
+        val out = ByteArrayOutputStream()
+        small.compress(Bitmap.CompressFormat.JPEG, 80, out)
+        if (small !== sq) small.recycle()
+        if (sq !== src) sq.recycle()
+        return out.toByteArray()
     }
 
     private fun currentPosition(ps: PlaybackState?): Long {

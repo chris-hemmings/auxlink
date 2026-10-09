@@ -16,6 +16,7 @@
   XIAO as G.711 mu-law frames (0x01, len, data) between the key bytes.
 """
 import array
+import base64
 import json
 import socket
 import os
@@ -167,6 +168,8 @@ class Player(dbus.service.Object):
         self.app_state = "Playing"
         self.present = False
         self.ignore_sound_until = 0.0  # after the car pauses: the tail of the sound doesn't count
+        self.art_id = None            # artwork id last received from the SMO app
+        self.art_seq = 0
 
     # ---------- what the car sees ----------
     def metadata(self):
@@ -257,6 +260,57 @@ class Player(dbus.service.Object):
             self._play_written = want
         except OSError as e:
             log(f"Cannot write {PLAY_FILE}: {e}")
+
+    # ---------- album art (its own JSON line from the app) ----------
+    def smo_art(self, info):
+        """{"art": base64 200x200 JPEG or "", "art_id": id}: store it as a new
+        image handle for tb-cover; cover_check() then tells the car."""
+        art_id = str(info.get("art_id") or "")
+        if art_id == self.art_id:
+            return
+        cover_dir = os.path.dirname(COVER_CURRENT)
+        old = self.img_handle
+        data = info.get("art") or ""
+        try:
+            os.makedirs(cover_dir, exist_ok=True)
+            if not data:
+                if os.path.exists(COVER_CURRENT):
+                    os.remove(COVER_CURRENT)
+                log("Album art: none for this track")
+            else:
+                jpeg = base64.b64decode(data)
+                if jpeg[:2] != b"\xff\xd8":
+                    log("Album art from the SMO is not a JPEG; ignored")
+                    return
+                self.art_seq = self.art_seq % 899999 + 1
+                handle = f"{1000001 + self.art_seq:07d}"   # 1000001 is the test picture
+                path = os.path.join(cover_dir, handle + ".jpg")
+                with open(path + ".tmp", "wb") as f:
+                    f.write(jpeg)
+                os.replace(path + ".tmp", path)
+                with open(COVER_CURRENT + ".tmp", "w") as f:
+                    f.write(handle)
+                os.replace(COVER_CURRENT + ".tmp", COVER_CURRENT)
+                log(f"Album art: {len(jpeg) // 1024} KB as image {handle}")
+            self.art_id = art_id
+        except (OSError, ValueError) as e:
+            log(f"Could not store album art: {e}")
+            return
+        # Keep the one the car may still be fetching; drop anything older.
+        for f in os.listdir(cover_dir):
+            if f.endswith(".jpg") and f[:-4] not in (old, self.current_handle_file()):
+                try:
+                    os.remove(os.path.join(cover_dir, f))
+                except OSError:
+                    pass
+        self.cover_check()
+
+    @staticmethod
+    def current_handle_file():
+        try:
+            return open(COVER_CURRENT).read().strip()
+        except OSError:
+            return ""
 
     # ---------- SMO state (JSON lines from the app) ----------
     def smo_update(self, info):
@@ -468,10 +522,14 @@ def main():
             if not line:
                 continue
             try:
-                player.smo_update(json.loads(line.decode("utf-8", "replace")))
+                info = json.loads(line.decode("utf-8", "replace"))
+                if "art" in info:
+                    player.smo_art(info)
+                else:
+                    player.smo_update(info)
             except (ValueError, TypeError) as e:
                 log(f"Bad line from SMO: {line[:80]!r} ({e})")
-        if len(buf) > 4096:
+        if len(buf) > 131072:      # an album-art line is ~20 KB; this is far beyond
             buf = bytearray()
         return True
 
