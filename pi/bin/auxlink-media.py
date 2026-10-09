@@ -527,7 +527,10 @@ class Player(dbus.service.Object):
             log(f"Source {why}: cancelled the held-back play")
             return True
         if (want_playing and self.status != "Playing" and self.call_ended_at
-                and time.monotonic() - self.call_ended_at < POST_CALL_WINDOW and STREAM_READY_FILE):
+                and time.monotonic() - self.call_ended_at < POST_CALL_WINDOW and STREAM_READY_FILE
+                and MUSIC_SOURCE != "bluetooth"):
+            # (Not for a Bluetooth source: it only streams while it plays, so
+            # its stream can't be ready before it plays.)
             # Right after a call: tell the car "Playing" now (auxlink-audio
             # starts the stream), but play the source only once that stream
             # is really running - nothing of the song is missed.
