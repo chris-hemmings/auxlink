@@ -227,35 +227,71 @@ the Android device's USB port. Connect only the 6 wires below.
 
 ## 4. First setup on the web page
 
-1. After the reboot, the Pi turns on its own Wi-Fi, **`AuxLink-setup`**
-   (password **`auxlink-setup`**). Join it from a phone or the Android device.
-   The setup page opens **by itself**, like a hotel Wi-Fi sign-in page. If
-   it doesn't, tap the "Sign in to network" notification or open
-   **http://10.42.0.1**.
-   - At home on the same Wi-Fi as the Pi, use **http://auxlink.local**.
+### Passwords and names at a glance
+| What | Name | Password |
+|---|---|---|
+| Setup Wi-Fi (made by the Pi) | `AuxLink-setup` | `auxlink-setup` |
+| Setup page | http://10.42.0.1 (or http://auxlink.local on your home Wi-Fi) | none, unless you set a page password |
+| Pi login (SSH or keyboard) | user `auxlink` | `auxlink`. Change it under **Pi login** |
+| Bluetooth: what the **Tesla** pairs with | **AuxLink** | code shown on the car |
+| Bluetooth: what your **phone** pairs with | **AuxLink-phone** | code shown on the phone |
+| Bluetooth: a **Bluetooth music source** | **AuxLink-music** (or AuxLink-phone if it shares that adapter) | code shown on the device |
+
+Only one of these Bluetooth names is visible at a time:
+- **AuxLink** shows by itself until a car is paired.
+- **AuxLink-phone** and **AuxLink-music** show only for 2 minutes after you
+  tap **Pair a phone** or **Pair a music source**.
+
+There is no "AuxLink-car": **AuxLink** is the car side.
+
+### Re-installing or replacing the SD card
+Pairings are stored on the SD card, not in the dongles. After flashing a new
+card, the car, phone and music device still remember the dongles with the
+old keys, so remove the old entries first:
+- **In the Tesla:** Bluetooth → remove **AuxLink**, or an older name such as
+  teslabridge.
+- **On the phone:** forget **AuxLink-phone**.
+- **On the music device:** forget **AuxLink-music**.
+
+Then pair them again as below.
+
+### Steps
+1. **Join the setup Wi-Fi.** After the first boot, the Pi turns on its own
+   Wi-Fi, **`AuxLink-setup`** (password **`auxlink-setup`**). Join it from a
+   phone or the Android device.
+   - The setup page opens **by itself**, like a hotel Wi-Fi sign-in page. If
+     it doesn't, tap the "Sign in to network" notification or open
+     **http://10.42.0.1**.
+   - If the phone says "No internet", choose **stay connected**.
    - The setup Wi-Fi is on whenever no car is paired, for 10 minutes after
      each boot, and for 15 minutes after holding the setup button. You can
      change the times and password on the page.
-2. **Bluetooth adapters:** choose which adapter is the **car** side and which
+2. **Pi login:** set your own login password. Only after that can you turn
+   **SSH** on, if you want it. You don't need SSH for anything else here.
+3. **Bluetooth adapters:** choose which adapter is the **car** side and which
    is the **phone** side. With two dongles, use one each and leave the
    built-in unused. Then tap **Save adapters**.
-3. **Pair the car:** tap **Pair a car**. In the Tesla, go to **Bluetooth →
-   Add new device** and choose **AuxLink**, then confirm the code. The Pi
-   accepts it by itself.
+4. **Pair the car:** in the Tesla, go to **Bluetooth → Add new device**,
+   choose **AuxLink** and confirm the code. The Pi accepts it by itself.
+   With no car paired, this side is already visible; otherwise tap
+   **Pair a car** first.
    - Your real phone should **not** stay paired directly with the Tesla.
      Remove it from the car's Bluetooth list; it connects through the Pi
      instead.
-4. **Pair your phone:** tap **Pair a phone**. On the phone, go to Bluetooth,
-   add **AuxLink-phone** and confirm the code. Allow **contacts and call
-   history** access when the phone asks. That is what fills the car's
-   contacts and recent calls.
-5. **Music source:** choose how music gets into the Pi (see section 5), then
+5. **Pair your phone:** tap **Pair a phone**. Within 2 minutes, go to the
+   phone's Bluetooth settings, add **AuxLink-phone** and confirm the code.
+   Allow **contacts and call history** access when the phone asks. That is
+   what fills the car's contacts and recent calls.
+6. **Music source:** choose how music gets into the Pi (see section 5), then
    tap **Save music source**.
-6. **Home Wi-Fi** (optional): add your home network so that you can open
+   - **Bluetooth:** also tap **Pair a music source** and pair the device with
+     **AuxLink-music**.
+   - **Wired or USB-C:** also set up the app (section 6).
+7. **Home Wi-Fi** (optional): add your home network so that you can open
    http://auxlink.local and install updates from home.
-7. **Settings:** a page password, whether to pause music for calls, contacts
+8. **Settings:** a page password, whether to pause music for calls, contacts
    sync, and the Bluetooth names. The defaults are fine.
-8. Use **Check audio** / **Check and fix** on the Music card any time the
+9. Use **Check audio** / **Check and fix** on the Music card any time the
    music is not coming through.
 
 ---
