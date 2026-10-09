@@ -1,3 +1,0 @@
-# The XIAO plugged into the Pi with its B button held shows up as a USB drive
-# called RPI-RP2: flash it with the AuxLink firmware (auxlink-xiao-flash.py).
-ACTION=="add", SUBSYSTEM=="block", ENV{ID_FS_LABEL}=="RPI-RP2", TAG+="systemd", ENV{SYSTEMD_WANTS}+="auxlink-xiao-flash@%k.service"

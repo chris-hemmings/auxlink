@@ -218,6 +218,7 @@ def state():
         "window": window(), "in_call": open(CALL_FILE).read().strip() == "1" if os.path.exists(CALL_FILE) else False,
         "services": unit_states(user), "events": events, "setup_wifi": STATE["ap"],
         "home_wifi": home_networks(), "wifi_client": wifi_client_connected(),
+        "xiao": xiao_state(),
         "login": {"user": user, "ssh": sh("systemctl", "is-active", "ssh")[1] == "active",
                   "default_password": os.path.exists(DEFAULT_PW_FLAG)},
     }
@@ -392,6 +393,52 @@ def act_restart(body):
     auxconf.event("Restarting all services")
     auxconf.restart_all(delay=1, skip=("auxlink-web", "auxlink-pairing"))
     return {"ok": True}
+
+
+XIAO_UF2 = "/usr/local/share/auxlink/auxlink-xiao.uf2"
+XIAO_VERSION = "/usr/local/share/auxlink/auxlink-xiao.version"
+MAX_UF2 = 4 * 1024 * 1024
+
+
+def xiao_state():
+    """Is a XIAO plugged into the Pi's own USB ports (for updating it)?"""
+    try:
+        builtin = open(XIAO_VERSION).read().strip()
+    except OSError:
+        builtin = ""
+    if os.path.exists("/dev/disk/by-label/RPI-RP2"):
+        mode = "update"             # B held while plugging in: ready to flash
+    else:
+        mode = "none"
+        for d in glob.glob("/sys/bus/usb/devices/*/idVendor"):
+            try:
+                vid = open(d).read().strip()
+                pid = open(os.path.join(os.path.dirname(d), "idProduct")).read().strip()
+            except OSError:
+                continue
+            if (vid, pid) in (("1209", "0001"), ("2e8a", "0003")):
+                mode = "running" if vid == "1209" else "update"
+    return {"mode": mode, "builtin": builtin}
+
+
+def act_xiao_flash(data):
+    """Flash the uploaded .uf2 (empty upload: the firmware that came with
+    this AuxLink) onto the XIAO in update mode."""
+    if data:
+        path, name = "/run/auxlink/xiao-upload.uf2", "the uploaded file"
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(data)
+    else:
+        try:
+            ver = open(XIAO_VERSION).read().strip()
+        except OSError:
+            ver = "?"
+        path, name = XIAO_UF2, f"AuxLink XIAO firmware {ver}"
+    rc, out = sh("/usr/local/bin/auxlink-xiao-flash.py", path, name, timeout=60)
+    if rc:
+        raise ValueError(out or "flashing failed")
+    return {"ok": True, "output": out}
 
 
 UPDATE_DIR = "/var/lib/auxlink/update"
@@ -668,6 +715,14 @@ class Handler(BaseHTTPRequestHandler):
         if not self.authorised():
             return
         name = self.path[len("/api/"):] if self.path.startswith("/api/") else ""
+        if name == "xiao-flash":   # raw .uf2 upload (empty = the built-in firmware)
+            try:
+                n = int(self.headers.get("Content-Length", 0) or 0)
+                if not 0 <= n <= MAX_UF2:
+                    return self.reply(400, {"error": "file too large for XIAO firmware"})
+                return self.reply(200, act_xiao_flash(self.rfile.read(n) if n else b""))
+            except (ValueError, OSError) as e:
+                return self.reply(400, {"error": str(e)})
         if name == "update":   # raw zip upload, not JSON
             try:
                 n = int(self.headers.get("Content-Length", 0) or 0)

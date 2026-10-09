@@ -1,6 +1,0 @@
-[Unit]
-Description=AuxLink: flash the XIAO plugged into the Pi in update mode (%I)
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/auxlink-xiao-flash.py %I

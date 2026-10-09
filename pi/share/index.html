@@ -131,6 +131,14 @@ label.f{display:grid;gap:4px;margin:8px 0}label.f span{color:var(--dim);font-siz
     <div class="btns"><button onclick="wifiAdd()">Save network</button><button class="ghost" onclick="wifiScan()">Scan nearby</button></div>
   </section>
 
+  <section class="card"><h2>XIAO firmware</h2>
+    <div class="k" style="font-size:13px">Update the XIAO on its own: unplug its USB-C from the music device, hold its <b>B</b> button and plug it into a USB port on the Pi (the wires to the Pi can stay). Then flash the firmware file from the releases page, or the one that came with this AuxLink. Afterwards plug it back into the music device (Android asks once: tick Always).</div>
+    <div id="xiaoState" style="margin:8px 0;font-weight:600">…</div>
+    <label class="f"><span>Firmware file (.uf2)</span><input type="file" id="uf2File" accept=".uf2"></label>
+    <div class="btns"><button id="xiaoFlashFile" onclick="xiaoFlash(true)">Flash this file</button><button id="xiaoFlashBuiltin" class="ghost" onclick="xiaoFlash(false)">Flash built-in firmware</button></div>
+    <pre id="xiaoOut" class="hide"></pre>
+  </section>
+
   <section class="card"><h2>Update</h2>
     <div class="k" style="font-size:13px">Choose an AuxLink zip (the release zip, or the whole-repository download from GitHub) to install it. Settings and pairings are kept; services restart, so a call in progress drops. No internet or reboot needed.</div>
     <label class="f"><span>Zip file</span><input type="file" id="zipFile" accept=".zip,application/zip"></label>
@@ -178,6 +186,13 @@ function saveAdapters(){post('adapters',{car:$('selCar').value,phone:$('selPhone
 function saveSettings(){const b={};for(const k of ['PHONE_ENABLED','PAUSE_FOR_CALLS','CONTACTS_SYNC','AUTO_PAIRABLE','CAR_CALLS','SBC_XQ','SMO_VOLUME_MAX'])b[k]=$(k).checked?'1':'0';b.CAR_MIC_MODE=$('CAR_MIC_MODE').value;
   for(const k of ['CALL_RESUME_DELAY','CAR_NAME','PHONE_NAME','SETUP_WIFI_MINUTES','SETUP_WIFI_SSID','SETUP_WIFI_PASS','SETUP_BUTTON_GPIO'])b[k]=$(k).value.trim();
   if($('WEB_PASSWORD').value)b.WEB_PASSWORD=$('WEB_PASSWORD').value;post('config',b,'Settings saved; services restarting')}
+async function xiaoFlash(useFile){let body=new Uint8Array(0),name;
+  if(useFile){const f=$('uf2File').files[0];if(!f)return toast('Choose the .uf2 file first');body=f;name=f.name}
+  else name='the built-in firmware ('+(S.xiao&&S.xiao.builtin||'?')+')';
+  const o=$('xiaoOut');o.classList.remove('hide');o.textContent='Flashing '+name+'…';
+  try{const r=await fetch('/api/xiao-flash',{method:'POST',headers:{'Content-Type':'application/octet-stream'},body});
+    const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||r.statusText);o.textContent=j.output;toast('XIAO flashed')}
+  catch(e){o.textContent='Error: '+e.message}}
 async function upload(){const f=$('zipFile').files[0];if(!f)return toast('Choose the zip file first');
   if(!confirm('Install '+f.name+'? The AuxLink services restart (a call in progress drops).'))return;
   const o=$('updOut');o.classList.remove('hide');o.textContent='Uploading '+f.name+'…';
@@ -189,7 +204,13 @@ async function upload(){const f=$('zipFile').files[0];if(!f)return toast('Choose
     if(/== finished/.test(l.text)){clearInterval(t);toast(/exit 0\)/.test(l.text)?'Update installed':'Update failed: see the output');setTimeout(()=>location.reload(),2000)}}catch(e){}
     if(n>60){clearInterval(t);o.textContent+='\n(no answer for 2 minutes; reload the page)'}},2000)}
 async function logs(u){const o=$('logOut');o.classList.remove('hide');o.textContent='Loading '+u+'…';try{o.textContent=(await api('logs/'+u)).text||'(empty)';o.scrollTop=o.scrollHeight}catch(e){o.textContent='Error: '+e.message}}
-function render(){const c=S.conf;
+function renderXiao(){const x=S.xiao||{};
+  $('xiaoState').textContent=x.mode==='update'?'XIAO in update mode on the Pi: ready to flash'
+    :x.mode==='running'?'XIAO plugged into the Pi, but not in update mode: unplug it, hold B and plug it in again'
+    :'No XIAO on the Pi\'s USB ports';
+  $('xiaoFlashFile').disabled=$('xiaoFlashBuiltin').disabled=x.mode!=='update';
+  $('xiaoFlashBuiltin').textContent='Flash built-in firmware'+(x.builtin?' ('+x.builtin+')':'')}
+function render(){const c=S.conf;renderXiao();
   $('sub').textContent=(S.setup_wifi?'Setup Wi-Fi on · ':'')+(c.CAR?'car '+c.CAR:'no car paired yet');
   dev('carState',S.car);dev('phoneState',S.phone);$('carAddr').textContent=c.CAR||'–';$('phoneAddr').textContent=c.PHONE||'–';
   dev('sourceState',S.source);$('sourceAddr').textContent=c.SOURCE||'–';

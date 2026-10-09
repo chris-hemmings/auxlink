@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Flash the XIAO with the firmware that came with this AuxLink.
+"""Write a firmware file to the XIAO while it is in update mode on the Pi.
 
-Started by udev (99-auxlink-xiao.rules) when an RP2040 update drive
-("RPI-RP2") appears: the XIAO plugged into one of the Pi's USB ports with
-its B button held. Copies the bundled .uf2 onto it; the XIAO then restarts
-by itself and can go back into the SMO.
-    auxlink-xiao-flash.py sda1
+The XIAO, plugged into one of the Pi's USB ports with its B button held,
+shows up as a USB drive called RPI-RP2. The setup page's XIAO card runs this
+with the uploaded .uf2 (or the firmware that came with this AuxLink):
+    auxlink-xiao-flash.py FILE.uf2 [NAME]
+Exit 0 once written; the XIAO restarts by itself.
 """
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import time
@@ -16,54 +17,75 @@ import time
 sys.path.insert(0, "/usr/local/lib/auxlink")
 import auxconf  # noqa: E402
 
-UF2 = "/usr/local/share/auxlink/auxlink-xiao.uf2"
-VERSION_FILE = "/usr/local/share/auxlink/auxlink-xiao.version"
+DRIVE = "/dev/disk/by-label/RPI-RP2"
 MNT = "/run/auxlink/xiao-flash"
+RP2040_FAMILY = 0xE48BFF56
 
 
-def say(msg):
-    print(msg, flush=True)
-    auxconf.event(msg)
+def check_uf2(path):
+    """A UF2 file for the RP2040 (not some other board's)."""
+    with open(path, "rb") as f:
+        block = f.read(512)
+    if len(block) < 512:
+        raise ValueError("not a UF2 firmware file (too short)")
+    magic0, magic1, flags = struct.unpack_from("<III", block, 0)
+    family = struct.unpack_from("<I", block, 28)[0]
+    if magic0 != 0x0A324655 or magic1 != 0x9E5D5157:
+        raise ValueError("not a UF2 firmware file")
+    if flags & 0x2000 and family != RP2040_FAMILY:
+        raise ValueError("this UF2 is for a different chip, not the RP2040")
 
 
 def main():
-    dev = "/dev/" + os.path.basename(sys.argv[1])
+    if len(sys.argv) < 2:
+        print(__doc__)
+        return 2
+    src = sys.argv[1]
+    name = sys.argv[2] if len(sys.argv) > 2 else os.path.basename(src)
     try:
-        version = open(VERSION_FILE).read().strip()
-    except OSError:
-        version = "?"
-    if not os.path.exists(UF2):
-        say("XIAO update drive found, but no firmware file is installed")
+        check_uf2(src)
+    except (OSError, ValueError) as e:
+        print(f"Not flashed: {e}")
+        return 1
+    if not os.path.exists(DRIVE):
+        print("No XIAO in update mode: unplug it, hold B and plug it into a USB port on the Pi")
         return 1
     os.makedirs(MNT, exist_ok=True)
     subprocess.run(["umount", MNT], capture_output=True)
-    r = subprocess.run(["mount", "-t", "vfat", "-o", "sync", dev, MNT], capture_output=True, text=True)
+    r = subprocess.run(["mount", "-t", "vfat", "-o", "sync", DRIVE, MNT], capture_output=True, text=True)
     if r.returncode:
-        say(f"XIAO update drive found, but it could not be opened: {r.stderr.strip()}")
+        print(f"Could not open the XIAO's update drive: {r.stderr.strip()}")
         return 1
     try:
-        # Only an RP2040's own update drive (an RP2350's would not run this firmware).
         try:
             info = open(os.path.join(MNT, "INFO_UF2.TXT")).read()
         except OSError:
             info = ""
         if "RP2" not in info or "RP2350" in info:
-            say("A USB drive called RPI-RP2 appeared but it is not an RP2040; left alone")
+            print("That RPI-RP2 drive is not an RP2040's update drive; left alone")
             return 1
-        say(f"XIAO in update mode: writing AuxLink XIAO firmware {version}")
-        dest = os.path.join(MNT, "auxlink-xiao.uf2")
+        print(f"Writing {name} to the XIAO...", flush=True)
         try:
-            with open(UF2, "rb") as src, open(dest, "wb") as out:
-                shutil.copyfileobj(src, out)
+            with open(src, "rb") as f, open(os.path.join(MNT, "firmware.uf2"), "wb") as out:
+                shutil.copyfileobj(f, out)
                 out.flush()
                 os.fsync(out.fileno())
         except OSError:
-            pass   # the XIAO restarts as the last block lands, often mid-close
+            pass    # the XIAO restarts as the last block lands, often mid-close
     finally:
         time.sleep(1)
         subprocess.run(["umount", "-l", MNT], capture_output=True)
-    say(f"XIAO firmware {version} written. Plug the XIAO back into the SMO "
-        "(Android asks once: tick Always)")
+    # The drive goes away once the XIAO has taken the firmware and restarted.
+    for _ in range(20):
+        if not os.path.exists(DRIVE):
+            break
+        time.sleep(0.5)
+    if os.path.exists(DRIVE):
+        print("Written, but the XIAO did not restart: unplug it and try again")
+        return 1
+    auxconf.event(f"XIAO firmware written: {name}")
+    print(f"Done: {name} written and the XIAO restarted. Plug it back into the SMO "
+          "(Android asks once: tick Always).")
     return 0
 
 
