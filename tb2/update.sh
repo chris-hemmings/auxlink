@@ -26,6 +26,7 @@ echo "Settings kept${added:+; added:$added}"
 install -D -m 644 "$HERE/lib/common.sh" /usr/local/lib/teslabridge/common.sh
 install -D -m 644 "$HERE/lib/tbconf.py" /usr/local/lib/teslabridge/tbconf.py
 install -D -m 644 "$HERE/share/index.html" /usr/local/share/teslabridge/index.html
+install -D -m 644 "$HERE/share/cover-test.jpg" /usr/local/share/teslabridge/cover-test.jpg
 install -m 755 "$HERE"/bin/* /usr/local/bin/
 install -o "$U" -g "$U" -m 755 "$HERE"/user-bin/* "$H/.local/bin/"
 install -m 644 "$HERE"/systemd/system/*.service /etc/systemd/system/
@@ -34,7 +35,8 @@ install -o "$U" -g "$U" -m 644 "$HERE"/wireplumber/*.conf "$H/.config/wireplumbe
 echo "Programs and services copied"
 
 systemctl daemon-reload
-systemctl restart tb-pairing tesla-reconnect hfp-relay teslabridge-keys tb-web
+systemctl enable tb-cover >/dev/null 2>&1 || true
+systemctl restart tb-pairing tesla-reconnect hfp-relay teslabridge-keys tb-web tb-cover
 asuser systemctl --user daemon-reload
 asuser systemctl --user restart tesla-audio pbap-sync
 echo "Services restarted. Done (no reboot needed)."

@@ -55,6 +55,7 @@ step "Programs"
 install -D -m 644 "$HERE/lib/common.sh" /usr/local/lib/teslabridge/common.sh
 install -D -m 644 "$HERE/lib/tbconf.py" /usr/local/lib/teslabridge/tbconf.py
 install -D -m 644 "$HERE/share/index.html" /usr/local/share/teslabridge/index.html
+install -D -m 644 "$HERE/share/cover-test.jpg" /usr/local/share/teslabridge/cover-test.jpg
 install -m 755 "$HERE"/bin/* /usr/local/bin/
 install -d -o "$U" -g "$U" "$H/.local/bin"
 install -o "$U" -g "$U" -m 755 "$HERE"/user-bin/* "$H/.local/bin/"
@@ -67,7 +68,7 @@ systemctl daemon-reload
 # The built-in Bluetooth stays available so the setup page can use it for
 # either side; this routes its call audio over HCI (harmless if unused).
 systemctl enable sco-route-hci >/dev/null
-systemctl enable tesla-reconnect hfp-relay teslabridge-keys tb-pairing tb-web bt-dongle-off avahi-daemon >/dev/null
+systemctl enable tesla-reconnect hfp-relay teslabridge-keys tb-pairing tb-web tb-cover bt-dongle-off avahi-daemon >/dev/null
 echo "ok"
 
 step "Bluetooth: power on at boot, no USB power-saving on the dongles"

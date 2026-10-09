@@ -49,6 +49,7 @@ CALL_STATE_FILE = "/run/teslabridge/call"   # written by hfp-relay
 CALL_POLL_MS = 250                          # how quickly a call is noticed
 RESUME_AFTER_CALL = float(CONF.get("CALL_RESUME_DELAY", "1.5"))  # s after the call ends
 PAUSE_FOR_CALLS = CONF.get("PAUSE_FOR_CALLS", "1") == "1"
+COVER_CURRENT = "/run/teslabridge/cover/current"  # 7-digit handle of the art to show
 MIC_REQUEST_FILE = "/run/teslabridge/mic"   # read by hfp-relay
 MIC_SOCKET = "/run/teslabridge/mic.sock"    # hfp-relay sends the car's mic here
 MIC_TIMEOUT = 1.5    # s without a "mic on" refresh from the XIAO = closed
@@ -140,6 +141,7 @@ class Player(dbus.service.Object):
         self.in_call = False
         self.paused_for_call = False
         self.resume_timer = None
+        self.img_handle = ""          # cover art served by tb-cover (AVRCP 1.6)
 
     # ---------- what the car sees ----------
     def metadata(self):
@@ -151,7 +153,25 @@ class Player(dbus.service.Object):
         }
         if self.length_us > 0:
             md["mpris:length"] = dbus.Int64(self.length_us)
+        if self.img_handle:
+            # Only the patched bluetoothd knows this key; stock BlueZ ignores it.
+            md["bluez:ImgHandle"] = self.img_handle
         return dbus.Dictionary(md, signature="sv")
+
+    def cover_check(self):
+        """Follow COVER_CURRENT: a new handle means new art, so announce a
+        track change and the car fetches it."""
+        try:
+            h = open(COVER_CURRENT).read().strip()
+        except OSError:
+            h = ""
+        if not (len(h) == 7 and h.isdigit()):
+            h = ""
+        if h != self.img_handle:
+            self.img_handle = h
+            log(f"Cover art: {'image ' + h if h else 'none'}")
+            self.publish(track_changed=True)
+        return True
 
     def props(self):
         return dbus.Dictionary({
@@ -430,6 +450,8 @@ def main():
         return True
 
     GLib.timeout_add(CALL_POLL_MS, poll_call)
+    player.cover_check()
+    GLib.timeout_add(1000, player.cover_check)
     GLib.MainLoop().run()
 
 
