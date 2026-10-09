@@ -12,7 +12,7 @@
 while [ -z "$CAR" ] || [ -z "$CAR_ADAPTER" ]; do sleep 5; . /etc/teslabridge.conf; done
 [ -z "$PHONE" ] || [ -z "$PHONE_ADAPTER" ] && PHONE_ENABLED=0
 
-car_was=no; phone_was=no; phone_warned=no
+car_was=no; phone_was=no; phone_warned=no; car_err=
 missing=0; restarts=0; phone_next=0
 
 while true; do
@@ -70,8 +70,13 @@ while true; do
   else
     [ "$car_was" = yes ] && echo "Car disconnected, will keep trying"
     car_was=no
-    if timeout 25 $BT "$CAR_ADAPTER" "$CAR" connect >/dev/null 2>&1; then
-      echo "Reconnected to car"
+    if err=$(timeout 25 $BT "$CAR_ADAPTER" "$CAR" connect 2>&1 >/dev/null); then
+      echo "Reconnected to car"; car_err=
+    else
+      # Log why, but only when the reason changes (this retries every 10 s).
+      err=${err:-timed out}
+      [ "$err" != "$car_err" ] && echo "Car connect failed: $err"
+      car_err=$err
     fi
   fi
 
