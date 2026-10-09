@@ -668,6 +668,12 @@ def button_loop():
 
 
 def main():
+    # Wi-Fi is the only way into a Pi in the car (setup hotspot) and
+    # NetworkManager remembers "radio off" across reboots - a Wi-Fi test once
+    # left the Pi unreachable. Every start (= every boot) switches it back on.
+    rc, out = sh("nmcli", "radio", "wifi", "on")
+    if rc:
+        print(f"Could not switch Wi-Fi on: {out}", flush=True)
     auto_assign()
     threading.Thread(target=ap_loop, daemon=True).start()
     threading.Thread(target=button_loop, daemon=True).start()
