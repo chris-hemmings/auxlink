@@ -23,7 +23,7 @@ jobs:
             --jq '.[] | select(.isDraft | not) | "\(.publishedAt) \(.tagName)"' | sort -r > releases.txt
           cat releases.txt
           for kind in '^pi-v' '^xiao-v' '^v'; do
-            grep -E " $kind" releases.txt | tail -n +2 | while read -r _ tag; do
+            awk -v k="$kind" '$2 ~ k' releases.txt | tail -n +2 | while read -r _ tag; do
               echo "Deleting $tag"
               gh release delete "$tag" --yes --cleanup-tag
             done
