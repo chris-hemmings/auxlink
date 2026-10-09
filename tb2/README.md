@@ -19,6 +19,11 @@ Copies the programs and service files and restarts the teslabridge
 services. No internet or reboot needed, and the car and phone stay connected
 (a call in progress is dropped).
 
+Or without SSH: on the setup page, **Update** -> choose the zip (the release
+zip, or GitHub's whole-repository download) -> **Install update**. The page
+shows the output and reloads when done. Anyone who can open the page can do
+this, so set a **Page password** if the Pi is on a shared network.
+
 ## Installing without SSH (first boot does it all)
 1. Flash Raspberry Pi OS Lite (64-bit) with Imager: hostname, user, Wi-Fi
    country. For internet during install either plug in an **Ethernet cable**

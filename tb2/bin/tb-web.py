@@ -2,7 +2,7 @@
 """teslabridge setup page + setup Wi-Fi.
 
 Web page (port 80): status, pairing windows for the car and phone, adapter
-assignment, feature switches, audio check/fix, logs.
+assignment, feature switches, audio check/fix, logs, update from a zip.
 Setup Wi-Fi: a hotspot (NetworkManager) that is on only when needed:
   * nothing paired yet, or
   * the first SETUP_WIFI_MINUTES after boot, or
@@ -308,6 +308,57 @@ def act_restart(body):
     return {"ok": True}
 
 
+UPDATE_DIR = "/var/lib/teslabridge/update"
+UPDATE_LOG = "/var/lib/teslabridge/update.log"
+MAX_UPDATE = 50 * 1024 * 1024
+
+
+def act_update(data):
+    """Install an uploaded zip: the release zip (tb2/...) or a GitHub download
+    of the repository (<repo>-<branch>/tb2/...). Runs its update.sh as a
+    separate systemd job, because update.sh restarts this web server."""
+    import io
+    import shutil
+    import zipfile
+    try:
+        z = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile:
+        raise ValueError("that file is not a zip")
+    found = sorted((n for n in z.namelist() if n == "tb2/update.sh" or n.endswith("/tb2/update.sh")),
+                   key=len)
+    if not found:
+        raise ValueError("no tb2/update.sh in the zip: is it the teslabridge zip?")
+    prefix = found[0][:-len("update.sh")]
+    if sh("systemctl", "is-active", "--quiet", "tb-update")[0] == 0:
+        raise ValueError("an update is already running")
+    shutil.rmtree(UPDATE_DIR, ignore_errors=True)
+    dest = os.path.join(UPDATE_DIR, "tb2")
+    for info in z.infolist():
+        if not info.filename.startswith(prefix) or info.is_dir():
+            continue
+        rel = info.filename[len(prefix):]
+        if rel.startswith("/") or ".." in rel.split("/"):
+            raise ValueError(f"unsafe path in zip: {info.filename}")
+        out = os.path.join(dest, rel)
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with z.open(info) as src, open(out, "wb") as f:
+            shutil.copyfileobj(src, f)
+    os.makedirs(os.path.dirname(UPDATE_LOG), exist_ok=True)
+    with open(UPDATE_LOG, "w") as f:
+        f.write(f"Update unpacked ({len(data) // 1024} KB); starting in 2 s...\n")
+    user = tbconf.load().get("AUDIO_USER", "chris")
+    sh("systemctl", "reset-failed", "tb-update")
+    # The 2 s lets this reply reach the browser before tb-web is restarted.
+    script = (f'sleep 2; bash "{dest}/update.sh" >>"{UPDATE_LOG}" 2>&1; '
+              f'echo "== finished (exit $?)" >>"{UPDATE_LOG}"')
+    rc, out = sh("systemd-run", "--unit=tb-update", "--collect", f"--setenv=SUDO_USER={user}",
+                 "/bin/bash", "-c", script)
+    if rc:
+        raise ValueError(f"could not start the update: {out}")
+    tbconf.event("Update uploaded from the setup page; installing")
+    return {"ok": True}
+
+
 def act_wifi_off(body):
     STATE["button_until"] = 0
     STATE["last_hit"] = 0
@@ -318,6 +369,11 @@ def act_wifi_off(body):
 
 def logs(unit):
     c = tbconf.load()
+    if unit == "update":
+        try:
+            return open(UPDATE_LOG).read()
+        except OSError:
+            return "(no update run yet)"
     if unit in SYSTEM_UNITS:
         return sh("journalctl", "-u", unit, "-n", "120", "--no-pager", "-o", "short-iso")[1]
     if unit in USER_UNITS:
@@ -471,6 +527,14 @@ class Handler(BaseHTTPRequestHandler):
         if not self.authorised():
             return
         name = self.path[len("/api/"):] if self.path.startswith("/api/") else ""
+        if name == "update":   # raw zip upload, not JSON
+            try:
+                n = int(self.headers.get("Content-Length", 0) or 0)
+                if not 0 < n <= MAX_UPDATE:
+                    return self.reply(400, {"error": "upload missing or too large"})
+                return self.reply(200, act_update(self.rfile.read(n)))
+            except (ValueError, OSError) as e:
+                return self.reply(400, {"error": str(e)})
         fn = ACTIONS.get(name)
         if not fn:
             return self.reply(404, {"error": "not found"})
