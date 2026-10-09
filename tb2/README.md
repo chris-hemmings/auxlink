@@ -46,11 +46,28 @@ On the setup page, **Bluetooth adapters** lets you pick, for each side:
 - **Built-in Bluetooth** or **USB dongle 1 / 2** for the car,
 - the same, or **none**, for the phone.
 
-Examples: built-in for the car + one dongle for the phone (the default on
-first run, and the recommendation on a Pi 4: the busiest link stays off
-USB), or two dongles with the built-in unused. Adapters not assigned to
-anything are switched off. Changing a side's adapter clears that side's
-pairing: pair it again afterwards. No reinstall or reboot needed.
+**Recommended: two USB dongles, built-in unused.** The built-in chip has to
+carry call audio over its serial link (sco-route-hci) and crashed mid-call
+in testing (HCI "Hardware Error"), dropping the car until Bluetooth was
+restarted. Built-in for the car + one dongle for the phone (the first-run
+default) works for music but is not reliable for calls. Adapters not
+assigned to anything are switched off. Changing a side's adapter clears
+that side's pairing: pair it again afterwards. No reinstall or reboot needed.
+
+### Which dongles
+Any USB dongle Linux supports with *Bluetooth Classic* (BR/EDR) works:
+music (A2DP) and call audio (SCO) both run over USB. Known good:
+- **TP-Link UB500** (Realtek RTL8761BU) - what this was built and tested on.
+  Two identical ones are fine: each side is chosen by its Bluetooth address.
+  The warm-reboot hang these chips have is handled (bt-dongle-off, bt-usb-cycle).
+- Other Realtek **RTL8761B/BU** dongles (many UGREEN/ASUS/Edimax "BT 5.0").
+- CSR8510 A10 "BT 4.0" dongles work too, but cheap clones are hit and miss.
+
+Avoid: dongles sold as "Windows only" or "driver CD required", most
+"Bluetooth 5.3/5.4" dongles built on Barrot or Actions (ATS2851) chips
+(little or no Linux support), LE-only dongles, and "Bluetooth audio
+transmitter" boxes (they are not adapters). Use the black USB 2.0 ports
+(USB 3.0 interferes with 2.4 GHz), ideally one dongle on a short extension.
 The XIAO serial link uses the Pi's second UART (same pins) so that the
 built-in Bluetooth can keep the main one.
 
