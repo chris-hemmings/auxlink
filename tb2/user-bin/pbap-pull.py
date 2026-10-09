@@ -13,6 +13,12 @@ car can later be served the same data:
 
 Each book is also split into one card per file (telecom/pb/0.vcf, 1.vcf, ...)
 because BlueZ's dummy PBAP backend lists folders by reading those files.
+
+The per-card files are trimmed to the fields the car uses (name, numbers,
+call time). The dummy backend copies each card through a fixed 1024-byte
+buffer and silently cuts off anything longer - including the END:VCARD
+line - so a contact with a photo, addresses or notes ran straight into the
+next card, and the car filed the next person's numbers under it.
 """
 import os
 import sys
@@ -35,6 +41,11 @@ PHONE = CONF.get("PHONE", "").upper()
 PHONE_ADAPTER = CONF.get("PHONE_ADAPTER", "").upper()
 OUT = os.path.expanduser("~/phonebook/telecom")
 BOOKS = ["pb", "ich", "och", "mch", "cch"]
+# Fields kept in the per-card files, and asked of the phone.
+KEEP = ("VERSION", "FN", "N", "TEL", "X-IRMC-CALL-DATETIME")
+# obexd-dummy re-serialises each card into a 1024-byte buffer; stay well
+# under it (non-ASCII text can grow when re-encoded).
+CARD_BUDGET = 900
 
 
 def wait(bus, path, timeout=120):
@@ -49,6 +60,39 @@ def wait(bus, path, timeout=120):
             return st
         time.sleep(0.5)
     return "timeout"
+
+
+def card_cost(lines):
+    """Rough worst-case size once obexd-dummy re-encodes the card."""
+    return sum(len(l) + 2 * sum(1 for ch in l.encode("utf-8") if ch > 127) + 16
+               for l in lines)
+
+
+def trim(card):
+    """One vCard -> just the fields in KEEP, small enough for obexd-dummy.
+
+    Folded lines (continuations start with a space or tab, e.g. a PHOTO's
+    base64) are joined first so a dropped field takes all its lines along."""
+    props = []
+    for line in card.splitlines():
+        if line[:1] in (" ", "\t") and props:
+            props[-1] += line[1:]
+        elif line.strip():
+            props.append(line.rstrip("\r\n"))
+    body = []
+    for p in props:
+        name = p.split(":", 1)[0].split(";", 1)[0].upper()
+        if "." in name:                   # "item1.TEL" grouping prefix
+            name = name.rsplit(".", 1)[1]
+        if name in KEEP:
+            body.append(p)
+    # A contact with many numbers: drop the last ones until it fits.
+    while card_cost(["BEGIN:VCARD", "END:VCARD"] + body) > CARD_BUDGET:
+        tels = [i for i, p in enumerate(body) if p.split(":", 1)[0].split(";", 1)[0].upper().endswith("TEL")]
+        if not tels:
+            break
+        del body[tels[-1]]
+    return "BEGIN:VCARD\r\n" + "".join(p + "\r\n" for p in body) + "END:VCARD\r\n"
 
 
 def split(book):
@@ -68,8 +112,21 @@ def split(book):
             cur = []
     for i, card in enumerate(cards):
         with open(os.path.join(folder, f"{i}.vcf"), "w", encoding="utf-8") as fh:
-            fh.write(card)
+            fh.write(trim(card))
     return len(cards)
+
+
+def pull(pbap, tmp):
+    """PullAll, asking the phone for only the fields we keep (no photos).
+    A phone or obexd that rejects the filter gets a plain pull instead;
+    split() trims the cards either way."""
+    try:
+        return pbap.PullAll(tmp, dbus.Dictionary(
+            {"Format": "vcard30", "Fields": dbus.Array(KEEP, signature="s")}, signature="sv"))
+    except dbus.DBusException as e:
+        if "InvalidArguments" not in (e.get_dbus_name() or ""):
+            raise
+        return pbap.PullAll(tmp, dbus.Dictionary({"Format": "vcard30"}, signature="sv"))
 
 
 def main():
@@ -85,7 +142,7 @@ def main():
             try:
                 pbap.Select("int", book)
                 tmp = os.path.join(OUT, f".{book}.vcf.part")
-                path, _ = pbap.PullAll(tmp, dbus.Dictionary({"Format": "vcard30"}, signature="sv"))
+                path, _ = pull(pbap, tmp)
                 st = wait(bus, path)
                 if st == "complete" and os.path.exists(tmp):
                     os.replace(tmp, os.path.join(OUT, f"{book}.vcf"))
