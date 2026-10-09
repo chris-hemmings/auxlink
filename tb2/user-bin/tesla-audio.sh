@@ -25,7 +25,11 @@ linked() {
 }
 # Pause/resume the stream (AVDTP suspend/start): wakes a car that is
 # "playing" but silent. Short, so it is barely audible.
-nudge() { timeout 5 pactl suspend-sink "$1" 1; sleep 0.5; timeout 5 pactl suspend-sink "$1" 0; }
+# Suspending the car's output silences the RIGHT channel of a running
+# pw-loopback until the loopback is recreated (measured: the car then only
+# got the left channel). So stop the loopback first; the main loop starts a
+# fresh one, which always comes up in proper stereo.
+nudge() { stop_loop; timeout 5 pactl suspend-sink "$1" 1; sleep 0.5; timeout 5 pactl suspend-sink "$1" 0; }
 trap 'stop_loop' EXIT
 
 while true; do

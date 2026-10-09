@@ -63,6 +63,8 @@ else warn "stream is '$ts' (car not taking audio)"; fi
 if [ $FIX = yes ]; then
   echo "7. Nudging the stream (pause/resume)"
   timeout 5 pactl suspend-sink "$SINK" 1; sleep 0.5; timeout 5 pactl suspend-sink "$SINK" 0
+  # A suspend silences the loopback's right channel: have tesla-audio start a fresh one.
+  pkill -f "[n]ode.name=smo_capture"; sleep 3
   ok "done; listen now"
 fi
 echo

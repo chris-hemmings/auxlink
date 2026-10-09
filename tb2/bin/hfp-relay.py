@@ -97,7 +97,10 @@ MIC_MAX_SECONDS = 30
 CAR_RE = CAR.replace(":", "[:_]")
 RESUME_MUSIC_CMD = (
     f'S=$(pactl list sinks short | grep -E "bluez_output\\.{CAR_RE}" | cut -f1); '
-    '[ -n "$S" ] && pactl suspend-sink "$S" 1 && sleep 0.5 && pactl suspend-sink "$S" 0'
+    '[ -n "$S" ] && pactl suspend-sink "$S" 1 && sleep 0.5 && pactl suspend-sink "$S" 0; '
+    # The suspend leaves the music loopback with a silent right channel; end it
+    # and tesla-audio starts a fresh (stereo) one within ~2 s.
+    'pkill -f "[n]ode.name=smo_capture"'
 )
 
 # Car commands we can safely answer "OK" to while no phone is bridged.
