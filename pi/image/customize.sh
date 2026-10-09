@@ -63,6 +63,18 @@ else
   printf '127.0.1.1\tauxlink\n' >> /etc/hosts
 fi
 echo "bootfs first-boot files:"; ls /boot/firmware | grep -iE "user-data|meta-data|network-config|firstrun|userconf" || true
+# Raspberry Pi OS runs cloud-init from bootfs on the first boot: make its
+# settings name the Pi auxlink too (else it may set "raspberrypi").
+UD=/boot/firmware/user-data
+if [ -f "$UD" ]; then
+  echo "--- user-data as shipped:"; grep -v '^\s*#' "$UD" | grep -v '^\s*$' || true
+  if grep -q '^hostname:' "$UD"; then
+    sed -i 's/^hostname:.*/hostname: auxlink/' "$UD"
+  else
+    printf '\nhostname: auxlink\n' >> "$UD"
+  fi
+  grep -q '^manage_etc_hosts:' "$UD" || printf 'manage_etc_hosts: true\n' >> "$UD"
+fi
 
 echo "-- first-boot setup"
 install -m 644 $A/image/auxlink-firstboot.service /etc/systemd/system/
