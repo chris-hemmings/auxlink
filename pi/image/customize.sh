@@ -74,6 +74,8 @@ if [ -f "$UD" ]; then
     printf '\nhostname: auxlink\n' >> "$UD"
   fi
   grep -q '^manage_etc_hosts:' "$UD" || printf 'manage_etc_hosts: true\n' >> "$UD"
+  # cloud-init only reads it as settings with this first line.
+  head -1 "$UD" | grep -q '^#cloud-config' || sed -i '1i #cloud-config' "$UD"
 fi
 
 echo "-- first-boot setup"
