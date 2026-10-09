@@ -883,10 +883,15 @@ def setup_bt_source(bus, om, player):
     # on play and goes idle on pause, reliably - unlike the AVRCP status,
     # which some devices (the SMO) leave on "playing" after a pause. The
     # car must see "Paused" then "Playing", or it ignores the new stream.
-    stream = {"active_at": 0.0, "recheck": None}
+    stream = {"active_at": 0.0, "recheck": None,
+              "avrcp": None, "avrcp_at": 0.0, "tstate": None, "t_at": 0.0}
     IDLE_GRACE = 1.0    # s of idle before "Paused" (track changes blip)
 
-    def stream_state():
+    def stream_state(avrcp_status=None):
+        """Whichever changed last wins: the source's AVRCP status (instant,
+        when the device keeps it up to date) or its audio stream (Android
+        may hold the stream open a few s after a pause; the SMO left its
+        status on "playing")."""
         state = None
         for path, ifaces in om.GetManagedObjects().items():
             t = ifaces.get("org.bluez.MediaTransport1")
@@ -894,6 +899,12 @@ def setup_bt_source(bus, om, player):
                 state = str(t.get("State", ""))
                 break
         now = time.monotonic()
+        if avrcp_status is not None and avrcp_status != stream["avrcp"]:
+            stream["avrcp"], stream["avrcp_at"] = avrcp_status, now
+        if state != stream["tstate"]:
+            stream["tstate"], stream["t_at"] = state, now
+        if stream["avrcp"] in ("paused", "stopped") and stream["avrcp_at"] >= stream["t_at"]:
+            return "Paused"            # the device said pause after the stream last changed
         if state in ("active", "pending"):
             stream["active_at"] = now
             return "Playing"
@@ -919,7 +930,7 @@ def setup_bt_source(bus, om, player):
             "album": str(track.get("Album", "")),
             "dur": int(track.get("Duration", 0) or 0),
             "pos": int(props.get("Position", 0) or 0),
-            "state": stream_state(),
+            "state": stream_state(str(props.get("Status", ""))),
         })
 
     def poll():
