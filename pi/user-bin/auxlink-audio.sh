@@ -35,6 +35,9 @@ PLAY_FILE=/run/auxlink/play          # "1"/"0" from auxlink-media (missing = pla
 # not), so sound actually arriving on the music input also counts as playing.
 # Published for auxlink-media, which then tells the car "Playing".
 PRESENT_FILE=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/auxlink-audio-present
+# Touched once the car's stream runs again after a call: auxlink-media holds
+# the music source's "play" until then, so no music is missed.
+READY_FILE=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/auxlink-stream-ready
 PRESENT=0; LAST_SOUND=0; NEXT_LEVEL=0
 CAR_SLC_FILE=/run/auxlink/car-slc    # "1" once hfp-relay has the car's HFP set up
 KICK_FILE=/run/auxlink/audio-kick    # touched by auxlink-media when the car presses play
@@ -310,6 +313,8 @@ while true; do
       RECHECK=""
       quick_restart "$SINK"
       start_loop
+      for _ in $(seq 20); do linked && break; sleep 0.1; done
+      date +%s > "$READY_FILE"     # auxlink-media now plays the source
     else
       start_loop
     fi

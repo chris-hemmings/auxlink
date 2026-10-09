@@ -95,6 +95,12 @@ def _present_file():
 
 
 PRESENT_FILE = _present_file()
+# auxlink-audio touches this once the car's stream is running again after a
+# call; until then a "play" is held back (see set_playing), so the music
+# source doesn't play into a stream the car isn't playing yet.
+STREAM_READY_FILE = os.path.join(os.path.dirname(PRESENT_FILE), "auxlink-stream-ready") if PRESENT_FILE else ""
+POST_CALL_WINDOW = 30.0   # s after a call in which a play waits for the stream
+PLAY_WAIT_MAX = 8.0       # s: play anyway if the stream isn't ready by then
 MIC_REQUEST_FILE = "/run/auxlink/mic"   # read by hfp-relay
 MIC_SOCKET = "/run/auxlink/mic.sock"    # hfp-relay sends the car's mic here
 MIC_TIMEOUT = 1.5    # s without a "mic on" refresh from the XIAO = closed
@@ -335,6 +341,8 @@ class Player(dbus.service.Object):
         self.in_call = False
         self.paused_for_call = False
         self.resume_timer = None
+        self.call_ended_at = 0.0      # monotonic time the last call ended
+        self.pending_play = 0.0       # wall time a held-back play was asked for (0 = none)
         self.img_handle = ""          # cover art served by auxlink-cover (AVRCP 1.6)
         # What the car is told combines two things: the state the SMO app
         # reports, and whether sound is actually arriving (apps like YouTube
@@ -510,6 +518,25 @@ class Player(dbus.service.Object):
     def set_playing(self, want_playing, why):
         """Press the SMO's play/pause key only if it is in the other state."""
         want = "Playing" if want_playing else "Paused"
+        if self.pending_play and not want_playing:
+            # Paused again before the held-back play happened: the source
+            # never started, so just cancel it.
+            self.pending_play = 0.0
+            self.status = self.app_state = "Paused"
+            self.publish()
+            log(f"Source {why}: cancelled the held-back play")
+            return True
+        if (want_playing and self.status != "Playing" and self.call_ended_at
+                and time.monotonic() - self.call_ended_at < POST_CALL_WINDOW and STREAM_READY_FILE):
+            # Right after a call: tell the car "Playing" now (auxlink-audio
+            # starts the stream), but play the source only once that stream
+            # is really running - nothing of the song is missed.
+            self.pending_play = time.time()
+            self.status = self.app_state = "Playing"
+            self.ignore_smo_until = time.monotonic() + PLAY_WAIT_MAX + 3
+            self.publish()
+            log(f"Source {why}: waiting for the car's stream before playing")
+            return True
         if self.status == want:
             self.publish()   # make sure the car agrees (it mutes while it thinks we're paused)
             return False
@@ -539,8 +566,22 @@ class Player(dbus.service.Object):
                 self.paused_for_call = True
         else:
             log("Call ended")
+            self.call_ended_at = time.monotonic()
             if self.paused_for_call:
                 self.resume_timer = GLib.timeout_add(int(RESUME_AFTER_CALL * 1000), self.resume_after_call)
+
+    def check_pending_play(self):
+        if not self.pending_play:
+            return
+        try:
+            ready = os.stat(STREAM_READY_FILE).st_mtime >= self.pending_play - 0.5
+        except OSError:
+            ready = False
+        late = time.time() - self.pending_play > PLAY_WAIT_MAX
+        if ready or late:
+            self.pending_play = 0.0
+            smo_key(b"P", "play (car stream ready)" if ready else "play (stream not ready after 8 s)")
+            self.ignore_smo_until = time.monotonic() + 2.5
 
     def resume_after_call(self):
         self.resume_timer = None
@@ -1145,6 +1186,7 @@ def main():
         except OSError:
             present = False
         player.sound_check(present)
+        player.check_pending_play()
         return True
 
     GLib.timeout_add(CALL_POLL_MS, poll_call)
