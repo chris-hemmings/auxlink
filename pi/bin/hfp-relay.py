@@ -234,6 +234,7 @@ class Relay:
         self.mic_since = 0.0
         self.mic_tx = None       # datagram socket to auxlink-media
         self.beep = bytearray()  # ready beep still to play into the car
+        self.beep_due = 0        # when the ready beep is due at the latest (0 = done)
         self.src = None          # HFP link to a Bluetooth music source (we are HF)
         self.src_slc = False
         self.src_queue = []
@@ -412,7 +413,11 @@ class Relay:
             log(f"Car mic: cannot write {MIC_DUMP}: {e}")
             self.mic_out = None
         self.mic, self.mic_sco, self.mic_bytes = True, s, 0
-        self.beep = bytearray(READY_BEEP)     # "talk now", once the audio flows
+        # "Talk now" beep: played when the car's mic is really live (its
+        # first non-silent audio), not when the link opens - the car is
+        # still setting the call up then and doesn't play call audio yet.
+        self.beep = bytearray()
+        self.beep_due = time.time() + 6       # fallback: play it by then anyway
         self.mic_since = time.time()
         if self.mic_tx is None:
             self.mic_tx = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
@@ -441,6 +446,13 @@ class Relay:
             self.mic_hold = float("inf")
             return False
         self.mic_bytes += len(data)
+        if self.beep_due:
+            n = len(data) // 2
+            loud = n and max(abs(v) for v in struct.unpack(f"<{n}h", data[:n * 2])) > 600
+            if loud or time.time() >= self.beep_due:
+                self.beep_due = 0
+                self.beep = bytearray(READY_BEEP)
+                log("Car mic: live - beep")
         if self.mic_out:
             self.mic_out.write(data)
         try:
