@@ -27,6 +27,11 @@ install -D -m 644 "$HERE/lib/common.sh" /usr/local/lib/auxlink/common.sh
 install -D -m 644 "$HERE/lib/auxconf.py" /usr/local/lib/auxlink/auxconf.py
 install -D -m 644 "$HERE/share/index.html" /usr/local/share/auxlink/index.html
 install -D -m 644 "$HERE/share/cover-test.jpg" /usr/local/share/auxlink/cover-test.jpg
+# The XIAO firmware, flashed when the XIAO is plugged into the Pi in update mode.
+install -D -m 644 "$HERE/share/auxlink-xiao.uf2" /usr/local/share/auxlink/auxlink-xiao.uf2
+install -D -m 644 "$HERE/share/auxlink-xiao.version" /usr/local/share/auxlink/auxlink-xiao.version
+install -D -m 644 "$HERE/etc/99-auxlink-xiao.rules" /etc/udev/rules.d/99-auxlink-xiao.rules
+udevadm control --reload 2>/dev/null || true
 install -m 755 "$HERE"/bin/* /usr/local/bin/
 install -o "$U" -g "$U" -m 755 "$HERE"/user-bin/* "$H/.local/bin/"
 install -m 644 "$HERE"/systemd/system/*.service /etc/systemd/system/

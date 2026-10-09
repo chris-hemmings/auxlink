@@ -174,6 +174,13 @@ sudo reboot
 3. Copy the `.uf2` file onto that drive. The XIAO restarts by itself, and
    its RGB LED lights up.
 
+**Easier, once the Pi is set up:** the Pi carries the matching firmware and
+flashes it by itself. Hold **B** and plug the XIAO into one of the **Pi's**
+USB ports (USB-A to USB-C cable; the wires to the Pi can stay connected).
+A few seconds later the setup page's events say "XIAO firmware … written".
+Plug the XIAO back into the Android device; Android asks once whether
+AuxLink should open it (tick **Always**). This is also how to update it later.
+
 This firmware makes the XIAO appear to the Android device as:
 - a **USB sound card** (48 kHz stereo speaker) whose audio goes to the Pi
   over I2S;
@@ -519,6 +526,9 @@ cd firmware/rp2040
 cargo build --release --bin source --features rp2040-zero,smo-mic,ultra-low
 python3 uf2.py target/thumbv6m-none-eabi/release/source auxlink-xiao.uf2
 ```
+The Pi carries a copy for flashing the XIAO from the Pi: after a firmware
+change, also copy the new `.uf2` to `pi/share/auxlink-xiao.uf2` and put its
+version in `pi/share/auxlink-xiao.version`.
 `smo-mic` includes `media-keys`, and `ultra-low` includes `clock-steered`,
 which is the build the pinout above is for. `rp2040-zero` selects the
 RGB-LED status code that the XIAO also uses.
