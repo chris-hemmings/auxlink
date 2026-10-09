@@ -343,6 +343,7 @@ class Player(dbus.service.Object):
         self.paused_for_call = False
         self.resume_timer = None
         self.call_ended_at = 0.0      # monotonic time the last call ended
+        self.paused_at = 0.0          # monotonic time of the last pause sent to the source
         self.pending_play = 0.0       # wall time a held-back play was asked for (0 = none)
         self.img_handle = ""          # cover art served by auxlink-cover (AVRCP 1.6)
         # What the car is told combines two things: the state the SMO app
@@ -551,6 +552,8 @@ class Player(dbus.service.Object):
             self.publish()   # make sure the car agrees (it mutes while it thinks we're paused)
             return False
         smo_key(b"P", why)
+        if not want_playing:
+            self.paused_at = time.monotonic()
         self.status = want
         self.app_state = want          # until the app reports otherwise
         self.ignore_smo_until = time.monotonic() + 2.5
@@ -573,6 +576,11 @@ class Player(dbus.service.Object):
             log("Call started")
             if PAUSE_FOR_CALLS and self.status == "Playing":
                 self.set_playing(False, "pause (call)")
+                self.paused_for_call = True
+            elif time.monotonic() - self.paused_at < 3:
+                # The car paused it just before the call (it does that itself):
+                # still ours to resume, at once, rather than waiting for the
+                # car's own "play" a few seconds after the call.
                 self.paused_for_call = True
         else:
             log("Call ended")
