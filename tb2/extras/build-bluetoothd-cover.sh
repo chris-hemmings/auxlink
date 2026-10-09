@@ -27,13 +27,16 @@ apt-get install -y build-essential pkg-config wget xz-utils \
 
 SRC=/usr/local/src/teslabridge
 mkdir -p $SRC && cd $SRC
-[ -f bluez-$VER.tar.xz ] || wget -q https://www.kernel.org/pub/linux/bluetooth/bluez-$VER.tar.xz
+echo "== Downloading BlueZ $VER source"
+[ -f bluez-$VER.tar.xz ] || wget --progress=dot:giga https://www.kernel.org/pub/linux/bluetooth/bluez-$VER.tar.xz
 rm -rf bluez-$VER-tb && mkdir bluez-$VER-tb && tar xf bluez-$VER.tar.xz -C bluez-$VER-tb --strip-components=1
 cd bluez-$VER-tb
+echo "== Applying the cover-art patch"
 patch -p1 < "$HERE/bluez-cover-art.patch"
 
 # Same paths as Debian's build: pairings in /var/lib/bluetooth, config in
 # /etc/bluetooth. Getting these wrong would lose every pairing.
+echo "== Configuring (a few minutes, quiet)"
 ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var --libexecdir=/usr/libexec \
   --disable-manpages --disable-cups --disable-midi --disable-mesh --disable-monitor \
   --disable-client --disable-tools --disable-obex --disable-sixaxis --disable-udev \
@@ -42,7 +45,9 @@ grep -q '#define STORAGEDIR "/var/lib/bluetooth"' config.h || { echo "Wrong stor
 mkdir -p lib/bluetooth
 for f in lib/*.h; do ln -sf "$PWD/$f" "lib/bluetooth/$(basename "$f")"; done
 make src/builtin.h >/dev/null
+echo "== Compiling bluetoothd (10-15 minutes)"
 make -j3 src/bluetoothd
+echo "== Installing and switching the Bluetooth service over"
 install -D -m 755 src/bluetoothd "$BIN"
 
 # Start it exactly like the stock one (same arguments), plus the cover-art PSM.
