@@ -179,6 +179,11 @@ while true; do
       *) why="XIAO I2S input not found (is the xiao-i2s-in overlay loaded? check: arecord -l)" ;;
     esac
     [ "$why" != "$INPUT_SAID" ] && echo "$why"; INPUT_SAID=$why
+    # No input = no sound: say so (a Bluetooth source closes its stream on
+    # pause - left at "1", the car would keep showing Playing).
+    if [ "$PRESENT" = 1 ]; then
+      PRESENT=0; LAST_SOUND=0; echo 0 > "$PRESENT_FILE"; echo "No sound from the SMO"
+    fi
     stop_loop
     # A Bluetooth source closes its stream on pause: look again quickly, so
     # play is heard at once.
