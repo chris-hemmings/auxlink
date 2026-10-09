@@ -83,7 +83,7 @@ while true; do
   fi
   if [ "$ACTIVE" != "$WANT" ] && { [[ "$ACTIVE" != a2dp* ]] || ! in_call; }; then
     echo "Switching the car to $WANT"
-    # Count every SBC-XQ attempt (cleared once it is actually active): a car
+    # Count every SBC-XQ attempt (per boot): a car
     # that refuses it, or quietly stays on SBC, gets plain SBC after two
     # tries instead of a switch - and a music dropout - every 2 s.
     [ "$WANT" = a2dp-sink-sbc_xq ] && XQ_FAILS=$((XQ_FAILS + 1))
