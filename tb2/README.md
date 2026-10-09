@@ -12,6 +12,13 @@ page, and the Pi is only pairable when you open a pairing window.
 Your existing /etc/teslabridge.conf is kept (new settings are added), so the
 car and Oppo stay paired. On a fresh Pi nothing is paired yet.
 
+## Updating an installed Pi
+    unzip -o teslabridge-v2-websetup.zip && cd tb2
+    sudo ./update.sh
+Copies the programs and service files and restarts the teslabridge
+services. No internet or reboot needed, and the car and phone stay connected
+(a call in progress is dropped).
+
 ## Installing without SSH (first boot does it all)
 1. Flash Raspberry Pi OS Lite (64-bit) with Imager: hostname, user, Wi-Fi
    country. For internet during install either plug in an **Ethernet cable**
