@@ -29,7 +29,7 @@ in_call && warn "a call is in progress: the car pauses music on purpose"
 echo "3. Music profile"
 prof=$(timeout 5 pactl list cards | sed -n "/Name: $CARD/,/Active Profile/p" | awk -F': ' '/Active Profile/ {print $2}')
 if [[ "$prof" == a2dp* ]]; then ok "profile $prof"
-else bad "profile is '${prof:-none}', not a2dp-sink"
+else bad "profile is '${prof:-none}', not a2dp-sink / a2dp-sink-sbc_xq"
      [ $FIX = yes ] && { echo "        fixing: opening the music channel"
        timeout 25 $BT "$CAR_ADAPTER" "$CAR" connect "$A2DP_SINK_UUID" >/dev/null 2>&1
        timeout 5 pactl set-card-profile "$CARD" a2dp-sink 2>/dev/null; sleep 3; }; fi

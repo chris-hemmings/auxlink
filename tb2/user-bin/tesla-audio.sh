@@ -12,6 +12,7 @@ LOOP=""; LOOP_SINK_ID=""; LOOP_STARTED=0; UNLINKED=0; GONE=0; NO_CARD=0; NOT_ACT
 # the stream, like the setup page's "fix" does. After a reconnect the car
 # can report the stream "active" yet play nothing until it is nudged.
 NEED_KICK=1
+XQ_FAILS=0   # SBC-XQ attempts the car refused, this connection
 I2S=""
 
 stop_loop() { [ -n "$LOOP" ] && kill "$LOOP" 2>/dev/null; LOOP=""; LOOP_SINK_ID=""; }
@@ -50,7 +51,7 @@ while true; do
     GONE=$((GONE + 1))
     if [ "$GONE" -ge 2 ]; then
       [ -n "$LOOP" ] && echo "Car disconnected"
-      stop_loop; NEED_KICK=1
+      stop_loop; NEED_KICK=1; XQ_FAILS=0
     fi
     sleep 2; continue
   fi
@@ -68,9 +69,26 @@ while true; do
   fi
   NO_CARD=0
 
-  if ! timeout 5 pactl list cards | sed -n "/Name: $CARD/,/Active Profile/p" | grep -q "Active Profile: a2dp"; then
-    echo "Switching the car to A2DP"
-    timeout 5 pactl set-card-profile "$CARD" a2dp-sink 2>/dev/null
+  # Music profile: SBC-XQ when the car offers it (CAR_SBC_XQ=1). Plain SBC
+  # runs joint stereo and drops its bitpool under radio pressure, which
+  # throws away the left/right difference first - the sound narrows and
+  # loses width. SBC-XQ keeps a high-rate dual-channel stream. PipeWire
+  # ranks plain SBC higher, so it has to be chosen here on every connect.
+  CARDINFO=$(timeout 5 pactl list cards | sed -n "/Name: $CARD/,/^Card #/p")
+  ACTIVE=$(echo "$CARDINFO" | awk -F': ' '/Active Profile/ {print $2; exit}')
+  WANT=a2dp-sink
+  if [ "${CAR_SBC_XQ:-1}" = 1 ] && [ "$XQ_FAILS" -lt 2 ] &&
+     echo "$CARDINFO" | grep -q "a2dp-sink-sbc_xq:.*available: yes"; then
+    WANT=a2dp-sink-sbc_xq
+  fi
+  [ "$ACTIVE" = a2dp-sink-sbc_xq ] && XQ_FAILS=0
+  if [ "$ACTIVE" != "$WANT" ] && { [[ "$ACTIVE" != a2dp* ]] || ! in_call; }; then
+    echo "Switching the car to $WANT"
+    # Count every SBC-XQ attempt (cleared once it is actually active): a car
+    # that refuses it, or quietly stays on SBC, gets plain SBC after two
+    # tries instead of a switch - and a music dropout - every 2 s.
+    [ "$WANT" = a2dp-sink-sbc_xq ] && XQ_FAILS=$((XQ_FAILS + 1))
+    timeout 5 pactl set-card-profile "$CARD" "$WANT" 2>/dev/null
     sleep 2; continue
   fi
 
