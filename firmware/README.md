@@ -23,3 +23,6 @@ copy the .uf2 to the RPI-RP2 drive.
 3. teslabridge-keys sends it to the XIAO as G.711 mu-law frames
    (`0x01, len, data`) between the key bytes, 115200 baud as before.
 4. The XIAO decodes, upsamples 8 -> 48 kHz and streams it to the SMO.
+
+Wiring to the Pi (pinout) and the full setup are in the main README,
+section 3.

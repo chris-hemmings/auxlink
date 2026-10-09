@@ -6,3 +6,4 @@ Pi, which shows it on the Tesla's screen over Bluetooth AVRCP.
 
 Build: every push to main runs GitHub Actions, which builds a signed APK and
 publishes it as a GitHub release - install/update it with Obtainium.
+Full setup (Obtainium, permissions, USB) is in the main README, section 6.
