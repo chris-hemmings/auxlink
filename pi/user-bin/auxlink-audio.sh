@@ -81,6 +81,9 @@ monitor.bluez.rules = [
   sleep 3
 }
 
+# A phone call, or the car's mic borrowed for voice search (the car is in
+# call mode for that too).
+car_busy() { in_call || [ "$(cat /run/auxlink/mic-active 2>/dev/null)" = 1 ]; }
 stop_loop() { [ -n "$LOOP" ] && kill "$LOOP" 2>/dev/null; LOOP=""; LOOP_SINK_ID=""; }
 linked() {
   local links; links=$(timeout 5 pw-link -l 2>/dev/null)
@@ -169,7 +172,7 @@ while true; do
   wp_rule
   # Track the call here, first: a Bluetooth source's stream is closed during
   # a call, and the end must be timed from the call, not from its return.
-  if in_call; then WAS_CALL=1
+  if car_busy; then WAS_CALL=1
   elif [ "$WAS_CALL" = 1 ]; then WAS_CALL=0; CALL_ENDED_AT=$(date +%s)
     RECHECK="the call ended"
   fi
@@ -275,7 +278,7 @@ while true; do
       { RECHECK="play was pressed in the car"; RECHECK_AT=$(date +%s); }
   fi
   WHY=""
-  if in_call; then WHY="a call"
+  if car_busy; then WHY="a call"
   elif [ $(( $(date +%s) - CALL_ENDED_AT )) -lt "$(call_settle)" ]; then WHY="the call just ended"
   elif ! smo_playing && [ "$PRESENT" != 1 ]; then WHY="the SMO is paused"
   elif ! car_ready; then WHY="the car is still connecting"

@@ -109,6 +109,10 @@ MIC_DUMP = "/run/auxlink/car-mic.raw"
 # Where the car's mic audio goes for the SMO: auxlink-media listens here
 # and forwards it to the XIAO (which presents it to the SMO as a USB mic).
 MIC_SOCKET = "/run/auxlink/mic.sock"
+# "1" while the car's mic is borrowed: the car is in call mode then, so
+# auxlink-audio treats it like a call for the music stream (stop it, then
+# restart it afterwards - else the car stays silent).
+MIC_ACTIVE_FILE = "/run/auxlink/mic-active"
 # The Tesla ignores voice recognition started by the phone side (+BVRA: 1):
 # it drops the audio link within a second. It does stream its mic for a
 # call, so by default the session is shown to the car as a call ("call").
@@ -235,6 +239,7 @@ class Relay:
                 f.write("0")
         except OSError:
             pass
+        self.write_flag(MIC_ACTIVE_FILE, "0")    # no mic session survives a restart
 
     # ------------------------------------------------------------ car side
     def car_connected(self, sock):
@@ -366,6 +371,7 @@ class Relay:
         if self.in_call or self.sco_car or self.sco_phone:
             return self.mic_cant("a call is in progress")
         self.mic_note = ""
+        self.write_flag(MIC_ACTIVE_FILE, "1")
         if MIC_MODE == "call":
             log("Car mic: starting (shown to the car as a call)")
             self.car_ind("callsetup", 2)
@@ -385,6 +391,7 @@ class Relay:
             else:
                 self.to_car("+BVRA: 0")
             self.mic_hold = float("inf")   # don't hammer the car; wait for the next request
+            self.write_flag(MIC_ACTIVE_FILE, "0")
             return
         if MIC_MODE == "call":
             self.car_ind("call", 1)
@@ -464,6 +471,7 @@ class Relay:
             else:
                 self.to_car("+BVRA: 0")
         self.mic = False
+        self.write_flag(MIC_ACTIVE_FILE, "0")
         log(f"Car mic: closed ({why}); {self.mic_bytes // 16000:.0f} s of audio received")
 
     # ------------------------------------------- Bluetooth music source
