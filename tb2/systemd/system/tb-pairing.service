@@ -1,0 +1,15 @@
+[Unit]
+Description=teslabridge: Hands-off pairing agent and discoverability
+After=bluetooth.service
+Requires=bluetooth.service
+# Restart together with bluetoothd: everything registered with it is lost
+# when it restarts (profiles, media player, agent).
+PartOf=bluetooth.service
+
+[Service]
+ExecStart=/usr/local/bin/tb-pairing.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target bluetooth.service

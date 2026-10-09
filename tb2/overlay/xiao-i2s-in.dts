@@ -1,0 +1,41 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+    compatible = "brcm,bcm2835";
+
+    fragment@0 {
+        target = <&i2s_clk_consumer>;
+        __overlay__ { status = "okay"; };
+    };
+
+    fragment@1 {
+        target-path = "/";
+        __overlay__ {
+            xiao_codec: xiao-i2s-receiver {
+                #sound-dai-cells = <0>;
+                compatible = "linux,spdif-dir";
+                status = "okay";
+            };
+        };
+    };
+
+    fragment@2 {
+        target = <&sound>;
+        __overlay__ {
+            compatible = "simple-audio-card";
+            simple-audio-card,name = "xiaoi2s";
+            simple-audio-card,format = "i2s";
+            simple-audio-card,bitclock-master = <&xiao_dai>;
+            simple-audio-card,frame-master = <&xiao_dai>;
+            status = "okay";
+
+            simple-audio-card,cpu {
+                sound-dai = <&i2s_clk_consumer>;
+            };
+            xiao_dai: simple-audio-card,codec {
+                sound-dai = <&xiao_codec>;
+            };
+        };
+    };
+};

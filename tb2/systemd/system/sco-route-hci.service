@@ -1,0 +1,15 @@
+[Unit]
+Description=teslabridge: route built-in Bluetooth call audio over HCI
+After=bluetooth.service
+Requires=bluetooth.service
+# Re-apply whenever bluetoothd restarts (the setting lives in the chip).
+PartOf=bluetooth.service
+
+[Service]
+Type=oneshot
+ExecStartPre=/bin/sleep 3
+ExecStart=/usr/local/bin/sco-route-hci.py
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target bluetooth.service

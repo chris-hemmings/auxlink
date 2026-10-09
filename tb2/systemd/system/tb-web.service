@@ -1,0 +1,12 @@
+[Unit]
+Description=teslabridge: setup page and on-demand setup Wi-Fi
+After=bluetooth.service NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+ExecStart=/usr/local/bin/tb-web.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
