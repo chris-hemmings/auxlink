@@ -21,9 +21,9 @@ else
   rm -f /tmp/audio-check.wav
   timeout 2 pw-record --target "$I2S" /tmp/audio-check.wav 2>/dev/null
   rms=$(sox /tmp/audio-check.wav -n stat 2>&1 | awk '/RMS +amplitude/ {print $3}')
-  if [ -z "$rms" ]; then bad "could not read the I2S input"
+  if [ -z "$rms" ]; then bad "could not read the music input"
   elif awk "BEGIN{exit !($rms > 0.002)}"; then ok "audio arriving (RMS $rms)"
-  else bad "input is silent (RMS $rms): source paused? (wired: output set to TeslAux Bridge?) volume up?"; fi
+  else bad "input is silent (RMS $rms): source paused or volume 0? (wired/USB-C: is its output set to the Pi/XIAO? bluetooth: is a USB sound card still plugged into it? Android prefers USB)"; fi
 fi
 
 echo "2. Bluetooth link to the car"
@@ -54,7 +54,7 @@ echo "$links" | grep -A2 "^$I2S:capture_FL" | grep -q "smo_capture:" &&
   echo "$links" | grep -A2 "^$I2S:capture_FR" | grep -q "smo_capture:" && in_ok=yes
 echo "$links" | grep -A2 "^to_tesla:output_FL" | grep -q "bluez_output" &&
   echo "$links" | grep -A2 "^to_tesla:output_FR" | grep -q "bluez_output" && out_ok=yes
-[ $in_ok = yes ] && ok "I2S input -> loopback" || bad "I2S input not linked to the loopback"
+[ $in_ok = yes ] && ok "music input -> loopback" || bad "music input not linked to the loopback"
 [ $out_ok = yes ] && ok "loopback -> car" || bad "loopback not linked to the car"
 if [ $FIX = yes ] && { [ $in_ok = no ] || [ $out_ok = no ]; }; then
   echo "        fixing: restarting tesla-audio"; systemctl --user restart tesla-audio; sleep 6; fi
