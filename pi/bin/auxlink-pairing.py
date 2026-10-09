@@ -25,6 +25,7 @@ import signal
 import socket
 import struct
 import sys
+import subprocess
 import time
 
 sys.path.insert(0, "/usr/local/lib/auxlink")
@@ -420,6 +421,12 @@ class Pairing:
                 if not a.get("Powered"):
                     props.Set("org.bluez.Adapter1", "Powered", dbus.Boolean(True))
                     just_powered_on = True
+                    # The built-in chip forgets its call-audio routing (over
+                    # HCI, not its PCM pins) at every power-up: without it a
+                    # headset link on it (music source voice search, calls)
+                    # carries no audio. Harmless for USB dongles.
+                    subprocess.run(["/usr/local/bin/sco-route-hci.py"], timeout=10,
+                                   capture_output=True)
                 if visible:
                     if a.get("DiscoverableTimeout", 1) != 0:
                         props.Set("org.bluez.Adapter1", "DiscoverableTimeout", dbus.UInt32(0))

@@ -887,8 +887,15 @@ def setup_bt_source(bus, om, player):
         })
 
     def poll():
+        nonlocal dev_part
+        global SOURCE
         if not SOURCE:
-            return True
+            # Paired after this started: pick it up without a restart.
+            SOURCE = load_conf().get("SOURCE", "").upper()
+            if not SOURCE:
+                return True
+            dev_part = "/dev_" + SOURCE.replace(":", "_")
+            log(f"Music source paired: {SOURCE}")
         try:
             path, props = find_player()
         except dbus.DBusException:

@@ -107,6 +107,17 @@ while true; do
     if $BT "$SOURCE_ADAPTER" "$SOURCE" connected; then
       [ "$source_was" = no ] && echo "Music source connected"
       source_was=yes
+      # Connected, but maybe only its headset link (voice search): an Android
+      # device can drop media audio and keep that. No A2DP transport for it
+      # = no music: open the music link again (every ~30 s at most).
+      now=$(date +%s)
+      if ! busctl tree org.bluez 2>/dev/null | grep -q "dev_${SOURCE//:/_}/sep[0-9]*/fd" &&
+         [ "$now" -ge "${source_a2dp_next:-0}" ]; then
+        source_a2dp_next=$((now + 30))
+        echo "Music source connected without its music link; reopening it"
+        timeout 25 $BT "$SOURCE_ADAPTER" "$SOURCE" connect 0000110a-0000-1000-8000-00805f9b34fb >/dev/null 2>&1 \
+          && echo "Music source: music link reopened"
+      fi
     else
       [ "$source_was" = yes ] && echo "Music source disconnected, will keep trying"
       source_was=no
