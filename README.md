@@ -10,8 +10,8 @@ or a tablet):
 - **Calls** from your real phone are relayed through the Pi to the car (the
   car's mic and speakers), with **contacts, favourites and recent calls**
   copied to the car's screen.
-- **Voice search** on the Android device can use the **car's microphone**
-  (wired source only).
+- **Voice search** on the Android device can use the **car's microphone**,
+  with every music source.
 - Everything is set up from a **web page** on the Pi. Nothing is hard-coded,
   and it reconnects by itself after the car sleeps or the Pi reboots.
 
@@ -275,8 +275,21 @@ No XIAO and no wiring.
    adapter).
 
 - **Track info, play state and car buttons:** go over Bluetooth, so the app
-  is not needed.
-- **Not supported:** album art and the car-mic voice search.
+  is optional.
+- **Album art:** install the SMO Now Playing app (section 6) and allow it
+  **Nearby devices / Bluetooth** when it asks. It then connects to the Pi over
+  Bluetooth by itself and sends the art (and fuller track info).
+- **Voice search:** the Pi is also a **Bluetooth headset** to the device, and
+  its mic is the **car's cabin mic** (the Tesla shows a call while it
+  listens; its hang-up button ends it). Anything the device says back (the
+  assistant's answer) plays through the car.
+  - In the device's Bluetooth settings for teslabridge-music, leave
+    **Phone calls** (or "Headset") **on** as well as **Media audio**.
+  - In the Google app: **Settings → Voice → "Record audio through Bluetooth
+    devices"** on. Google Assistant uses it anyway.
+  - Use a **USB dongle** for this source if you can: the Pi's built-in
+    Bluetooth carries this audio over the same path that was unreliable for
+    calls.
 - **If it connects but is silent:**
   - restart playback on the device, or toggle its Bluetooth;
   - unplug any USB sound card (such as the XIAO) from it, because Android
@@ -294,7 +307,9 @@ shows up as a USB sound card (plus a data link and media keys).
   adds `dtoverlay=dwc2,dr_mode=peripheral` to `/boot/firmware/config.txt`.
 - **Track info and album art:** from the SMO Now Playing app (v1.0.5 or
   newer), over the same cable.
-- **Not supported yet:** the car-mic voice search.
+- **Car buttons:** reach the device as USB media keys.
+- **Voice search:** the Pi's USB sound card has a mic too, carrying the
+  **car's cabin mic**, the same as the XIAO's.
 
 ---
 
@@ -306,8 +321,9 @@ shows it in the car:
 - album art, from any player that publishes artwork (Spotify, YouTube Music,
   YouTube, Poweramp, ...).
 
-It is needed for the **wired** and **USB-C** sources. The Bluetooth source
-does not need it.
+It is needed for the **wired** and **USB-C** sources (over USB). With the
+**Bluetooth** source it is optional and only adds album art; it then talks to
+the Pi over Bluetooth. Whenever a USB link is plugged in, it uses that.
 
 ### 6.1 Install with Obtainium (recommended: automatic updates)
 [Obtainium](https://github.com/ImranR98/Obtainium) installs and updates apps
@@ -342,6 +358,8 @@ signed with the same key.
      **Settings → Apps → SMO Now Playing → ⋮ (top right) → Allow restricted
      settings**, then try again. Android 13+ does this for apps installed
      outside the Play Store.
+   Allow **Nearby devices / Bluetooth** if the app asks: that's only used for
+   the Bluetooth music source.
 2. Plug in the XIAO (or connect the device to the Pi's USB-C). Android asks
    **"Open SMO Now Playing (USB) when this device is connected?"** Tick
    **Always** and tap **OK**.
@@ -349,7 +367,7 @@ signed with the same key.
 3. Go back to the app. Its status should show:
    - Notification access: **granted**
    - XIAO plugged in: **yes**
-   - Data link open: **yes**
+   - Data link open: **yes - USB** (or **yes - Bluetooth** for the Bluetooth source)
 4. Recommended: **Settings → Apps → SMO Now Playing → Battery → Unrestricted**,
    so that Android never stops it in the background.
 5. Play something. The car shows the track and, after a second or two, the
@@ -365,7 +383,8 @@ If the car ever shows an old track, play/pause once; the app re-checks every
 - For the **USB-C source**, the device must be able to output audio to a USB
   sound card. Almost all Android 8+ devices can.
 - The **Google app / Assistant** (or the head unit's own voice search) uses
-  the USB mic automatically when the XIAO is plugged in.
+  the USB mic automatically when the XIAO or the Pi's USB-C is plugged in. For
+  the Bluetooth source it needs a Bluetooth-headset-aware voice app (see 5.2).
 
 ---
 

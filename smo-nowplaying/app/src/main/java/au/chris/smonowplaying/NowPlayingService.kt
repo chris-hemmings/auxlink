@@ -31,16 +31,22 @@ import java.util.zip.CRC32
  * when it changes (and once a minute, in case the Pi restarted): a 200x200
  * JPEG, which is what cars display. At the serial link's speed one image
  * takes about 1.5 s, so all sending happens on a background thread.
+ *
+ * Where it goes: over USB (the XIAO, or the Pi's USB-C port) whenever one is
+ * plugged in - exactly as before - and otherwise over Bluetooth to the Pi,
+ * for the Bluetooth music source.
  */
 class NowPlayingService : NotificationListenerService() {
     companion object {
         private const val TAG = "SmoNowPlaying"
         @Volatile var lastSent: String = "(nothing yet)"
         @Volatile var linkOpen: Boolean = false
+        @Volatile var linkKind: String = ""
     }
 
     private val main = Handler(Looper.getMainLooper())
     private lateinit var link: UsbLink
+    private lateinit var bt: BtLink
     private var sessions: MediaSessionManager? = null
     private var controller: MediaController? = null
     private var lastLine = ""
@@ -83,6 +89,7 @@ class NowPlayingService : NotificationListenerService() {
 
     override fun onListenerConnected() {
         link = UsbLink(this)
+        bt = BtLink(this)
         val f = IntentFilter().apply {
             addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
             addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
@@ -103,7 +110,20 @@ class NowPlayingService : NotificationListenerService() {
         sessions?.removeOnActiveSessionsChangedListener(sessionsChanged)
         controller?.unregisterCallback(callback)
         try { unregisterReceiver(usbEvents) } catch (_: Exception) {}
-        io.execute { link.close() }
+        io.execute { link.close(); bt.close() }
+    }
+
+    /** USB if one is plugged in (unchanged behaviour), else Bluetooth. Runs on [io]. */
+    private fun sendLine(line: String): Boolean {
+        val ok = if (link.findDevice() != null) {
+            bt.close()
+            link.send(line).also { if (it) linkKind = "USB" }
+        } else {
+            bt.send(line).also { if (it) linkKind = "Bluetooth (${bt.deviceName})" }
+        }
+        linkOpen = link.isOpen() || bt.isOpen()
+        if (!linkOpen) linkKind = ""
+        return ok
     }
 
     private fun pickController() {
@@ -149,8 +169,7 @@ class NowPlayingService : NotificationListenerService() {
         if (line != lastLine) {
             lastLine = line
             io.execute {
-                if (link.send(line)) lastSent = line else lastLine = ""
-                linkOpen = link.isOpen()
+                if (sendLine(line)) lastSent = line else lastLine = ""
             }
         }
         val now = android.os.SystemClock.elapsedRealtime()
@@ -159,7 +178,7 @@ class NowPlayingService : NotificationListenerService() {
             artSentId = id
             artSentAt = now
             io.execute {
-                if (!link.send(artJson)) artSentId = ""   // try again next push
+                if (!sendLine(artJson)) artSentId = ""   // try again next push
             }
         }
     }

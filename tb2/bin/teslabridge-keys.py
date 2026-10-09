@@ -14,12 +14,17 @@
   SMO has its USB mic open (0x01 'M' '0' when closed). That is passed to
   hfp-relay, which streams the car's cabin mic back here; it goes out to the
   XIAO as G.711 mu-law frames (0x01, len, data) between the key bytes.
+  With the USB-C source the Pi's own USB sound card has the mic instead: the
+  source starting to record on it is the request, and the car's mic is
+  played into it. (A Bluetooth source is handled by hfp-relay alone.)
 """
 import array
 import base64
 import json
+import pwd
 import socket
 import os
+import subprocess
 import sys
 import termios
 import time
@@ -50,6 +55,14 @@ MUSIC_SOURCE = CONF.get("MUSIC_SOURCE", "wired")
 SOURCE = CONF.get("SOURCE", "").upper()
 PORT = {"usbc": "/dev/ttyGS0", "bluetooth": None}.get(MUSIC_SOURCE, CONF.get("SERIAL_PORT", "/dev/serial0"))
 HID_DEV = "/dev/hidg0"
+# MUSIC_SOURCE=bluetooth: the now-playing app (if installed on the source)
+# connects to this Bluetooth serial service and sends the same JSON lines it
+# sends over USB - which adds album art. While it is connected its info is
+# used instead of the source's own AVRCP track info.
+APP_UUID = "7e5b1a20-3c4d-4f8e-9a6b-74657362726b"
+APP_PATH = "/teslabridge/app_link"
+APP_LINK = {"sock": None, "watch": None}
+AUDIO_USER = CONF.get("AUDIO_USER", "chris")
 KEY_USAGE = {b"P": 0x00CD, b"N": 0x00B5, b"B": 0x00B6, b"S": 0x00B7, b"+": 0x00E9, b"-": 0x00EA}
 PATH = "/teslabridge/player"
 IFACE = "org.mpris.MediaPlayer2.Player"
@@ -162,6 +175,115 @@ def send(data):
 
 
 BT_KEYS = None     # set in main() for MUSIC_SOURCE=bluetooth
+
+
+class UsbcMic:
+    """MUSIC_SOURCE=usbc: the mic on the Pi's USB sound card (gadget).
+
+    The gadget's "Playback Rate" control reads the rate while the USB host
+    (the source) is recording from it and 0 when it is not - that is the
+    "SMO opened the mic" signal. The car's mic is played into the gadget's
+    output through PipeWire (which owns the card), as the audio user."""
+
+    def __init__(self):
+        self.proc = None
+        self.note = ""
+        try:
+            pw = pwd.getpwnam(AUDIO_USER)
+            self.env = ["env", f"XDG_RUNTIME_DIR=/run/user/{pw.pw_uid}"]
+        except KeyError:
+            self.env = None
+
+    def say(self, msg):
+        if msg != self.note:
+            log(msg)
+            self.note = msg
+
+    @staticmethod
+    def card():
+        try:
+            for line in open("/proc/asound/cards"):
+                if "UAC1" in line and "[" in line:
+                    return line.split("[", 1)[0].strip()
+        except OSError:
+            pass
+        return None
+
+    def host_recording(self):
+        card = self.card()
+        if card is None:
+            return False
+        try:
+            out = subprocess.run(["amixer", "-c", card, "cget", "name=Playback Rate"],
+                                 capture_output=True, text=True, timeout=2).stdout
+        except (OSError, subprocess.SubprocessError):
+            return False
+        for line in out.splitlines():
+            if ": values=" in line:
+                return line.split("=", 1)[1].strip() not in ("", "0")
+        self.say("USB-C mic: the kernel has no 'Playback Rate' control; can't tell when the source records")
+        return False
+
+    def as_user(self, *cmd):
+        return ["runuser", "-u", AUDIO_USER, "--"] + self.env + list(cmd)
+
+    def sink(self):
+        try:
+            out = subprocess.run(self.as_user("pactl", "list", "sinks"),
+                                 capture_output=True, text=True, timeout=5).stdout
+        except (OSError, subprocess.SubprocessError):
+            return None
+        name = None
+        for line in out.splitlines():
+            line = line.strip()
+            if line.startswith("Name: "):
+                name = line[6:]
+            elif line.startswith("alsa.card_name") and "UAC1" in line:
+                return name
+        return None
+
+    def start(self):
+        if self.proc or self.env is None:
+            return
+        sink = self.sink()
+        if not sink:
+            self.say("USB-C mic: the Pi's USB sound card output isn't in PipeWire yet")
+            return
+        try:
+            self.proc = subprocess.Popen(
+                self.as_user("pacat", "--playback", "--raw", "--format=s16le", "--rate=8000",
+                             "--channels=1", f"--device={sink}", "--latency-msec=60",
+                             "--client-name=teslabridge", "--stream-name=car mic"),
+                stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            os.set_blocking(self.proc.stdin.fileno(), False)
+            self.say(f"USB-C mic: car mic -> {sink}")
+        except OSError as e:
+            self.say(f"USB-C mic: cannot start pacat: {e}")
+            self.proc = None
+
+    def write(self, pcm):
+        if not self.proc:
+            return
+        try:
+            self.proc.stdin.write(pcm)
+            self.proc.stdin.flush()
+        except BlockingIOError:
+            pass                          # behind: drop this bit rather than stall
+        except (BrokenPipeError, OSError, ValueError):
+            self.stop()
+
+    def stop(self):
+        if self.proc:
+            try:
+                self.proc.stdin.close()
+            except OSError:
+                pass
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+            self.proc = None
 
 
 def hid_key(cmd):
@@ -500,6 +622,8 @@ def setup_bt_source(bus, om, player):
         return None, None
 
     def report(props):
+        if APP_LINK["sock"] is not None:
+            return                     # the app is sending richer info itself
         track = props.get("Track", {}) or {}
         player.smo_update({
             "title": str(track.get("Title", "")),
@@ -549,6 +673,65 @@ def setup_bt_source(bus, om, player):
     log(f"Music source: Bluetooth ({SOURCE or 'not paired yet'})")
 
 
+class AppLink(dbus.service.Object):
+    """Bluetooth serial service for the now-playing app (Bluetooth source)."""
+
+    def __init__(self, bus, on_data):
+        super().__init__(bus, APP_PATH)
+        self.on_data = on_data
+
+    @dbus.service.method("org.bluez.Profile1", in_signature="", out_signature="")
+    def Release(self):
+        pass
+
+    @dbus.service.method("org.bluez.Profile1", in_signature="oha{sv}", out_signature="")
+    def NewConnection(self, device, fd, props):
+        addr = str(device).rsplit("dev_", 1)[-1].replace("_", ":").upper()
+        sock = socket.socket(fileno=fd.take())
+        if addr != SOURCE:
+            log(f"Now-playing app link from {addr} refused (not the music source)")
+            sock.close()
+            return
+        self.drop()
+        sock.setblocking(False)
+        APP_LINK["sock"] = sock
+        APP_LINK["watch"] = GLib.io_add_watch(sock.fileno(), GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR,
+                                              self.event)
+        log("Now-playing app connected over Bluetooth (track info + album art)")
+
+    def event(self, fd, cond):
+        data = b""
+        if cond & GLib.IO_IN:
+            try:
+                data = APP_LINK["sock"].recv(4096)
+            except BlockingIOError:
+                return True
+            except OSError:
+                data = b""
+        if not data:
+            APP_LINK["watch"] = None
+            self.drop()
+            log("Now-playing app disconnected; using the source's own track info")
+            return False
+        self.on_data(data)
+        return True
+
+    @dbus.service.method("org.bluez.Profile1", in_signature="o", out_signature="")
+    def RequestDisconnection(self, device):
+        self.drop()
+
+    @staticmethod
+    def drop():
+        if APP_LINK["watch"]:
+            GLib.source_remove(APP_LINK["watch"])
+        if APP_LINK["sock"] is not None:
+            try:
+                APP_LINK["sock"].close()
+            except OSError:
+                pass
+        APP_LINK["sock"] = APP_LINK["watch"] = None
+
+
 def main():
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
     bus = dbus.SystemBus()
@@ -586,6 +769,7 @@ def main():
 
     buf = bytearray()
     mic = {"on": False, "seen": 0.0}
+    usbc_mic = UsbcMic() if MUSIC_SOURCE == "usbc" else None
 
     def set_mic(on):
         if on:
@@ -594,6 +778,8 @@ def main():
             return
         mic["on"] = on
         log("SMO mic " + ("opened: borrowing the car's mic" if on else "closed"))
+        if usbc_mic:
+            usbc_mic.start() if on else usbc_mic.stop()
         try:
             with open(MIC_REQUEST_FILE, "w") as f:
                 f.write("1" if on else "0")
@@ -611,15 +797,28 @@ def main():
 
     GLib.timeout_add(250, mic_watchdog)
 
+    if usbc_mic:
+        def usbc_mic_poll():
+            if usbc_mic.host_recording():
+                set_mic(True)            # also the refresh the watchdog wants
+            elif mic["on"]:
+                set_mic(False)
+            return True
+        GLib.timeout_add(300, usbc_mic_poll)
+
     def readable(fd, cond):
-        nonlocal buf
         try:
-            buf += os.read(fd, 1024)
+            data = os.read(fd, 1024)
         except BlockingIOError:
             return True
         except OSError as e:
             log(f"Serial read error: {e}")
             return True
+        return feed(data)
+
+    def feed(data):
+        nonlocal buf
+        buf += data
         # Mic tokens from the XIAO can land anywhere, even inside a JSON
         # line (0x01 never appears in the text itself).
         while True:
@@ -678,6 +877,18 @@ def main():
 
     if MUSIC_SOURCE == "bluetooth":
         setup_bt_source(bus, om, player)
+        app_link = AppLink(bus, feed)
+        try:
+            dbus.Interface(bus.get_object(BLUEZ, "/org/bluez"), "org.bluez.ProfileManager1") \
+                .RegisterProfile(APP_PATH, APP_UUID, dbus.Dictionary({
+                    "Name": "teslabridge now playing",
+                    "Role": "server",
+                    "RequireAuthentication": dbus.Boolean(True),
+                    "RequireAuthorization": dbus.Boolean(False),
+                }, signature="sv"))
+            log("Now-playing app service registered (Bluetooth)")
+        except dbus.DBusException as e:
+            log(f"Cannot register the now-playing app service: {e.get_dbus_message()}")
 
     # The car's mic from hfp-relay (8 kHz s16le) -> mu-law frames to the XIAO.
     try:
@@ -692,6 +903,12 @@ def main():
         try:
             data = msock.recv(4096)
         except OSError:
+            return True
+        if usbc_mic:
+            if mic["on"]:
+                if usbc_mic.proc is None:
+                    usbc_mic.start()
+                usbc_mic.write(data[:len(data) & ~1])
             return True
         if not mic["on"] or len(OUT) > OUT_LIMIT:
             return True                   # SMO not listening, or port backed up

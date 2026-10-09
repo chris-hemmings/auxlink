@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Hands-free relay: Tesla <-> Pi <-> Oppo.
+"""Hands-free relay: Tesla <-> Pi <-> Oppo, and the car's mic for the music source.
 
 The Pi is a car kit (HFP Hands-Free) to the Oppo through the phone dongle, and
 a phone (HFP Audio Gateway) to the Tesla through the car dongle.
@@ -12,6 +12,16 @@ a phone (HFP Audio Gateway) to the Tesla through the car dongle.
   Audio:    codec negotiation is switched off on both sides, so both calls
             use narrowband CVSD and the SCO audio packets can be copied
             byte-for-byte between the two links in both directions.
+
+Car mic for the music source (voice search): while the music source wants a
+mic, the car's cabin mic is borrowed (shown to the Tesla as a call) and sent
+  * wired / USB-C: to teslabridge-keys (MIC_SOCKET), which hands it to the
+    XIAO's or the Pi's own USB mic;
+  * Bluetooth: straight to the source over its own headset audio link - the
+    Pi is also a Bluetooth headset (HFP Hands-Free) to the source, and the
+    source opening that link (an app wanting the Bluetooth mic) is the
+    request. Whatever the source plays on that link (e.g. the assistant
+    answering) goes to the car's speakers.
 
 Requires PipeWire's own HFP/HSP roles to be disabled, so this script owns HFP.
 Every AT line is logged with its direction for debugging.
@@ -42,15 +52,21 @@ CAR_ADAPTER = CONF.get("CAR_ADAPTER", "").upper()
 PHONE = CONF.get("PHONE", "").upper()
 PHONE_ADAPTER = CONF.get("PHONE_ADAPTER", "").upper()
 PHONE_ENABLED = CONF.get("PHONE_ENABLED", "1") == "1" and bool(PHONE) and bool(PHONE_ADAPTER)
+SOURCE = CONF.get("SOURCE", "").upper()
+SOURCE_ADAPTER = CONF.get("SOURCE_ADAPTER", "").upper()
+BT_SOURCE = CONF.get("MUSIC_SOURCE", "wired") == "bluetooth" and bool(SOURCE) and bool(SOURCE_ADAPTER)
 
 
 def reload_devices():
     """Pick up a newly paired car/phone without restarting (a restart would
     drop the very connection the new device is trying to make)."""
-    global CONF, CAR, PHONE, PHONE_ENABLED
+    global CONF, CAR, PHONE, PHONE_ENABLED, SOURCE, BT_SOURCE
     CONF = load_conf()
     CAR = CONF.get("CAR", "").upper()
     PHONE = CONF.get("PHONE", "").upper()
+    SOURCE = CONF.get("SOURCE", "").upper()
+    BT_SOURCE = (CONF.get("MUSIC_SOURCE", "wired") == "bluetooth" and bool(SOURCE)
+                 and CONF.get("SOURCE_ADAPTER", "").upper() == SOURCE_ADAPTER and bool(SOURCE_ADAPTER))
     PHONE_ENABLED = (CONF.get("PHONE_ENABLED", "1") == "1" and bool(PHONE)
                      and CONF.get("PHONE_ADAPTER", "").upper() == PHONE_ADAPTER and bool(PHONE_ADAPTER))
 
@@ -70,6 +86,13 @@ DEFAULT_AG_FEATURES = 1 | 4 | 8 | 32 | 64 | 128 | 256
 DEFAULT_CIND = ('("call",(0,1)),("callsetup",(0-3)),("service",(0-1)),'
                 '("signal",(0-5)),("roam",(0,1)),("battchg",(0-5)),("callheld",(0-2))')
 DEFAULT_CHLD = "(0,1,2,3)"
+# What we tell a Bluetooth music source we are: a headset with voice
+# recognition only (no calls). No codec negotiation, so its audio link is
+# narrowband CVSD - the same 8 kHz 16-bit format as the car's mic.
+SOURCE_HF_FEATURES = 1 << 3
+# Bytes (8 kHz s16 = 16000 B/s) buffered between the car and the source;
+# beyond this the oldest is dropped so the delay can't grow.
+SOURCE_BUF_MAX = 3200
 
 AUDIO_USER = CONF.get("AUDIO_USER", "chris")
 CALL_STATE_FILE = "/run/teslabridge/call"  # "1" during a call, "0" otherwise
@@ -184,7 +207,6 @@ class Relay:
         self.phone_chld = None
         self.values = {}         # indicator name -> value (mirrors the Oppo)
         self.car_names = []      # indicator list as we gave it to the car
-        self.sco_listen = None
         self.sco_phone = None
         self.sco_car = None
         self.sco_watches = []
@@ -198,6 +220,15 @@ class Relay:
         self.mic_note = ""       # last "can't start" reason logged (no repeats)
         self.mic_since = 0.0
         self.mic_tx = None       # datagram socket to teslabridge-keys
+        self.src = None          # HFP link to a Bluetooth music source (we are HF)
+        self.src_slc = False
+        self.src_queue = []
+        self.src_waiting = False
+        self.src_sco = None      # its headset audio link: open = it wants the mic
+        self.src_watch = None
+        self.src_buf = bytearray()   # car mic -> source
+        self.car_buf = bytearray()   # source (assistant's answer) -> car speakers
+        self.sco_listeners = {}  # adapter address -> listening SCO socket
         try:
             os.makedirs(os.path.dirname(CALL_STATE_FILE), exist_ok=True)
             with open(CALL_STATE_FILE, "w") as f:
@@ -306,6 +337,7 @@ class Relay:
             want = open(MIC_REQUEST_FILE).read().strip() == "1"
         except OSError:
             want = False
+        want = want or self.src_sco is not None   # Bluetooth source listening
         if not want:
             self.mic_hold = 0.0
             self.mic_note = ""
@@ -397,8 +429,15 @@ class Relay:
             self.mic_tx.sendto(data, MIC_SOCKET)
         except OSError:
             pass   # nobody listening (or busy): this audio is just dropped
+        if self.src_sco is not None:
+            self.src_buf += data
+            del self.src_buf[:max(0, len(self.src_buf) - SOURCE_BUF_MAX)]
+        # To the car's speakers: the source's own audio if it sends any
+        # (a Bluetooth source's assistant answering), else silence.
+        out = bytes(self.car_buf[:len(data)])
+        del self.car_buf[:len(data)]
         try:
-            self.mic_sco.send(bytes(len(data)))   # silence to the car's speakers
+            self.mic_sco.send(out + bytes(len(data) - len(out)))
         except OSError:
             pass
         return True
@@ -417,6 +456,8 @@ class Relay:
         if self.mic_out:
             self.mic_out.close()
             self.mic_out = None
+        self.src_buf.clear()
+        self.car_buf.clear()
         if tell_car and self.car and self.car_slc:
             if MIC_MODE == "call":
                 self.car_ind("call", 0)
@@ -424,6 +465,106 @@ class Relay:
                 self.to_car("+BVRA: 0")
         self.mic = False
         log(f"Car mic: closed ({why}); {self.mic_bytes // 16000:.0f} s of audio received")
+
+    # ------------------------------------------- Bluetooth music source
+    def src_connected(self, sock):
+        if self.src:
+            self.src.close()
+        self.src = Link("source", sock, self.src_line, self.src_closed)
+        self.src_slc = False
+        self.src_queue = [f"AT+BRSF={SOURCE_HF_FEATURES}"]
+        self.src_waiting = False
+        log("Music source: headset link connected (for the car's mic)")
+        self.src_next()
+
+    def src_closed(self):
+        log("Music source: headset link disconnected")
+        self.src = None
+        self.src_slc = False
+        self.src_sco_close("headset link closed")
+
+    def src_next(self):
+        if self.src and self.src_queue and not self.src_waiting:
+            cmd = self.src_queue.pop(0)
+            self.src_waiting = True
+            log(f"  -> source {cmd}")
+            self.src.send(cmd + "\r")
+        elif self.src and not self.src_queue and not self.src_waiting and not self.src_slc:
+            self.src_slc = True
+            log("Music source: headset link ready; its voice search can use the car's mic")
+
+    def src_line(self, line):
+        log(f"source ->  {line}")
+        up = line.upper()
+        if up.startswith("+BRSF:"):
+            feats = int(line.split(":", 1)[1].strip() or 0)
+            self.src_queue = ["AT+CIND=?", "AT+CIND?", "AT+CMER=3,0,0,1"]
+            if feats & 1:
+                self.src_queue.append("AT+CHLD=?")
+            return
+        if up in ("OK", "ERROR") or up.startswith("+CME ERROR"):
+            if self.src_waiting:
+                self.src_waiting = False
+                self.src_next()
+        # Everything else (+CIND, +CIEV, +BVRA, +VGS...) needs no answer.
+
+    def src_sco_open(self, conn):
+        self.src_sco_close("replaced")
+        conn.setblocking(False)
+        self.src_sco = conn
+        self.src_buf.clear()
+        self.car_buf.clear()
+        self.src_watch = GLib.io_add_watch(conn.fileno(), GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR,
+                                           self.src_pump)
+        log("Music source opened its headset mic: borrowing the car's mic")
+        self.mic_poll()
+
+    def src_pump(self, fd, cond):
+        if self.src_sco is None:
+            return False
+        if cond & (GLib.IO_HUP | GLib.IO_ERR):
+            self.src_watch = None
+            self.src_sco_close("closed by the source")
+            return False
+        try:
+            data = self.src_sco.recv(1024)
+        except BlockingIOError:
+            return True
+        except OSError:
+            data = b""
+        if not data:
+            self.src_watch = None
+            self.src_sco_close("closed by the source")
+            return False
+        if self.mic:
+            self.car_buf += data
+            del self.car_buf[:max(0, len(self.car_buf) - SOURCE_BUF_MAX)]
+        # Paced by the source: one packet of car mic back per packet it sends.
+        out = bytes(self.src_buf[:len(data)])
+        del self.src_buf[:len(data)]
+        try:
+            self.src_sco.send(out + bytes(len(data) - len(out)))
+        except OSError:
+            pass
+        return True
+
+    def src_sco_close(self, why):
+        if self.src_watch:
+            GLib.source_remove(self.src_watch)
+            self.src_watch = None
+        if self.src_sco is None:
+            return
+        try:
+            self.src_sco.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            self.src_sco.close()
+        except OSError:
+            pass
+        self.src_sco = None
+        log(f"Music source closed its headset mic ({why})")
+        self.mic_poll()
 
     # ---------------------------------------------------------- phone side
     def phone_connected(self, sock):
@@ -538,38 +679,51 @@ class Relay:
 
     # --------------------------------------------------------------- audio
     def sco_start_listening(self):
-        """Listen for call audio from the Oppo on the phone adapter. Called
-        again by the periodic tick if the adapter was reset."""
-        if self.sco_listen is not None or not PHONE_ENABLED:
-            return
-        try:
-            s = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_SEQPACKET, socket.BTPROTO_SCO)
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            s.bind(PHONE_ADAPTER)
-            s.listen(1)
-        except OSError as e:
-            log(f"Cannot listen for call audio yet: {e}")
-            return
-        self.sco_listen = s
-        GLib.io_add_watch(s.fileno(), GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR, self.sco_incoming)
-        log("Listening for call audio from the Oppo")
+        """Listen for audio links on the phone adapter (call audio from the
+        Oppo) and the Bluetooth music source's adapter (its headset mic).
+        Called again by the periodic tick if an adapter was reset."""
+        want = set()
+        if PHONE_ENABLED:
+            want.add(PHONE_ADAPTER)
+        if BT_SOURCE:
+            want.add(SOURCE_ADAPTER)
+        for adapter in want - set(self.sco_listeners):
+            try:
+                s = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_SEQPACKET, socket.BTPROTO_SCO)
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind(adapter)
+                s.listen(1)
+            except OSError as e:
+                log(f"Cannot listen for audio links on {adapter} yet: {e}")
+                continue
+            self.sco_listeners[adapter] = s
+            GLib.io_add_watch(s.fileno(), GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR, self.sco_incoming)
+            log(f"Listening for audio links on {adapter}")
 
     def sco_incoming(self, fd, cond):
+        adapter = next((a for a, s in self.sco_listeners.items() if s.fileno() == fd), None)
+        if adapter is None:
+            return False
+        listener = self.sco_listeners[adapter]
         if cond & (GLib.IO_HUP | GLib.IO_ERR):
-            log("Call-audio listener closed (adapter reset?); will reopen")
+            log(f"Audio-link listener on {adapter} closed (adapter reset?); will reopen")
             try:
-                self.sco_listen.close()
+                listener.close()
             except OSError:
                 pass
-            self.sco_listen = None
+            del self.sco_listeners[adapter]
             return False
         try:
-            conn, addr = self.sco_listen.accept()
+            conn, addr = listener.accept()
         except OSError as e:
-            log(f"Call audio accept failed: {e}")
+            log(f"Audio link accept failed: {e}")
             return True
-        if str(addr).upper() != PHONE:
-            log(f"Rejecting call audio from {addr}")
+        addr = str(addr).upper()
+        if BT_SOURCE and addr == SOURCE and adapter == SOURCE_ADAPTER:
+            self.src_sco_open(conn)
+            return True
+        if addr != PHONE or adapter != PHONE_ADAPTER:
+            log(f"Rejecting audio link from {addr}")
             conn.close()
             return True
         self.sco_close_phone()
@@ -670,6 +824,8 @@ class Profile(dbus.service.Object):
             self.relay.car_connected(sock)
         elif self.side == "phone" and addr == PHONE:
             self.relay.phone_connected(sock)
+        elif self.side == "phone" and BT_SOURCE and addr == SOURCE:
+            self.relay.src_connected(sock)       # the music source, as a headset
         else:
             log(f"Rejecting {self.side} HFP connection from {addr}")
             sock.close()
@@ -681,6 +837,8 @@ class Profile(dbus.service.Object):
             self.relay.car.close()
         elif self.side == "phone" and self.relay.phone and addr == PHONE:
             self.relay.phone.close()
+        elif self.side == "phone" and self.relay.src and addr == SOURCE:
+            self.relay.src.close()
 
 
 def main():
@@ -713,7 +871,8 @@ def main():
         "RequireAuthorization": dbus.Boolean(False),
         "AutoConnect": dbus.Boolean(True),
     }, signature="sv"))
-    log("Registered HFP Audio Gateway (for the car) and Hands-Free (for the Oppo)")
+    log("Registered HFP Audio Gateway (for the car) and Hands-Free (for the Oppo"
+        + (" and the Bluetooth music source)" if BT_SOURCE else ")"))
     relay.sco_start_listening()
 
     om = dbus.Interface(bus.get_object(BLUEZ, "/"), "org.freedesktop.DBus.ObjectManager")
@@ -726,6 +885,13 @@ def main():
         return None
 
     connected_since = {}
+    last_err = {}
+
+    def connect_error(dev_addr, e):
+        msg = e.get_dbus_message()
+        if last_err.get(dev_addr) != msg:       # each new reason once, not every 10 s
+            last_err[dev_addr] = msg
+            log(f"HFP connect to {dev_addr}: {msg}")
 
     def ensure(dev_addr, adapter_addr, remote_uuid, have):
         """If the device is connected but our HFP link to it is not, open it.
@@ -747,8 +913,8 @@ def main():
             if time.time() - connected_since.setdefault(dev_addr, time.time()) < 20:
                 return
             dev = dbus.Interface(bus.get_object(BLUEZ, path), "org.bluez.Device1")
-            dev.ConnectProfile(remote_uuid, reply_handler=lambda: None,
-                               error_handler=lambda e: log(f"HFP connect to {dev_addr}: {e.get_dbus_message()}"))
+            dev.ConnectProfile(remote_uuid, reply_handler=lambda: last_err.pop(dev_addr, None),
+                               error_handler=lambda e: connect_error(dev_addr, e))
         except dbus.DBusException:
             pass
 
@@ -764,6 +930,8 @@ def main():
             ensure(PHONE, PHONE_ADAPTER, HFP_AG_UUID, lambda: relay.phone is not None)
         if CAR and CAR_ADAPTER:
             ensure(CAR, CAR_ADAPTER, HFP_HF_UUID, lambda: relay.car is not None)
+        if BT_SOURCE:
+            ensure(SOURCE, SOURCE_ADAPTER, HFP_AG_UUID, lambda: relay.src is not None)
         return True
 
     GLib.timeout_add(200, relay.mic_poll)   # react quickly: the SMO is listening

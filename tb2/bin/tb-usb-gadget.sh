@@ -2,6 +2,7 @@
 # USB-C music source (MUSIC_SOURCE=usbc): make the Pi's USB-C port a USB
 # device for the music source (phone/SMO), with
 #   * a USB sound card (UAC1, 48 kHz stereo) - the music comes in here,
+#     with a mic (mono) carrying the car's cabin mic for voice search,
 #   * a serial port (ACM)  - the now-playing app sends track info / art,
 #   * a media-key keyboard (HID consumer control) - wheel buttons go back.
 # The USB-C port is also the Pi's power input: in this mode the Pi must be
@@ -47,12 +48,16 @@ echo "music in" > configs/c.1/strings/0x409/configuration
 echo 0xC0 > configs/c.1/bmAttributes   # self-powered: the Pi has its own supply
 echo 2 > configs/c.1/MaxPower
 
-# Sound card: the host plays into it (gadget capture); no mic towards the host.
+# Sound card: the host plays into it (gadget capture), and records from its
+# mic (gadget playback, mono) - teslabridge-keys plays the car's cabin mic
+# into that while the host records, for its voice search.
 mkdir -p functions/uac1.usb0
 echo 3 > functions/uac1.usb0/c_chmask
 echo 48000 > functions/uac1.usb0/c_srate
 echo 2 > functions/uac1.usb0/c_ssize
-echo 0 > functions/uac1.usb0/p_chmask
+echo 1 > functions/uac1.usb0/p_chmask
+echo 48000 > functions/uac1.usb0/p_srate
+echo 2 > functions/uac1.usb0/p_ssize
 
 # Serial port for the now-playing app (shows up as /dev/ttyGS0 here).
 mkdir -p functions/acm.usb0
