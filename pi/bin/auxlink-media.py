@@ -792,6 +792,10 @@ class BtArt:
         self.next_try = 0.0
         self.pending = None         # handle being fetched
         self.done = None            # handle last shown
+        self.fails = {}             # handle -> failed fetches
+        self.handle = ""            # the source's current image handle
+        self.track_key = None
+        self.renew_at = 0.0         # last time the cover-art session was reopened
         self.note = ""
         try:
             self.uid = pwd.getpwnam(AUDIO_USER).pw_uid
@@ -861,17 +865,45 @@ class BtArt:
             if msg.get("cmd") == "connect":
                 self.connected = False
             elif msg.get("cmd") == "get":
-                self.done, self.pending = msg.get("handle"), None   # don't retry this one
+                # Usually the cover-art session died (the source drops it
+                # around calls and voice search): reopen it and try again,
+                # but give up on a handle that keeps failing.
+                h = msg.get("handle")
+                self.pending = None
+                self.fails[h] = self.fails.get(h, 0) + 1
+                if self.fails[h] >= 3:
+                    self.done = h
+                self.renew()
         return True
+
+    def check_missing(self, key):
+        if (key == self.track_key and not self.handle and self.connected
+                and APP_LINK["sock"] is None and time.time() - self.renew_at > 20):
+            self.say("Bluetooth album art: no picture for this song; reopening the cover-art session")
+            self.renew()
+        return False
+
+    def renew(self):
+        """Reopen the cover-art session on the next update."""
+        self.connected = False
+        self.next_try = time.time() + 2
+        self.renew_at = time.time()
 
     def update(self, have_player, handle, track_key=""):
         """Called with the source's current state every few seconds and on
         changes. track_key identifies the song: some devices reuse the same
         image handle for a new song's art, so a new song refetches anyway."""
-        if track_key != getattr(self, "track_key", None):
+        if track_key != self.track_key:
             self.track_key = track_key
+            had = self.done
             if self.done not in (None, "none"):
                 self.done = None          # same handle, new song: fetch again
+            if had is not None:
+                # A new song that still has no picture 4 s on: the source
+                # gives handles only while the cover-art session is open, so
+                # it has most likely closed (after a call or voice search).
+                GLib.timeout_add(4000, self.check_missing, track_key)
+        self.handle = handle
         if APP_LINK["sock"] is not None:
             return                                # the app is sending art itself
         if not have_player:
