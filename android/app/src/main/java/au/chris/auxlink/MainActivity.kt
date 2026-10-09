@@ -58,6 +58,10 @@ class MainActivity : Activity() {
             appendLine("Data link open: " + if (NowPlayingService.linkOpen) "yes - " + NowPlayingService.linkKind else "no")
             if (!BtLink(this@MainActivity).permitted())
                 appendLine("Bluetooth (for a Bluetooth music source): NOT allowed - reopen the app to allow")
+            if (!NowPlayingService.linkOpen && !xiao) {
+                appendLine("Bluetooth link to the Pi, last try:")
+                appendLine(BtLink.lastTry)
+            }
             appendLine()
             appendLine("Last sent:")
             appendLine(NowPlayingService.lastSent)

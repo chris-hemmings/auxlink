@@ -28,6 +28,8 @@ class BtLink(private val context: Context) {
         val APP_UUID: UUID = UUID.fromString("7e5b1a20-3c4d-4f8e-9a6b-74657362726b")
         private const val RETRY_MS = 20_000L
         private const val TAG = "SmoBtLink"
+        /** What the last attempt did, shown on the app's screen. */
+        @Volatile var lastTry: String = "(not tried yet)"
     }
 
     private var sock: BluetoothSocket? = null
@@ -81,7 +83,10 @@ class BtLink(private val context: Context) {
     fun open(): Boolean {
         if (!permitted() || SystemClock.elapsedRealtime() < nextTry) return false
         nextTry = SystemClock.elapsedRealtime() + RETRY_MS
-        for (dev in candidates()) {
+        val tried = mutableListOf<String>()
+        val list = candidates()
+        if (list.isEmpty()) lastTry = "no paired devices (or Bluetooth off)"
+        for (dev in list) {
             try {
                 val s = dev.createRfcommSocketToServiceRecord(APP_UUID)
                 s.connect()
@@ -89,10 +94,13 @@ class BtLink(private val context: Context) {
                 out = s.outputStream
                 deviceName = dev.name ?: dev.address
                 lastGood = dev.address
+                lastTry = "connected to $deviceName"
                 Log.i(TAG, "Connected to $deviceName over Bluetooth")
                 return true
             } catch (e: Exception) {
                 Log.i(TAG, "${dev.name}: ${e.message}")
+                tried += "${dev.name ?: dev.address}: ${e.message}"
+                lastTry = tried.joinToString("\n")
             }
         }
         return false
