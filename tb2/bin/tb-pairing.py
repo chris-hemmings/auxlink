@@ -242,7 +242,28 @@ class Pairing:
                 pass
         self._unused_streak = streak
 
-    def ensure_connectable(self, adapter_path, force=False):
+    @staticmethod
+    def current_settings(info, addr):
+        """The "current settings" of controller `addr` from `btmgmt info`
+        output, or None if that controller isn't in it.
+
+        btmgmt info can list EVERY controller even when given --index, so the
+        first "current settings:" line may belong to another adapter (the
+        phone dongle, which is connectable - that hid the car adapter's
+        missing connectable). Only the line inside the block whose
+        "addr" matches counts."""
+        mine = False
+        for line in info.splitlines():
+            words = line.split()
+            if words[:1] == ["addr"] and len(words) > 1:
+                mine = words[1].upper() == addr
+            elif line and not line[0].isspace():
+                mine = False          # "hciN:" header: a new controller block
+            elif mine and line.strip().startswith("current settings:"):
+                return line.split(":", 1)[1].split()
+        return None
+
+    def ensure_connectable(self, adapter_path, addr, force=False):
         """Make sure the controller accepts incoming connections (page scan).
 
         Throttled to once per 10 s per adapter UNLESS force=True, which the
@@ -262,14 +283,34 @@ class Pairing:
         self._conn_checked = last
         try:
             out = subprocess.run(["btmgmt", "--index", idx, "info"], capture_output=True,
-                                 text=True, timeout=5).stdout
-        except (OSError, subprocess.TimeoutExpired):
+                                 stdin=subprocess.DEVNULL, text=True, timeout=5).stdout
+        except (OSError, subprocess.TimeoutExpired) as e:
+            log(f"hci{idx}: btmgmt info failed: {e}")
             return
-        cur = next((l for l in out.splitlines() if "current settings:" in l), "")
-        if cur and "connectable" not in cur.split(":", 1)[1].split():
-            subprocess.run(["btmgmt", "--index", idx, "connectable", "on"],
-                           capture_output=True, timeout=5)
-            log(f"hci{idx}: switched connectable back on")
+        cur = self.current_settings(out, addr)
+        if cur is not None and "connectable" in cur:
+            self._conn_unknown = getattr(self, "_conn_unknown", set()) - {idx}
+            return
+        if cur is None:
+            # Can't tell (no block for this address): turning connectable on
+            # is harmless if it already is, and missing it strands the car.
+            unknown = getattr(self, "_conn_unknown", set())
+            if idx not in unknown:
+                log(f"hci{idx}: no btmgmt settings for {addr}; forcing connectable on")
+                unknown.add(idx)
+            self._conn_unknown = unknown
+        try:
+            r = subprocess.run(["btmgmt", "--index", idx, "connectable", "on"],
+                               capture_output=True, stdin=subprocess.DEVNULL,
+                               text=True, timeout=5)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            log(f"hci{idx}: btmgmt connectable on failed: {e}")
+            return
+        if cur is not None:
+            if r.returncode == 0:
+                log(f"hci{idx} ({addr}): switched connectable back on")
+            else:
+                log(f"hci{idx} ({addr}): connectable on failed: {(r.stderr or r.stdout).strip()}")
 
     # ---------------- discoverability ----------------
     def adopt_finished(self, objs):
@@ -332,7 +373,7 @@ class Pairing:
                         props.Set("org.bluez.Adapter1", "Discoverable", dbus.Boolean(False))
                     if not a.get("Pairable"):
                         props.Set("org.bluez.Adapter1", "Pairable", dbus.Boolean(True))
-                self.ensure_connectable(str(path), force=(newly_assigned or just_powered_on))
+                self.ensure_connectable(str(path), ad, force=(newly_assigned or just_powered_on))
                 if dev and dev.get("Paired") and not dev.get("Trusted"):
                     self.trust(f"{path}/dev_{target.replace(':', '_')}")
             except dbus.DBusException as e:
