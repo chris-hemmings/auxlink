@@ -564,9 +564,16 @@ def main():
                 return f"{path}/dev_{dev_addr.replace(':', '_')}"
         return None
 
+    connected_since = {}
+
     def ensure(dev_addr, adapter_addr, remote_uuid, have):
-        """If the device is connected but our HFP link to it is not, open it."""
+        """If the device is connected but our HFP link to it is not, open it.
+
+        Waits until it has been connected for 20 s: right after connecting,
+        the device opens HFP itself, and our connect colliding with that
+        made the Tesla drop the whole connection."""
         if have():
+            connected_since.pop(dev_addr, None)
             return
         path = device_path(adapter_addr, dev_addr)
         if not path:
@@ -574,6 +581,9 @@ def main():
         try:
             props = dbus.Interface(bus.get_object(BLUEZ, path), "org.freedesktop.DBus.Properties")
             if not props.Get("org.bluez.Device1", "Connected"):
+                connected_since.pop(dev_addr, None)
+                return
+            if time.time() - connected_since.setdefault(dev_addr, time.time()) < 20:
                 return
             dev = dbus.Interface(bus.get_object(BLUEZ, path), "org.bluez.Device1")
             dev.ConnectProfile(remote_uuid, reply_handler=lambda: None,

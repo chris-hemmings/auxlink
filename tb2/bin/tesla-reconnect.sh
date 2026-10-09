@@ -13,6 +13,10 @@ while [ -z "$CAR" ] || [ -z "$CAR_ADAPTER" ]; do sleep 5; . /etc/teslabridge.con
 [ -z "$PHONE" ] || [ -z "$PHONE_ADAPTER" ] && PHONE_ENABLED=0
 
 car_was=no; phone_was=no; phone_warned=no; car_err=
+# Calls the Pi makes to the car: first one 45 s after start (the car usually
+# connects by itself first), then backing off 60 s -> 5 min.
+CAR_FIRST_WAIT=45; CAR_MIN_WAIT=60; CAR_MAX_WAIT=300
+car_next=$(( $(date +%s) + CAR_FIRST_WAIT )); car_wait=$CAR_MIN_WAIT
 missing=0; restarts=0; phone_next=0
 
 while true; do
@@ -68,15 +72,26 @@ while true; do
     [ "$car_was" = no ] && echo "Car connected"
     car_was=yes
   else
-    [ "$car_was" = yes ] && echo "Car disconnected, will keep trying"
+    now=$(date +%s)
+    if [ "$car_was" = yes ]; then
+      echo "Car disconnected; giving it ${CAR_FIRST_WAIT}s to reconnect by itself"
+      car_next=$((now + CAR_FIRST_WAIT)); car_wait=$CAR_MIN_WAIT
+    fi
     car_was=no
-    if err=$(timeout 25 $BT "$CAR_ADAPTER" "$CAR" connect 2>&1 >/dev/null); then
-      echo "Reconnected to car"; car_err=
-    else
-      # Log why, but only when the reason changes (this retries every 10 s).
-      err=${err:-timed out}
-      [ "$err" != "$car_err" ] && echo "Car connect failed: $err"
-      car_err=$err
+    # The Tesla hangs up on connections the Pi starts, and reconnects by
+    # itself - but only if the Pi isn't calling it at that moment: a Pi
+    # attempt colliding with the car's own connect made the car drop both.
+    # So call the car rarely, backing off after each failure.
+    if [ "$now" -ge "$car_next" ]; then
+      if err=$(timeout 25 $BT "$CAR_ADAPTER" "$CAR" connect 2>&1 >/dev/null); then
+        echo "Reconnected to car"; car_err=; car_wait=$CAR_MIN_WAIT
+      else
+        err=${err:-timed out}
+        [ "$err" != "$car_err" ] && echo "Car connect failed: $err (retrying less often; the car can still connect any time)"
+        car_err=$err
+        car_next=$(( $(date +%s) + car_wait ))
+        car_wait=$((car_wait * 2)); [ "$car_wait" -gt "$CAR_MAX_WAIT" ] && car_wait=$CAR_MAX_WAIT
+      fi
     fi
   fi
 
