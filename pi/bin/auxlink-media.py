@@ -562,7 +562,9 @@ class Player(dbus.service.Object):
             log(f"Cannot write {KICK_FILE}: {e}")
 
     def wheel(self, what):
-        if what in ("play", "toggle") and (what == "play" or self.status != "Playing"):
+        # Play while we already say "Playing" = the person hears nothing: have
+        # the stream restarted. (Play after a pause is an ordinary resume.)
+        if what == "play" and self.status == "Playing" and not self.in_call:
             self.kick_audio()
         if what == "play":
             self.paused_for_call = False if not self.in_call else self.paused_for_call
