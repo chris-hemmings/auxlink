@@ -413,6 +413,8 @@ class Player(dbus.service.Object):
         self.write_play_state()
 
     def effective_state(self):
+        if MUSIC_SOURCE == "bluetooth":
+            return self.app_state    # follows the source's own stream already
         sound = self.present and time.monotonic() >= self.ignore_sound_until
         return "Playing" if (self.app_state == "Playing" or sound) else self.app_state
 
@@ -881,8 +883,8 @@ def setup_bt_source(bus, om, player):
     # on play and goes idle on pause, reliably - unlike the AVRCP status,
     # which some devices (the SMO) leave on "playing" after a pause. The
     # car must see "Paused" then "Playing", or it ignores the new stream.
-    stream = {"active_at": 0.0}
-    IDLE_GRACE = 1.5    # s of idle before "Paused" (track changes blip)
+    stream = {"active_at": 0.0, "recheck": None}
+    IDLE_GRACE = 1.0    # s of idle before "Paused" (track changes blip)
 
     def stream_state():
         state = None
@@ -896,6 +898,13 @@ def setup_bt_source(bus, om, player):
             stream["active_at"] = now
             return "Playing"
         if now - stream["active_at"] < IDLE_GRACE:
+            # Look again right when the grace ends, not at the next 3 s poll.
+            if stream["recheck"] is None:
+                def again():
+                    stream["recheck"] = None
+                    poll()
+                    return False
+                stream["recheck"] = GLib.timeout_add(int(IDLE_GRACE * 1000) + 100, again)
             return "Playing"
         return "Paused"
 
