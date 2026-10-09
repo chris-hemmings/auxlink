@@ -22,8 +22,9 @@
 # A car can also accept a stream and play SILENCE with everything on the Pi
 # looking healthy, which nothing here can detect: the Tesla does that to a
 # stream started ~1 s after a call ends (still in call mode), but plays one
-# started 4 s after. So music never restarts sooner than CALL_SETTLE after a
-# call. If it is ever silent anyway, pressing play in the car while we stream
+# started 4 s after. So music never restarts sooner than call_settle after a
+# call. On SBC-XQ the Tesla took even a stream started 5 s after a call
+# silently, so then the stream is also restarted once, 1 s after it starts. If it is ever silent anyway, pressing play in the car while we stream
 # (auxlink-media writes KICK_FILE) restarts the stream - what "Check and fix"
 # does.
 . /usr/local/lib/auxlink/common.sh
@@ -237,6 +238,7 @@ while true; do
   fi
   if in_call; then WAS_CALL=1
   elif [ "$WAS_CALL" = 1 ]; then WAS_CALL=0; CALL_ENDED_AT=$(date +%s)
+    [ "$ACTIVE" = a2dp-sink-sbc_xq ] && RECHECK="the call ended (SBC-XQ)"
   fi
   WHY=""
   if in_call; then WHY="a call"
@@ -283,6 +285,8 @@ while true; do
     LOOP=$!; LOOP_SINK_ID=$SINK_ID; LOOP_INPUT=$INPUT; LOOP_STARTED=$(date +%s); UNLINKED=0; NOT_ACTIVE=0; STEREO_BAD=0
     NEXT_STEREO=$((LOOP_STARTED + 3))
     echo "Streaming to $SINK"
+    # After a call on SBC-XQ: one restart 1 s in, with music flowing.
+    [ -n "$RECHECK" ] && [ "$RECHECK_AT" = 0 ] && RECHECK_AT=$((LOOP_STARTED + 1))
     sleep 1; continue
   fi
 
