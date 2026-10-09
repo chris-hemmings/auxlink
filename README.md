@@ -1,4 +1,4 @@
-# teslabridge
+# AuxLink
 
 A Raspberry Pi 4 that sits between a **Tesla**, your **phone** and an
 **Android music device** (for example a Screenmate/SMO head unit, an old phone
@@ -25,17 +25,17 @@ or a tablet):
                                              |   - Bluetooth: the Android device pairs with the Pi
                                              |   - USB-C: the Pi itself is a USB sound card
                                        Android music device
-                                       (+ "SMO Now Playing" app)
+                                       (+ "AuxLink" app)
 ```
 
 What is in this repository:
 
 | Folder / file | What it is |
 |---|---|
-| `tb2/` | Everything that runs on the Pi (installer, services, web setup page). See also `tb2/README.md`. |
-| `teslabridge-v2-websetup.zip` | The `tb2` folder zipped, for copying to the Pi or uploading on the setup page. |
-| `smo-nowplaying/` | Source of the **SMO Now Playing** Android app. Signed APKs are on the [Releases page](https://github.com/chris-hemmings/teslabridge/releases). |
-| `firmware/source-xiao-keys-mic.uf2` | Ready-to-flash firmware for the **Seeed XIAO RP2040** (wired source). |
+| `pi/` | Everything that runs on the Pi (installer, services, web setup page). See also `pi/README.md`. |
+| `auxlink-pi.zip` | The `pi` folder zipped, for copying to the Pi or uploading on the setup page. |
+| `android/` | Source of the **AuxLink** Android app. Signed APKs are on the [Releases page](https://github.com/chris-hemmings/auxlink/releases). |
+| `firmware/auxlink-xiao.uf2` | Ready-to-flash firmware for the **Seeed XIAO RP2040** (wired source). |
 | `firmware/rp2040/` | Source for that firmware (Rust, based on [TeslAux](https://github.com/jbschooley/TeslAux), MIT). |
 
 ---
@@ -94,22 +94,22 @@ testing.
 1. Install **Raspberry Pi Imager** on your PC.
 2. Choose **Raspberry Pi 4** and **Raspberry Pi OS Lite (64-bit)**.
 3. In the settings (cog / "Edit settings"):
-   - **hostname:** `teslabridge`
+   - **hostname:** `auxlink`
    - **username and password:** your choice; this user owns the audio.
    - **Wi-Fi:** your home Wi-Fi, or your phone's hotspot. It needs internet
      once, for the install. Set the **Wi-Fi country**.
    - **Services:** enable **SSH**.
 4. Write the card.
 
-### 2.2 Install teslabridge
+### 2.2 Install AuxLink
 
 **Option A: over SSH (recommended).** Boot the Pi, then from your PC run
-`ssh <user>@teslabridge.local`, followed by:
+`ssh <user>@auxlink.local`, followed by:
 
 ```bash
 sudo apt update && sudo apt -y full-upgrade && sudo apt install -y git
-git clone https://github.com/chris-hemmings/teslabridge.git
-cd teslabridge/tb2
+git clone https://github.com/chris-hemmings/auxlink.git
+cd auxlink/pi
 sudo ./install.sh                       # packages, services, I2S + serial setup (~5 min)
 ./extras/build-obexd-dummy.sh           # contacts/recent calls server for the car (~20 min)
 sudo ./install.sh                       # again, so it picks up the contacts server
@@ -126,19 +126,19 @@ sudo reboot
 
 **Option B: without SSH (first boot does it).**
 1. Before ejecting the card from your PC, open its **bootfs** drive.
-2. Copy the whole **`tb2`** folder onto it. Unzip `teslabridge-v2-websetup.zip`
+2. Copy the whole **`pi`** folder onto it. Unzip `auxlink-pi.zip`
    from this repository to get it.
 3. Open **`user-data`** in a text editor and add this at the end. If a
    `runcmd:` line already exists, add only the second line under it:
    ```yaml
    runcmd:
-     - [ systemd-run, --unit=tb-firstboot, bash, /boot/firmware/tb2/firstboot.sh ]
+     - [ systemd-run, --unit=auxlink-firstboot, bash, /boot/firmware/pi/firstboot.sh ]
    ```
 4. Put the card in the Pi and boot it with internet (Ethernet or the Wi-Fi
    set in Imager). Wait **30–40 minutes**. It installs everything, including
    the contacts server, and reboots by itself.
-5. The progress log is `bootfs/teslabridge-install.log`, readable on a PC.
-6. Album art still needs `sudo tb2/extras/build-bluetoothd-cover.sh`,
+5. The progress log is `bootfs/auxlink-install.log`, readable on a PC.
+6. Album art still needs `sudo pi/extras/build-bluetoothd-cover.sh`,
    run once over SSH.
 
 ### 2.3 What the installer changes
@@ -149,7 +149,7 @@ sudo reboot
   - `dtoverlay=xiao-i2s-in` (the XIAO's I2S input)
   - `enable_uart=1` and `core_freq=250` (a stable serial link while the
     built-in Bluetooth stays on)
-- It creates `/etc/teslabridge.conf`. Settings are normally changed on the
+- It creates `/etc/auxlink.conf`. Settings are normally changed on the
   setup page.
 - It turns on a hardware watchdog (the Pi reboots itself if it ever freezes)
   and caps the logs at 50 MB.
@@ -159,7 +159,7 @@ sudo reboot
 ## 3. Wire the XIAO RP2040 (wired source only)
 
 ### 3.1 Flash the firmware
-1. Download **`firmware/source-xiao-keys-mic.uf2`** from this repository.
+1. Download **`firmware/auxlink-xiao.uf2`** from this repository.
 2. Hold the XIAO's **B (BOOT)** button while plugging it into a PC. A drive
    called **RPI-RP2** appears.
 3. Copy the `.uf2` file onto that drive. The XIAO restarts by itself, and
@@ -170,7 +170,7 @@ This firmware makes the XIAO appear to the Android device as:
   over I2S;
 - a **USB microphone** carrying the car's cabin mic, for voice search;
 - **USB media keys**, so the car's buttons control the player;
-- a **data link** that the SMO Now Playing app uses for track info and album art.
+- a **data link** that the AuxLink app uses for track info and album art.
 
 ### 3.2 Pinout
 
@@ -212,17 +212,17 @@ the Android device's USB port. Connect only the 6 wires below.
 - Plug the XIAO's USB-C into the Android device's USB port, using an OTG
   adapter if needed.
 - In the device's sound settings, the output should switch to the USB device
-  (it shows as **TeslAux Bridge**). Android does this by itself when a USB sound
+  (it shows as **AuxLink**). Android does this by itself when a USB sound
   card is plugged in.
 
 ---
 
 ## 4. First setup on the web page
 
-1. After the reboot, the Pi turns on its own Wi-Fi, **`teslabridge-setup`**
-   (password **`teslabridge`**). Join it from a phone or the Android device
+1. After the reboot, the Pi turns on its own Wi-Fi, **`AuxLink-setup`**
+   (password **`auxlink-setup`**). Join it from a phone or the Android device
    and open **http://10.42.0.1**.
-   - At home on the same Wi-Fi as the Pi, use **http://teslabridge.local**.
+   - At home on the same Wi-Fi as the Pi, use **http://auxlink.local**.
    - The setup Wi-Fi is on whenever no car is paired, for 10 minutes after
      each boot, and for 15 minutes after holding the setup button. You can
      change the times and password on the page.
@@ -230,19 +230,19 @@ the Android device's USB port. Connect only the 6 wires below.
    is the **phone** side. With two dongles, use one each and leave the
    built-in unused. Then tap **Save adapters**.
 3. **Pair the car:** tap **Pair a car**. In the Tesla, go to **Bluetooth →
-   Add new device** and choose **teslabridge**, then confirm the code. The Pi
+   Add new device** and choose **AuxLink**, then confirm the code. The Pi
    accepts it by itself.
    - Your real phone should **not** stay paired directly with the Tesla.
      Remove it from the car's Bluetooth list; it connects through the Pi
      instead.
 4. **Pair your phone:** tap **Pair a phone**. On the phone, go to Bluetooth,
-   add **teslabridge-phone** and confirm the code. Allow **contacts and call
+   add **AuxLink-phone** and confirm the code. Allow **contacts and call
    history** access when the phone asks. That is what fills the car's
    contacts and recent calls.
 5. **Music source:** choose how music gets into the Pi (see section 5), then
    tap **Save music source**.
 6. **Home Wi-Fi** (optional): add your home network so that you can open
-   http://teslabridge.local and install updates from home.
+   http://auxlink.local and install updates from home.
 7. **Settings:** a page password, whether to pause music for calls, contacts
    sync, and the Bluetooth names. The defaults are fine.
 8. Use **Check audio** / **Check and fix** on the Music card any time the
@@ -259,7 +259,7 @@ connection are not affected when you switch.
 - **Uses:** the XIAO wired as in section 3.
 - **Sound:** the Android device plays into the XIAO, which passes it to the
   Pi over I2S, and the Pi sends it to the car.
-- **Track info and album art:** from the **SMO Now Playing** app (section 6),
+- **Track info and album art:** from the **AuxLink** app (section 6),
   over the XIAO's data link.
 - **Car buttons:** reach the device as USB media keys.
 - **Voice search:** the device's mic input is the **car's cabin mic** (the
@@ -271,7 +271,7 @@ No XIAO and no wiring.
    car's adapter; it can share the phone's, or use the built-in one.
 2. Tap **Save music source**, then **Pair a music source**.
 3. On the Android device, pair with the name in the banner,
-   **teslabridge-music** (or **teslabridge-phone** if it shares the phone's
+   **AuxLink-music** (or **AuxLink-phone** if it shares the phone's
    adapter).
 
 - **Track info, play state and car buttons:** go over Bluetooth, so the app
@@ -279,14 +279,14 @@ No XIAO and no wiring.
 - **Album art:** passed straight through from the device over Bluetooth
   (AVRCP cover art, Android 12+ players that publish artwork), so no app is
   needed. It shows from the second track after connecting. If the device
-  doesn't offer it (the Pi's log says so), install the SMO Now Playing app
+  doesn't offer it (the Pi's log says so), install the AuxLink app
   (section 6) and allow it **Nearby devices / Bluetooth**: it then sends the
   art to the Pi over Bluetooth instead.
 - **Voice search:** the Pi is also a **Bluetooth headset** to the device, and
   its mic is the **car's cabin mic** (the Tesla shows a call while it
   listens; its hang-up button ends it). Anything the device says back (the
   assistant's answer) plays through the car.
-  - In the device's Bluetooth settings for teslabridge-music, leave
+  - In the device's Bluetooth settings for AuxLink-music, leave
     **Phone calls** (or "Headset") **on** as well as **Media audio**.
   - In the Google app: **Settings → Voice → "Record audio through Bluetooth
     devices"** on. Google Assistant uses it anyway.
@@ -297,7 +297,7 @@ No XIAO and no wiring.
   - restart playback on the device, or toggle its Bluetooth;
   - unplug any USB sound card (such as the XIAO) from it, because Android
     sends audio to USB ahead of Bluetooth;
-  - check that **Media audio** is on for teslabridge-music in the device's
+  - check that **Media audio** is on for AuxLink-music in the device's
     Bluetooth settings.
 
 ### 5.3 USB-C (Pi as a USB sound card)
@@ -308,7 +308,7 @@ shows up as a USB sound card (plus a data link and media keys).
   power/data splitter**. Its USB-C port is now a data port.
 - After saving, **reboot once**; the page says when this is needed. Saving
   adds `dtoverlay=dwc2,dr_mode=peripheral` to `/boot/firmware/config.txt`.
-- **Track info and album art:** from the SMO Now Playing app (v1.0.5 or
+- **Track info and album art:** from the AuxLink app (v1.0.5 or
   newer), over the same cable.
 - **Car buttons:** reach the device as USB media keys.
 - **Voice search:** the Pi's USB sound card has a mic too, carrying the
@@ -316,7 +316,7 @@ shows up as a USB sound card (plus a data link and media keys).
 
 ---
 
-## 6. The Android music device and the SMO Now Playing app
+## 6. The Android music device and the AuxLink app
 
 The app reads what is playing on the device and sends it to the Pi, which
 shows it in the car:
@@ -336,7 +336,7 @@ straight from GitHub releases.
    [GitHub releases](https://github.com/ImranR98/Obtainium/releases), or from
    F-Droid / IzzyOnDroid.
 2. Open Obtainium, tap **Add App** and paste
-   `https://github.com/chris-hemmings/teslabridge`. Leave the source as
+   `https://github.com/chris-hemmings/auxlink`. Leave the source as
    **GitHub** and tap **Add**.
 3. Tap **Install**. Allow Obtainium to install apps when Android asks
    ("Install unknown apps").
@@ -344,34 +344,34 @@ straight from GitHub releases.
    and publishes a new signed APK (`v1.0.N`).
    - You can turn on background update checks in Obtainium's settings.
    - Optionally, under the app's **Additional options** in Obtainium, set
-     the APK filter (regular expression) to `smo-nowplaying` so that it only
+     the APK filter (regular expression) to `auxlink` so that it only
      ever picks the app.
 
 ### 6.2 Or install by hand
-Download the latest `smo-nowplaying-v1.0.N.apk` from the
-[Releases page](https://github.com/chris-hemmings/teslabridge/releases) on
+Download the latest `auxlink-v1.0.N.apk` from the
+[Releases page](https://github.com/chris-hemmings/auxlink/releases) on
 the device and open it. To update, install the newer APK over the top; it is
 signed with the same key.
 
 ### 6.3 Set the app up (once)
-1. Open **SMO Now Playing** and tap **Open notification access settings**.
-   Turn on **SMO Now Playing**. This is how Android lets it see what is
+1. Open **AuxLink** and tap **Open notification access settings**.
+   Turn on **AuxLink**. This is how Android lets it see what is
    playing; it does not read your notifications' content.
    - If the switch is **greyed out** ("restricted setting"), go to
-     **Settings → Apps → SMO Now Playing → ⋮ (top right) → Allow restricted
+     **Settings → Apps → AuxLink → ⋮ (top right) → Allow restricted
      settings**, then try again. Android 13+ does this for apps installed
      outside the Play Store.
    Allow **Nearby devices / Bluetooth** if the app asks: that's only used for
    the Bluetooth music source.
 2. Plug in the XIAO (or connect the device to the Pi's USB-C). Android asks
-   **"Open SMO Now Playing (USB) when this device is connected?"** Tick
+   **"Open AuxLink (USB) when this device is connected?"** Tick
    **Always** and tap **OK**.
    - This is the USB permission. Nothing visible opens on later plug-ins.
 3. Go back to the app. Its status should show:
    - Notification access: **granted**
    - XIAO plugged in: **yes**
    - Data link open: **yes - USB** (or **yes - Bluetooth** for the Bluetooth source)
-4. Recommended: **Settings → Apps → SMO Now Playing → Battery → Unrestricted**,
+4. Recommended: **Settings → Apps → AuxLink → Battery → Unrestricted**,
    so that Android never stops it in the background.
 5. Play something. The car shows the track and, after a second or two, the
    album art.
@@ -394,12 +394,12 @@ If the car ever shows an old track, play/pause once; the app re-checks every
 ## 7. Updating
 
 - **The Pi:**
-  - **From the web page:** go to **Update**, choose `teslabridge-v2-websetup.zip`
+  - **From the web page:** go to **Update**, choose `auxlink-pi.zip`
     (or GitHub's "Download ZIP" of this repository) and tap **Install update**.
     No reboot is needed, and the car and phone stay connected.
-  - **Over SSH:** `cd teslabridge && git pull && cd tb2 && sudo ./update.sh`.
+  - **Over SSH:** `cd auxlink && git pull && cd pi && sudo ./update.sh`.
 - **The app:** Obtainium (or install the newer APK).
-- **The XIAO:** only when `firmware/source-xiao-keys-mic.uf2` changes. Flash it
+- **The XIAO:** only when `firmware/auxlink-xiao.uf2` changes. Flash it
   again with BOOT held, as in 3.1.
 
 ---
@@ -408,14 +408,14 @@ If the car ever shows an old track, play/pause once; the app re-checks every
 
 | Problem | Try |
 |---|---|
-| Can't find the setup page | Join `teslabridge-setup` and open http://10.42.0.1. If the setup Wi-Fi is off, hold the setup button 3 s, or reboot (it is on for 10 minutes after boot). |
-| No music in the car | Setup page → Music → **Check audio**, then **Check and fix**. Check that the car's media source is **Bluetooth / teslabridge**. |
+| Can't find the setup page | Join `AuxLink-setup` and open http://10.42.0.1. If the setup Wi-Fi is off, hold the setup button 3 s, or reboot (it is on for 10 minutes after boot). |
+| No music in the car | Setup page → Music → **Check audio**, then **Check and fix**. Check that the car's media source is **Bluetooth / AuxLink**. |
 | Silent or only one side | **Check and fix** recreates the audio path. With the wired source, check the three I2S wires and their ground. |
 | No track info (wired) | App status: notification access granted, XIAO plugged in, data link open. Re-plug the XIAO. Check the serial wires (D6 → pin 10, D7 ← pin 8). |
 | No album art | The album-art bluetoothd must be built (`build-bluetoothd-cover.sh`). Test with `sudo cover-test.sh` on the Pi, then turn the car's Bluetooth off and on once. |
 | No contacts / recent calls in the car | Build the contacts server (2.2), allow contacts and call history on the phone, then on the setup page restart the services. |
 | Car doesn't reconnect | It reconnects by itself when it wakes. If not, open **Recent events / Logs** on the setup page. |
-| Logs over SSH | `journalctl -u teslabridge-keys -u hfp-relay -u tb-pairing -f` and `journalctl --user -u tesla-audio -f` |
+| Logs over SSH | `journalctl -u auxlink-media -u hfp-relay -u auxlink-pairing -f` and `journalctl --user -u auxlink-audio -f` |
 
 ---
 
@@ -427,13 +427,13 @@ cd firmware/rp2040
 cargo build --release --bin source --features rp2040-zero,smo-mic,ultra-low
 # convert to UF2, for example with elf2uf2-rs:
 cargo install elf2uf2-rs
-elf2uf2-rs target/thumbv6m-none-eabi/release/source source-xiao-keys-mic.uf2
+elf2uf2-rs target/thumbv6m-none-eabi/release/source auxlink-xiao.uf2
 ```
 `smo-mic` includes `media-keys`, and `ultra-low` includes `clock-steered`,
 which is the build the pinout above is for. `rp2040-zero` selects the
 RGB-LED status code that the XIAO also uses.
 
-**Android app**: open `smo-nowplaying/` in Android Studio, or run
+**Android app**: open `android/` in Android Studio, or run
 `gradle assembleRelease`. The GitHub Actions workflow
 (`.github/workflows/release.yml`) builds and signs it on every push to `main`
 and publishes the release that Obtainium follows. It needs the

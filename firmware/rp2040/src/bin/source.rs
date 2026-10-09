@@ -329,8 +329,8 @@ async fn main(spawner: Spawner) {
     let driver = Driver::new(p.USB, Irqs);
 
     let mut config = Config::new(0x1209, 0x0001); // pid.codes test VID/PID
-    config.manufacturer = Some("TeslAux");
-    config.product = Some("TeslAux Bridge");
+    config.manufacturer = Some("AuxLink");
+    config.product = Some("AuxLink");
     config.serial_number = Some("0001");
     config.bcd_usb = UsbVersion::Two;
     config.max_power = 100;

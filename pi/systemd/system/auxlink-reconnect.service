@@ -1,0 +1,15 @@
+[Unit]
+Description=AuxLink: keep the car and phone Bluetooth links up
+After=bluetooth.service
+Wants=bluetooth.service
+
+[Service]
+# Ports may have been switched off at shutdown (bt-dongle-off); switch them on.
+ExecStartPre=-/usr/local/bin/bt-usb-cycle.sh on
+ExecStartPre=-/usr/sbin/rfkill unblock bluetooth
+ExecStart=/usr/local/bin/auxlink-reconnect.sh
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

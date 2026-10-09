@@ -1,0 +1,149 @@
+#!/bin/bash
+# auxlink installer (release 2: web setup). Run from this folder:   sudo ./install.sh
+# Safe to run again after updating any file; it only (re)installs and enables.
+set -e
+[ "$(id -u)" = 0 ] || { echo "Run with sudo: sudo ./install.sh"; exit 1; }
+
+# The user who owns the audio: whoever ran sudo, else the first normal user
+# (the one Raspberry Pi Imager created) when run automatically at first boot.
+U=${SUDO_USER:-$(getent passwd 1000 | cut -d: -f1)}
+U=${U:-chris}
+H=$(getent passwd "$U" | cut -d: -f6)
+UID_U=$(id -u "$U")
+HERE=$(cd "$(dirname "$0")" && pwd)
+asuser() { runuser -u "$U" -- env XDG_RUNTIME_DIR=/run/user/$UID_U "$@"; }
+step() { echo; echo "== $*"; }
+
+step "Packages"
+apt-get install -y pipewire pipewire-pulse wireplumber libspa-0.2-bluetooth \
+  bluez bluez-obexd python3-dbus python3-gi uhubctl device-tree-compiler \
+  sox pulseaudio-utils network-manager avahi-daemon >/dev/null
+echo "ok"
+
+step "Wi-Fi manager (NetworkManager)"
+systemctl enable --now NetworkManager >/dev/null 2>&1 || true
+if nmcli -t -f DEVICE,STATE device 2>/dev/null | grep -q '^wlan0:\(connected\|disconnected\|unavailable\)'; then
+  echo "ok: NetworkManager is managing wlan0"
+else
+  echo "WARNING: NetworkManager is not managing wlan0 (setup Wi-Fi / home Wi-Fi won't work):"
+  nmcli device 2>&1 | sed 's/^/  /'
+fi
+rfkill unblock wifi 2>/dev/null || true
+if iw reg get 2>/dev/null | grep -q 'country 00'; then
+  echo "NOTE: Wi-Fi country not set; the setup Wi-Fi will fall back to 2.4 GHz."
+  echo "      Set it with:  sudo raspi-config nonint do_wifi_country AU   (your country code)"
+fi
+
+step "Old teslabridge install"
+# AuxLink was called teslabridge. On a Pi that still has it, switch the old
+# services off so the two never run side by side (its files are left alone).
+old=""
+for u in teslabridge-keys tesla-reconnect tb-pairing tb-web tb-cover tb-usb-gadget; do
+  if systemctl list-unit-files "$u.service" 2>/dev/null | grep -q "^$u"; then
+    systemctl disable --now "$u" >/dev/null 2>&1; old="$old $u"
+  fi
+done
+asuser systemctl --user disable --now tesla-audio >/dev/null 2>&1 || true
+echo "${old:+switched off:$old}${old:-none found}"
+
+step "Config (/etc/auxlink.conf)"
+if [ -f /etc/auxlink.conf ]; then
+  # Keep every existing value; add any settings this release introduced.
+  added=""
+  while IFS= read -r line; do
+    case "$line" in ''|\#*) continue ;; esac
+    k=${line%%=*}
+    grep -q "^$k=" /etc/auxlink.conf || { echo "$line" >> /etc/auxlink.conf; added="$added $k"; }
+  done < "$HERE/etc/auxlink.conf"
+  echo "kept your settings${added:+; added:$added}"
+else
+  install -m 644 "$HERE/etc/auxlink.conf" /etc/auxlink.conf; echo "installed (nothing paired yet: use the setup page)"
+fi
+sed -i "s/^AUDIO_USER=.*/AUDIO_USER=$U/" /etc/auxlink.conf
+# Re-write values so anything with spaces is quoted (bash must be able to source it).
+PYTHONPATH="$HERE/lib" python3 -c 'import auxconf; auxconf.save(auxconf.load())'
+
+step "Programs"
+install -D -m 644 "$HERE/lib/common.sh" /usr/local/lib/auxlink/common.sh
+install -D -m 644 "$HERE/lib/auxconf.py" /usr/local/lib/auxlink/auxconf.py
+install -D -m 644 "$HERE/share/index.html" /usr/local/share/auxlink/index.html
+install -D -m 644 "$HERE/share/cover-test.jpg" /usr/local/share/auxlink/cover-test.jpg
+install -m 755 "$HERE"/bin/* /usr/local/bin/
+install -d -o "$U" -g "$U" "$H/.local/bin"
+install -o "$U" -g "$U" -m 755 "$HERE"/user-bin/* "$H/.local/bin/"
+echo "ok"
+
+step "System services"
+install -m 644 "$HERE"/systemd/system/*.service /etc/systemd/system/
+rm -f /etc/systemd/system/auxlink-reconnect.service.d/car-only.conf   # PHONE_ENABLED lives in the config now
+systemctl daemon-reload
+# The built-in Bluetooth stays available so the setup page can use it for
+# either side; this routes its call audio over HCI (harmless if unused).
+systemctl enable sco-route-hci >/dev/null
+systemctl enable auxlink-reconnect hfp-relay auxlink-media auxlink-pairing auxlink-web auxlink-cover auxlink-usb-gadget bt-dongle-off avahi-daemon >/dev/null
+echo "ok"
+
+step "Bluetooth: power on at boot, no USB power-saving on the dongles"
+sed -i 's/^#\?AutoEnable=.*/AutoEnable=true/' /etc/bluetooth/main.conf
+grep -q '^AutoEnable=true' /etc/bluetooth/main.conf || printf '\n[Policy]\nAutoEnable=true\n' >> /etc/bluetooth/main.conf
+install -m 644 "$HERE/modprobe/btusb.conf" /etc/modprobe.d/btusb.conf
+echo "ok"
+
+step "PipeWire (music only; calls belong to hfp-relay)"
+install -d -o "$U" -g "$U" "$H/.config/wireplumber/wireplumber.conf.d"
+install -o "$U" -g "$U" -m 644 "$HERE"/wireplumber/*.conf "$H/.config/wireplumber/wireplumber.conf.d/"
+loginctl enable-linger "$U"
+echo "ok"
+
+step "User services (music link, contacts, phonebook server)"
+install -d -o "$U" -g "$U" "$H/.config/systemd/user/default.target.wants"
+install -o "$U" -g "$U" -m 644 "$HERE"/systemd/user/*.service "$H/.config/systemd/user/"
+ln -sf /usr/lib/systemd/user/obex.service "$H/.config/systemd/user/default.target.wants/obex.service"
+chown -h "$U:$U" "$H/.config/systemd/user/default.target.wants/obex.service"
+if [ -x /usr/local/libexec/obexd-dummy ]; then
+  install -d -o "$U" -g "$U" "$H/.config/systemd/user/obex.service.d"
+  printf '[Service]\nExecStart=\nExecStart=/usr/local/libexec/obexd-dummy\n' > "$H/.config/systemd/user/obex.service.d/dummy-phonebook.conf"
+  chown -R "$U:$U" "$H/.config/systemd/user/obex.service.d"
+  echo "contacts server: file-based obexd found"
+else
+  echo "NOTE: file-based obexd not built yet; run extras/build-obexd-dummy.sh as $U for contacts in the car"
+fi
+asuser systemctl --user daemon-reload 2>/dev/null || true
+asuser systemctl --user enable auxlink-audio pbap-sync >/dev/null 2>&1 || true
+# At first boot the user's systemd may not be running yet: enable by hand.
+for u in auxlink-audio pbap-sync; do
+  ln -sf "$H/.config/systemd/user/$u.service" "$H/.config/systemd/user/default.target.wants/$u.service"
+done
+chown -R "$U:$U" "$H/.config"
+echo "ok"
+
+step "I2S input overlay"
+dtc -@ -q -I dts -O dtb -o /boot/firmware/overlays/xiao-i2s-in.dtbo "$HERE/overlay/xiao-i2s-in.dts"
+CFG=/boot/firmware/config.txt
+# Keep the built-in Bluetooth on (it may be chosen for the car or phone on
+# the setup page). With it on, the XIAO's /dev/serial0 link moves onto the
+# mini-UART, whose baud rate is derived from the GPU core clock and DRIFTS
+# unless that clock is pinned (core_freq=250) - without this the XIAO link
+# still "works" but every byte is garbled, which looks exactly like the SMO
+# app never sending anything. enable_uart=1 keeps the mini-UART itself on.
+sed -i 's/^dtoverlay=disable-bt/#dtoverlay=disable-bt/' $CFG
+want="dtparam=i2s=on dtoverlay=xiao-i2s-in enable_uart=1 core_freq=250"
+need=""
+for l in $want; do
+  grep -qx "$l" $CFG || need="$need$l\n"
+done
+[ -n "$need" ] && printf "\n[all]\n$need" >> $CFG
+echo "ok ($CFG)"
+
+step "Boot and reliability"
+grep -q 'systemd.zram=0' /boot/firmware/cmdline.txt || sed -i '1 s/$/ systemd.zram=0/' /boot/firmware/cmdline.txt
+mkdir -p /etc/systemd/system.conf.d /etc/systemd/journald.conf.d
+printf '[Manager]\nRuntimeWatchdogSec=15s\nRebootWatchdogSec=2min\n' > /etc/systemd/system.conf.d/auxlink-watchdog.conf
+printf '[Journal]\nSystemMaxUse=50M\n' > /etc/systemd/journald.conf.d/auxlink.conf
+echo "ok (hardware watchdog reboots the Pi if it ever freezes; logs capped at 50 MB)"
+
+echo
+hostnamectl set-hostname "$(hostname)" >/dev/null 2>&1 || true
+echo "All installed. Reboot now:  sudo reboot"
+echo "Setup page: http://$(hostname).local  (on your Wi-Fi)  or join the setup Wi-Fi and open http://10.42.0.1"
+echo "Setup Wi-Fi: $(grep ^SETUP_WIFI_SSID= /etc/auxlink.conf | cut -d= -f2) / password $(grep ^SETUP_WIFI_PASS= /etc/auxlink.conf | cut -d= -f2)"

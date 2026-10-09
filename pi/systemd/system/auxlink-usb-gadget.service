@@ -1,0 +1,13 @@
+[Unit]
+Description=AuxLink: USB-C music source (Pi as USB sound card), when selected
+After=sys-kernel-config.mount
+Before=auxlink-media.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/auxlink-usb-gadget.sh
+ExecStop=/usr/local/bin/auxlink-usb-gadget.sh stop
+
+[Install]
+WantedBy=multi-user.target
