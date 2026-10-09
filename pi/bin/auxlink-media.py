@@ -887,6 +887,15 @@ def setup_bt_source(bus, om, player):
         })
 
     def poll():
+        # Never let one error end the polling (GLib drops a timeout whose
+        # callback raises): the car's play state would freeze.
+        try:
+            poll_once()
+        except Exception as e:      # noqa: BLE001
+            log(f"Bluetooth source check failed: {e!r}")
+        return True
+
+    def poll_once():
         nonlocal dev_part
         global SOURCE
         if not SOURCE:
@@ -908,7 +917,7 @@ def setup_bt_source(bus, om, player):
 
     def changed(iface, changes, invalidated, path=None):
         if iface == "org.bluez.MediaPlayer1" and dev_part in str(path):
-            poll()
+            poll()      # (logs and swallows errors itself)
 
     def keys(cmd):
         path, props = find_player()
