@@ -20,10 +20,12 @@
 # with a silent RIGHT channel until it is recreated.
 #
 # A car can also accept a stream and play SILENCE with everything on the Pi
-# looking healthy (seen after a call and after reconnecting), which nothing
-# here can detect. So at those moments, a few seconds after music starts, the
-# stream is restarted once anyway (what "Check and fix" does), and pressing
-# play in the car (auxlink-media writes KICK_FILE) does the same.
+# looking healthy, which nothing here can detect: the Tesla does that to a
+# stream started ~1 s after a call ends (still in call mode), but plays one
+# started 4 s after. So music never restarts sooner than CALL_SETTLE after a
+# call. If it is ever silent anyway, pressing play in the car while we stream
+# (auxlink-media writes KICK_FILE) restarts the stream - what "Check and fix"
+# does.
 . /usr/local/lib/auxlink/common.sh
 while [ -z "$CAR" ] || [ -z "$CAR_ADAPTER" ]; do sleep 5; . /etc/auxlink.conf; done
 
@@ -36,10 +38,12 @@ PRESENT=0; LAST_SOUND=0; NEXT_LEVEL=0
 CAR_SLC_FILE=/run/auxlink/car-slc    # "1" once hfp-relay has the car's HFP set up
 KICK_FILE=/run/auxlink/audio-kick    # touched by auxlink-media when the car presses play
 KICK_SEEN=$(stat -c %Y "$KICK_FILE" 2>/dev/null || echo 0)
-RECHECK=""        # why the next fresh stream gets one restart (car connected / call ended)
+RECHECK=""        # why the stream is restarted (play pressed in the car)
 RECHECK_AT=0      # when to do it (0 = not pending)
 CALL_ENDED_AT=0; WAS_CALL=0
-CALL_SETTLE=2     # s after a call before music restarts (the car leaves call mode)
+# s after a call before music restarts (the car leaves call mode): at least
+# 3, or the page's "Resume music after a call" if longer.
+call_settle() { awk -v d="${CALL_RESUME_DELAY:-0}" 'BEGIN{print (d > 3 ? int(d + 0.5) : 3)}'; }
 LOOP=""; LOOP_SINK_ID=""; LOOP_INPUT=""; LOOP_STARTED=0; UNLINKED=0; GONE=2; NO_CARD=0; NOT_ACTIVE=0; LAST_NUDGE=0
 CONNECTED_AT=0; WAITING_SAID=""; NEXT_STEREO=0; STEREO_BAD=0; STOPPED_FOR=""
 XQ_FAILS=0   # SBC-XQ attempts since this script started (never reset by a disconnect)
@@ -170,7 +174,7 @@ while true; do
     sleep 2; continue
   fi
   if [ "$GONE" -ge 2 ]; then
-    CONNECTED_AT=$(date +%s); WAITING_SAID=""; RECHECK="the car connected"
+    CONNECTED_AT=$(date +%s); WAITING_SAID=""
     echo "Car connected; waiting until it is ready before starting music"
   fi
   GONE=0
@@ -222,18 +226,21 @@ while true; do
 
   # ---- should music be streaming right now? ----
   check_sound
-  # The car pressed play: restart the stream (now if it is running).
+  # Play pressed in the car while we are already streaming: the person hears
+  # nothing, so restart the stream. (Play after a pause starts a fresh
+  # stream anyway - nothing extra then.)
   kick=$(stat -c %Y "$KICK_FILE" 2>/dev/null || echo 0)
   if [ "$kick" != "$KICK_SEEN" ]; then
-    KICK_SEEN=$kick; RECHECK="play was pressed in the car"
-    [ -n "$LOOP" ] && RECHECK_AT=$(date +%s)
+    KICK_SEEN=$kick
+    [ -n "$LOOP" ] && [ $(( $(date +%s) - LOOP_STARTED )) -ge 3 ] &&
+      { RECHECK="play was pressed in the car"; RECHECK_AT=$(date +%s); }
   fi
   if in_call; then WAS_CALL=1
-  elif [ "$WAS_CALL" = 1 ]; then WAS_CALL=0; CALL_ENDED_AT=$(date +%s); RECHECK="the call ended"
+  elif [ "$WAS_CALL" = 1 ]; then WAS_CALL=0; CALL_ENDED_AT=$(date +%s)
   fi
   WHY=""
   if in_call; then WHY="a call"
-  elif [ $(( $(date +%s) - CALL_ENDED_AT )) -lt "$CALL_SETTLE" ]; then WHY="the call just ended"
+  elif [ $(( $(date +%s) - CALL_ENDED_AT )) -lt "$(call_settle)" ]; then WHY="the call just ended"
   elif ! smo_playing && [ "$PRESENT" != 1 ]; then WHY="the SMO is paused"
   elif ! car_ready; then WHY="the car is still connecting"
   fi
@@ -276,8 +283,6 @@ while true; do
     LOOP=$!; LOOP_SINK_ID=$SINK_ID; LOOP_INPUT=$INPUT; LOOP_STARTED=$(date +%s); UNLINKED=0; NOT_ACTIVE=0; STEREO_BAD=0
     NEXT_STEREO=$((LOOP_STARTED + 3))
     echo "Streaming to $SINK"
-    # One restart just after music starts flowing (see the top).
-    [ -n "$RECHECK" ] && RECHECK_AT=$((LOOP_STARTED + 1))
     sleep 1; continue
   fi
 

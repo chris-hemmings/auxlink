@@ -71,7 +71,9 @@ BLUEZ = "org.bluez"
 CALL_STATE_FILE = "/run/auxlink/call"   # written by hfp-relay
 KICK_FILE = "/run/auxlink/audio-kick"   # read by auxlink-audio (play pressed in the car)
 CALL_POLL_MS = 250                          # how quickly a call is noticed
-RESUME_AFTER_CALL = float(CONF.get("CALL_RESUME_DELAY", "1.5"))  # s after the call ends
+# s after the call ends; at least 3 - the car plays no music sooner than
+# that after a call (auxlink-audio waits the same), so none is missed.
+RESUME_AFTER_CALL = max(3.0, float(CONF.get("CALL_RESUME_DELAY", "3") or 3))
 PAUSE_FOR_CALLS = CONF.get("PAUSE_FOR_CALLS", "1") == "1"
 COVER_CURRENT = "/run/auxlink/cover/current"  # 7-digit handle of the art to show
 # "1" while the SMO plays, "0" when paused/stopped: auxlink-audio runs the car's
