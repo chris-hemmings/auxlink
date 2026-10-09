@@ -25,11 +25,15 @@ linked() {
 }
 # Pause/resume the stream (AVDTP suspend/start): wakes a car that is
 # "playing" but silent. Short, so it is barely audible.
-# Suspending the car's output silences the RIGHT channel of a running
-# pw-loopback until the loopback is recreated (measured: the car then only
-# got the left channel). So stop the loopback first; the main loop starts a
-# fresh one, which always comes up in proper stereo.
-nudge() { stop_loop; timeout 5 pactl suspend-sink "$1" 1; sleep 0.5; timeout 5 pactl suspend-sink "$1" 0; }
+# Pause/resume the car's stream, WITH music flowing: a car whose stream
+# resumes to silence stays silent (measured). But the suspend leaves the
+# running pw-loopback with a silent RIGHT channel until it is recreated, so
+# end it right after; the caller loops straight round and starts a fresh,
+# stereo one. Same order as audio-check --fix, which is proven to work.
+nudge() {
+  timeout 5 pactl suspend-sink "$1" 1; sleep 0.5; timeout 5 pactl suspend-sink "$1" 0
+  sleep 1; stop_loop
+}
 trap 'stop_loop' EXIT
 
 while true; do
@@ -143,6 +147,7 @@ while true; do
       fi
       echo "Car (re)connected; nudging the stream so it starts playing"
       nudge "$SINK"; LAST_NUDGE=$(date +%s); NEED_KICK=0
+      continue                   # start the fresh loopback now, not in 2 s
     fi
   fi
 
@@ -160,6 +165,7 @@ while true; do
     if [ "$NOT_ACTIVE" -ge 2 ] && [ $((now - LAST_NUDGE)) -ge 20 ]; then
       echo "Car stream is '$ts' while we are sending audio; nudging it"
       nudge "$SINK"; LAST_NUDGE=$now; NOT_ACTIVE=0
+      continue
     fi
   fi
   [ "$NEED_KICK" = 1 ] && sleep 0.5 || sleep 2
