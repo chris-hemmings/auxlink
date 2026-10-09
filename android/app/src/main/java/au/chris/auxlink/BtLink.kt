@@ -33,6 +33,7 @@ class BtLink(private val context: Context) {
     private var sock: BluetoothSocket? = null
     private var out: OutputStream? = null
     private var nextTry = 0L
+    private var lastGood: String? = null
     var deviceName: String = ""
         private set
 
@@ -55,15 +56,25 @@ class BtLink(private val context: Context) {
         }
     }
 
-    /** Bonded devices most likely to be the auxlink first. */
+    /** Bonded devices most likely to be the auxlink first: the one that
+     *  worked last, those already known to offer the service, those named
+     *  like it (name or the alias given here), then every other one - the
+     *  phone may still have the Pi under an old name and an old service
+     *  list, and the Pi itself says no quickly if it isn't the one. */
     private fun candidates(): List<BluetoothDevice> {
         val bt = (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
             ?: return emptyList()
         if (!bt.isEnabled) return emptyList()
         val bonded = bt.bondedDevices?.toList() ?: return emptyList()
         val target = ParcelUuid(APP_UUID)
-        return bonded.filter { d -> d.uuids?.contains(target) == true } +
-            bonded.filter { d -> d.uuids?.contains(target) != true && (d.name ?: "").contains("auxlink", true) }
+        fun named(d: BluetoothDevice): Boolean {
+            val names = listOfNotNull(d.name, if (Build.VERSION.SDK_INT >= 30) d.alias else null)
+            return names.any { it.contains("auxlink", true) || it.contains("teslabridge", true) }
+        }
+        return (bonded.filter { it.address == lastGood } +
+            bonded.filter { d -> d.uuids?.contains(target) == true } +
+            bonded.filter { named(it) } +
+            bonded).distinctBy { it.address }
     }
 
     @Synchronized
@@ -77,6 +88,7 @@ class BtLink(private val context: Context) {
                 sock = s
                 out = s.outputStream
                 deviceName = dev.name ?: dev.address
+                lastGood = dev.address
                 Log.i(TAG, "Connected to $deviceName over Bluetooth")
                 return true
             } catch (e: Exception) {
