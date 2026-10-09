@@ -8,7 +8,7 @@
 while [ -z "$CAR" ] || [ -z "$CAR_ADAPTER" ]; do sleep 5; . /etc/teslabridge.conf; done
 
 LOOP=""; LOOP_SINK_ID=""; LOOP_STARTED=0; UNLINKED=0; GONE=0; NO_CARD=0; NOT_ACTIVE=0; LAST_NUDGE=0
-# Set whenever the car (re)connects: once music is linked, unmute and nudge
+# Set whenever the car (re)connects: as soon as music is linked, unmute and nudge
 # the stream, like the setup page's "fix" does. After a reconnect the car
 # can report the stream "active" yet play nothing until it is nudged.
 NEED_KICK=1
@@ -91,7 +91,8 @@ while true; do
                 --playback-props="target.object=$SINK node.name=to_tesla" &
     LOOP=$!; LOOP_SINK_ID=$SINK_ID; LOOP_STARTED=$(date +%s); UNLINKED=0; NOT_ACTIVE=0
     echo "Streaming to $SINK"
-    sleep 2; continue
+    # Check again quickly while a reconnect nudge is still due.
+    [ "$NEED_KICK" = 1 ] && sleep 0.5 || sleep 2; continue
   fi
 
   if ! linked; then
@@ -102,7 +103,9 @@ while true; do
     fi
   else
     UNLINKED=0
-    if [ "$NEED_KICK" = 1 ] && ! in_call && [ $(( $(date +%s) - LOOP_STARTED )) -ge 4 ]; then
+    # Nudge as soon as the car's stream is up (or after 3 s at most).
+    if [ "$NEED_KICK" = 1 ] && ! in_call && { [ "$(car_transport_state)" = active ] ||
+         [ $(( $(date +%s) - LOOP_STARTED )) -ge 3 ]; }; then
       if [ "$(timeout 5 pactl get-sink-mute "$SINK" | awk '{print $2}')" = yes ]; then
         echo "Car output was muted; unmuting"
         timeout 5 pactl set-sink-mute "$SINK" 0
@@ -128,5 +131,5 @@ while true; do
       nudge "$SINK"; LAST_NUDGE=$now; NOT_ACTIVE=0
     fi
   fi
-  sleep 2
+  [ "$NEED_KICK" = 1 ] && sleep 0.5 || sleep 2
 done
