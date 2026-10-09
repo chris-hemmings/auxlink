@@ -91,12 +91,20 @@ nudge() {
   timeout 5 pactl suspend-sink "$1" 1; sleep 0.5; timeout 5 pactl suspend-sink "$1" 0
   sleep 1; stop_loop
 }
-# The quick version for the planned restarts: the same pause/resume with
-# music flowing, but the loopback is recreated straight after the resume, so
-# the mono moment it causes is a fraction of a second, not audible.
+# The planned restart: the same pause/resume of the car's stream, done with
+# the music INPUT muted - the car only needs the stream to stop and start
+# again, and the resume's mono side effect (on the old loopback) is then
+# silent. The fresh loopback started next unmutes it: stereo straight away.
+# (The input, not the car output: muting that would change the car's volume.)
+RESTART_MUTED=""
 quick_restart() {
+  timeout 5 pactl set-source-mute "$INPUT" 1 && RESTART_MUTED=$INPUT
   timeout 5 pactl suspend-sink "$1" 1; sleep 0.3; timeout 5 pactl suspend-sink "$1" 0
   sleep 0.3; stop_loop
+}
+unmute_input() {
+  [ -n "$RESTART_MUTED" ] && timeout 5 pactl set-source-mute "$RESTART_MUTED" 0
+  RESTART_MUTED=""
 }
 smo_playing() { [ "$(cat "$PLAY_FILE" 2>/dev/null || echo 1)" != 0 ]; }
 # Is sound arriving from the XIAO? 0.4 s sample; the SMO sends digital
@@ -139,7 +147,7 @@ stereo_ok() {
   [ -z "$l" ] || [ -z "$r" ] && return 0
   awk "BEGIN{exit !($l < 0.005 || $r > $l / 20)}"
 }
-trap 'stop_loop' EXIT
+trap 'stop_loop; unmute_input' EXIT
 
 while true; do
   . /etc/auxlink.conf; CARD=bluez_card.${CAR//:/_}; CAR_RE=${CAR//:/[:_]}
@@ -248,6 +256,7 @@ while true; do
   fi
 
   if [ -n "$WHY" ]; then
+    unmute_input
     if [ -n "$LOOP" ]; then
       echo "Stopping the music stream: $WHY"
       stop_loop
@@ -279,14 +288,16 @@ while true; do
     # playing yet this starts nothing; the car sees START when the loopback
     # links, with music in it.
     timeout 5 pactl suspend-sink "$SINK" 0
+    unmute_input
     pw-loopback -c 2 -m '[ FL FR ]' \
                 --capture-props="target.object=$INPUT node.name=smo_capture audio.position=[ FL FR ]" \
                 --playback-props="target.object=$SINK node.name=to_tesla audio.position=[ FL FR ]" &
     LOOP=$!; LOOP_SINK_ID=$SINK_ID; LOOP_INPUT=$INPUT; LOOP_STARTED=$(date +%s); UNLINKED=0; NOT_ACTIVE=0; STEREO_BAD=0
     NEXT_STEREO=$((LOOP_STARTED + 3))
     echo "Streaming to $SINK"
-    # After a call: one restart 1 s in, with music flowing.
-    [ -n "$RECHECK" ] && [ "$RECHECK_AT" = 0 ] && RECHECK_AT=$((LOOP_STARTED + 1))
+    # After a call: the restart straight away - the car ignores this first
+    # start anyway, so nothing audible is lost.
+    [ -n "$RECHECK" ] && [ "$RECHECK_AT" = 0 ] && RECHECK_AT=$LOOP_STARTED
     sleep 1; continue
   fi
 
