@@ -102,6 +102,19 @@ label.f{display:grid;gap:4px;margin:8px 0}label.f span{color:var(--dim);font-siz
       <button class="ghost" onclick="post('wifi/off',{}, 'Setup Wi-Fi will switch off')">Finish setup (Wi-Fi off)</button></div>
   </section>
 
+  <section class="card"><h2>Pi login</h2>
+    <div id="pwWarn" class="banner hide"><b>The Pi still has its default password</b> (auxlink), which everyone with the image knows. Set your own below.</div>
+    <div class="row"><span class="k">User</span><span class="mono" id="loginUser">&ndash;</span></div>
+    <div class="row"><span class="k">SSH</span><span id="sshState">&ndash;</span></div>
+    <div class="grid2">
+      <label class="f"><span>New login password (8+ chars)</span><input id="newPw" type="password" autocomplete="new-password"></label>
+      <label class="f"><span>Repeat it</span><input id="newPw2" type="password" autocomplete="new-password"></label>
+    </div>
+    <div class="btns"><button onclick="setPassword()">Change password</button>
+      <button class="ghost" id="sshBtn" onclick="toggleSsh()">Turn SSH on</button></div>
+    <div class="k" style="font-size:13px;margin-top:6px">For logging in to the Pi itself (SSH or a keyboard and screen). Separate from the page password and the setup Wi-Fi password above.</div>
+  </section>
+
   <section class="card"><h2>Home Wi-Fi</h2>
     <div class="k" style="font-size:13px">Networks the Pi joins by itself when they're in range (then the page is at http://auxlink.local). While the setup Wi-Fi is on, new networks are saved and joined once setup Wi-Fi switches off.</div>
     <div id="wifiList" style="margin-top:8px"></div>
@@ -132,6 +145,11 @@ const $=id=>document.getElementById(id);
 function toast(t){const m=$('msg');m.textContent=t;m.style.display='block';clearTimeout(m._t);m._t=setTimeout(()=>m.style.display='none',3500)}
 async function api(path,body){const r=await fetch('/api/'+path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||r.statusText);return j}
+function setPassword(){const a=$('newPw').value,b=$('newPw2').value;
+  if(a.length<8){toast('Use at least 8 characters');return}
+  if(a!==b){toast("The two passwords don't match");return}
+  post('password',{password:a},'Login password changed');$('newPw').value=$('newPw2').value=''}
+function toggleSsh(){const on=!(S&&S.login&&S.login.ssh);post('ssh',{on},on?'SSH on':'SSH off')}
 async function post(path,body,ok){try{await api(path,body);toast(ok||'Done');setTimeout(load,1500)}catch(e){toast('Error: '+e.message)}}
 function dev(el,d,label){const e=$(el);if(!d||!d.address){e.innerHTML='<span class="dot warn"></span>not paired';return}
   e.className=d.connected?'ok':'bad';e.innerHTML='<span class="dot"></span>'+(d.connected?'connected':'not connected')+(d.name?' · '+d.name:'')}
@@ -178,6 +196,8 @@ function render(){const c=S.conf;
     w.innerHTML='<b>Pairing the '+who+'</b> — '+S.window.seconds_left+' s left. On the '+who+', open Bluetooth, add a new device and choose <b>'+n+'</b>, then confirm the code shown there. <div class="btns"><button class="ghost" onclick="post(\'pair/cancel\',{})">Cancel</button></div>'}else w.classList.add('hide');
   const h=$('setupHint');if(!c.CAR&&!S.window){h.classList.remove('hide');h.innerHTML='<b>First-time setup:</b> the car side is ready to pair now. On the car, add a new Bluetooth device and choose <b>'+(c.CAR_NAME||'AuxLink')+'</b>.'}else h.classList.add('hide');
   $('inCall').textContent=S.in_call?'yes':'no';
+  if(S.login){$('loginUser').textContent=S.login.user||'–';$('sshState').textContent=S.login.ssh?'on (ssh '+(S.login.user||'')+'@'+location.hostname+')':'off';
+    $('sshBtn').textContent=S.login.ssh?'Turn SSH off':'Turn SSH on';$('pwWarn').classList.toggle('hide',!S.login.default_password)}
   $('services').innerHTML=Object.entries(S.services).map(([k,v])=>'<div class="row '+(v==='active'?'ok':v==='inactive'?'warn':'bad')+'"><span><span class="dot"></span>'+k+'</span><span class="k">'+v+'</span></div>').join('');
   $('adapterList').innerHTML=S.adapters.map(a=>'<div class="row"><span class="mono">'+a.hci+' · '+a.address+'</span><span class="k">'+a.bus+(a.role?' · '+a.role:'')+(a.discoverable?' · discoverable':'')+'</span></div>').join('')||'<div class="k">No adapters found'+(S.bt_error?': '+S.bt_error:'')+'</div>';
   for(const [sel,key] of [['selCar','CAR_ADAPTER'],['selPhone','PHONE_ADAPTER']]){const s=$(sel);if(document.activeElement===s)continue;

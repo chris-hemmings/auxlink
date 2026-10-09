@@ -215,6 +215,8 @@ def state():
         "window": window(), "in_call": open(CALL_FILE).read().strip() == "1" if os.path.exists(CALL_FILE) else False,
         "services": unit_states(user), "events": events, "setup_wifi": STATE["ap"],
         "home_wifi": home_networks(), "wifi_client": wifi_client_connected(),
+        "login": {"user": user, "ssh": sh("systemctl", "is-active", "ssh")[1] == "active",
+                  "default_password": os.path.exists(DEFAULT_PW_FLAG)},
     }
 
 
@@ -440,6 +442,40 @@ def act_update(data):
     return {"ok": True}
 
 
+# The prebuilt image's user starts with a password everyone knows; the image
+# leaves this flag, and setting a password here removes it.
+DEFAULT_PW_FLAG = "/etc/auxlink-default-password"
+
+
+def act_password(body):
+    """Set the Pi login password of the AuxLink user (SSH / console)."""
+    pw = str(body.get("password", ""))
+    if len(pw) < 8 or any(ch in pw for ch in ":\n\r"):
+        raise ValueError("use at least 8 characters (no ':' or line breaks)")
+    user = auxconf.load().get("AUDIO_USER", "")
+    if not user or not re.fullmatch(r"[a-z_][a-z0-9_-]*", user):
+        raise ValueError("no login user found")
+    r = subprocess.run(["chpasswd"], input=f"{user}:{pw}\n", capture_output=True, text=True, timeout=15)
+    if r.returncode != 0:
+        raise ValueError(r.stderr.strip() or "chpasswd failed")
+    try:
+        os.remove(DEFAULT_PW_FLAG)
+    except OSError:
+        pass
+    auxconf.event(f"Login password for {user} changed from the page")
+    return {"ok": True}
+
+
+def act_ssh(body):
+    """Switch SSH logins on or off."""
+    on = bool(body.get("on"))
+    if on and os.path.exists(DEFAULT_PW_FLAG):
+        raise ValueError("set a new login password first: the default one is public")
+    sh("systemctl", "enable" if on else "disable", "--now", "ssh", timeout=30)
+    auxconf.event("SSH switched " + ("on" if on else "off") + " from the page")
+    return {"ok": True}
+
+
 def act_wifi_off(body):
     STATE["button_until"] = 0
     STATE["last_hit"] = 0
@@ -554,7 +590,8 @@ ACTIONS = {"pair": act_pair, "pair/cancel": act_pair_cancel, "forget": act_forge
            "config": act_config, "adapters": act_adapters, "check": act_check,
            "restart": act_restart, "wifi/off": act_wifi_off,
            "wifi/add": act_wifi_add, "wifi/remove": act_wifi_remove,
-           "wifi/scan": act_wifi_scan, "wifi/connect": act_wifi_connect}
+           "wifi/scan": act_wifi_scan, "wifi/connect": act_wifi_connect,
+           "password": act_password, "ssh": act_ssh}
 
 
 # ------------------------------------------------------------- HTTP

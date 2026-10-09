@@ -119,11 +119,10 @@ testing.
    drive.
 5. Then carry on with **section 4**: join the Wi-Fi **AuxLink-setup**.
 
-**SSH (optional):** SSH is off by default. To turn it on, create an empty
-file called **`ssh`** (no extension) on the card's boot drive before the
-first boot. Then log in with `ssh auxlink@auxlink.local`. Change the password
-straight away with **`passwd`**, because everyone with this image knows the
-default.
+**Password and SSH:** on the setup page, the **Pi login** section sets your
+own login password (the page warns while the default one is still set) and
+turns **SSH** on or off. SSH is off by default and can only be turned on once
+the password has been changed. Then log in with `ssh auxlink@auxlink.local`.
 
 ### 2.2 Or install onto Raspberry Pi OS yourself
 Use this if you already have Raspberry Pi OS Lite (64-bit) running. It

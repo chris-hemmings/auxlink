@@ -51,6 +51,7 @@ if ! getent passwd 1000 >/dev/null; then
   done
   useradd -m -u 1000 -s /bin/bash -G "${groups#,}" auxlink
   echo "auxlink:auxlink" | chpasswd
+  touch /etc/auxlink-default-password    # the setup page asks for a new one
 fi
 # Don't stop at the console asking for a new user on the first boot.
 systemctl disable userconfig.service >/dev/null 2>&1 || true
