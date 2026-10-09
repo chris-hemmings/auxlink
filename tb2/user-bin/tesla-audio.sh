@@ -113,6 +113,10 @@ while true; do
     # Channel layout spelled out on both sides: left unspecified, the right
     # channel was dropped inside the loopback (all four ports linked, right
     # always silent at the car) - the car only ever got the left channel.
+    # Only ever one loopback: strays (e.g. one started by hand for a test)
+    # feed the car the same music again on their own timing, which sounds
+    # like a skip every few seconds as they drift against each other.
+    pkill -f "[n]ode.name=smo_capture" && sleep 0.5
     pw-loopback -c 2 -m '[ FL FR ]' \
                 --capture-props="target.object=$I2S node.name=smo_capture audio.position=[ FL FR ]" \
                 --playback-props="target.object=$SINK node.name=to_tesla audio.position=[ FL FR ]" &
