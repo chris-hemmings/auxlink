@@ -30,6 +30,11 @@ install -D -m 644 "$HERE/share/cover-test.jpg" /usr/local/share/auxlink/cover-te
 install -m 755 "$HERE"/bin/* /usr/local/bin/
 install -o "$U" -g "$U" -m 755 "$HERE"/user-bin/* "$H/.local/bin/"
 install -m 644 "$HERE"/systemd/system/*.service /etc/systemd/system/
+# The XIAO link uses the serial pins (8/10): no Linux login console on them.
+# A fresh Raspberry Pi OS has one, and its text and echo reach the XIAO as
+# key presses (volume up, play/pause...) on the music device.
+sed -i -E 's/console=(serial0|ttyS0|ttyAMA0),[0-9]+ ?//g' /boot/firmware/cmdline.txt
+for t in serial0 ttyS0 ttyAMA0; do systemctl mask --now "serial-getty@$t.service" >/dev/null 2>&1 || true; done
 # Setup Wi-Fi as a captive portal: phones open the setup page by themselves.
 install -D -m 644 "$HERE/etc/captive-portal.conf" /etc/NetworkManager/dnsmasq-shared.d/auxlink-captive.conf
 install -o "$U" -g "$U" -m 644 "$HERE"/systemd/user/*.service "$H/.config/systemd/user/"

@@ -142,6 +142,11 @@ done
 echo "ok ($CFG)"
 
 step "Boot and reliability"
+# The XIAO link uses the serial pins (8/10): no Linux login console on them.
+# A fresh Raspberry Pi OS has one, and its text and echo reach the XIAO as
+# key presses (volume up, play/pause...) on the music device.
+sed -i -E 's/console=(serial0|ttyS0|ttyAMA0),[0-9]+ ?//g' /boot/firmware/cmdline.txt
+for t in serial0 ttyS0 ttyAMA0; do systemctl mask --now "serial-getty@$t.service" >/dev/null 2>&1 || true; done
 grep -q 'systemd.zram=0' /boot/firmware/cmdline.txt || sed -i '1 s/$/ systemd.zram=0/' /boot/firmware/cmdline.txt
 mkdir -p /etc/systemd/system.conf.d /etc/systemd/journald.conf.d
 printf '[Manager]\nRuntimeWatchdogSec=15s\nRebootWatchdogSec=2min\n' > /etc/systemd/system.conf.d/auxlink-watchdog.conf
