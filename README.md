@@ -68,7 +68,7 @@ as three separate kinds of release:
 |---|---|
 | **Seeed Studio XIAO RP2040** | The small board that the Android device sees as a USB sound card. |
 | **USB-C cable** | From the Android device's USB port to the XIAO. It also powers the XIAO. |
-| **6 jumper wires** (female-female) or solder | XIAO to the Pi's GPIO header. Keep the I2S wires short (under ~15 cm). |
+| **7 jumper wires** (female-female) or solder | XIAO to the Pi's GPIO header: D0, D1, D2, D3, D6, D7 and GND (section 3.2). Keep the I2S wires short (under ~15 cm). |
 
 ### Optional
 - **Push button** between GPIO26 (pin 37) and GND (pin 34). Hold it 3 s to
@@ -184,36 +184,39 @@ This firmware makes the XIAO appear to the Android device as:
 ### 3.2 Pinout
 
 **Do not connect 5 V or 3.3 V between the boards.** The XIAO is powered by
-the Android device's USB port. Connect only the 6 wires below.
+the Android device's USB port.
 
-| Signal | XIAO RP2040 pad | Pi 4 GPIO | Pi header pin |
+The XIAO uses **D0, D1, D2, D3, D6, D7 and GND**:
+
+| XIAO pad | Signal | Pi 4 header pin | Pi GPIO |
 |---|---|---|---|
-| I2S LRCLK (word clock) | **D0** (GP26) | GPIO19 (PCM_FS) | **35** |
-| I2S BCLK (bit clock) | **D2** (GP28) | GPIO18 (PCM_CLK) | **12** |
-| I2S DATA | **D3** (GP29) | GPIO20 (PCM_DIN) | **38** |
-| Serial XIAO → Pi | **D6** (TX, GP0) | GPIO15 (RXD) | **10** |
-| Serial Pi → XIAO | **D7** (RX, GP1) | GPIO14 (TXD) | **8** |
-| Ground | **GND** | GND | **6** (or 39, 34, ...) |
+| **D0** | I2S LRCLK (word clock) | **35** | GPIO19 (PCM_FS) |
+| **D1** | Shield (held low) | **39** (GND), or leave it unconnected | – |
+| **D2** | I2S BCLK (bit clock) | **12** | GPIO18 (PCM_CLK) |
+| **D3** | I2S DATA | **38** | GPIO20 (PCM_DIN) |
+| **D6** | Serial XIAO → Pi (TX) | **10** | GPIO15 (RXD) |
+| **D7** | Serial Pi → XIAO (RX) | **8** | GPIO14 (TXD) |
+| **GND** | Ground | **6** (or 9, 14, 20, 25, 30, 34) | – |
 
-```
-  XIAO RP2040 (USB-C at the top)             Pi 4 header (USB/Ethernet at the bottom)
-        +-----[USB-C]-----+                        3V3  1  2  5V
-  D0  --| 1            14 |-- 5V                        3  4  5V
-  D1  --| 2  (unused)  13 |-- GND  --> pin 6            5  6  GND  <-- XIAO GND
-  D2  --| 3            12 |-- 3V3  (unused)             7  8  GPIO14 TXD --> XIAO D7
-  D3  --| 4            11 |-- D10                  GND  9 10  GPIO15 RXD <-- XIAO D6
-  D4  --| 5            10 |-- D9               ...
-  D5  --| 6             9 |-- D8                   GPIO18 PCM_CLK 12 <-- XIAO D2
-  D6  --| 7             8 |-- D7               ...
-        +-----------------+                    GPIO19 PCM_FS  35 <-- XIAO D0
-                                               GPIO20 PCM_DIN 38 <-- XIAO D3
-```
+Where the pads are on the **XIAO** (USB-C at the top, looking at the
+components):
+- **Left edge, top to bottom:** D0, D1, D2, D3, D4, D5, D6.
+- **Right edge, top to bottom:** 5V, GND, 3V3, D10, D9, D8, D7.
 
-- **D1** is a "shield" pin. The firmware holds it low so that a quiet line
-  sits between the two clocks. Leave it unconnected, or, if you build a
-  ribbon or cable, run it alongside the clock wires so that it sits between
-  BCLK and LRCLK.
-- Keep the three I2S wires short and together. Long or loose I2S wires show
+Where the pins are on the **Pi 4 header** (pin 1 is the corner nearest the
+SD card, on the inside row):
+- Odd pins (1, 3, 5 …) are on the inside row and even pins (2, 4, 6 …) on
+  the outside edge.
+- Pins **6, 8, 10 and 12** are near that end of the outside row.
+- Pins **35, 38 and 39** are at the far end (USB end).
+
+- **D1, the shield:** the firmware holds it low all the time, so a quiet,
+  grounded wire can run between the two clock wires. In a ribbon or cable,
+  put it **between BCLK (D2) and LRCLK (D0)**, so the order is D0, D1, D2,
+  and connect it to a **GND pin** at the Pi end (pin 39 is next to 35/38).
+  Leaving it unconnected also works, but the shield helps against a
+  corrupted right channel on longer wires.
+- Keep the I2S wires (D0–D3) short and together. Long or loose I2S wires show
   up as crackles or a corrupted right channel.
 - The serial link runs at 115200 baud 8N1 on the Pi's `/dev/serial0`.
 
