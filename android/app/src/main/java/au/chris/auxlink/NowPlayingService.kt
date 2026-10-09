@@ -42,6 +42,18 @@ class NowPlayingService : NotificationListenerService() {
         @Volatile var lastSent: String = "(nothing yet)"
         @Volatile var linkOpen: Boolean = false
         @Volatile var linkKind: String = ""
+        /** The running service, for the app screen's buttons. */
+        @Volatile var instance: NowPlayingService? = null
+    }
+
+    /** Send a command to the Pi ({"cmd": name}) over the open link, right
+     *  away (not waiting out a Bluetooth retry). [done] runs on the main thread. */
+    fun command(name: String, done: (Boolean) -> Unit) {
+        io.execute {
+            bt.retryNow()
+            val ok = sendLine(JSONObject().put("cmd", name).toString())
+            main.post { done(ok) }
+        }
     }
 
     private val main = Handler(Looper.getMainLooper())
@@ -88,6 +100,7 @@ class NowPlayingService : NotificationListenerService() {
     }
 
     override fun onListenerConnected() {
+        instance = this
         link = UsbLink(this)
         bt = BtLink(this)
         val f = IntentFilter().apply {
@@ -106,6 +119,7 @@ class NowPlayingService : NotificationListenerService() {
     }
 
     override fun onListenerDisconnected() {
+        instance = null
         main.removeCallbacks(heartbeat)
         sessions?.removeOnActiveSessionsChangedListener(sessionsChanged)
         controller?.unregisterCallback(callback)

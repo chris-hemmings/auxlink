@@ -71,6 +71,7 @@ IFACE = "org.mpris.MediaPlayer2.Player"
 BLUEZ = "org.bluez"
 CALL_STATE_FILE = "/run/auxlink/call"   # written by hfp-relay
 KICK_FILE = "/run/auxlink/audio-kick"
+SETUP_WIFI_FILE = "/run/auxlink/setup-wifi"   # the app's Setup button; auxlink-web turns the Wi-Fi on
 # "1" while hfp-relay has the car's mic borrowed for the source's voice search
 MIC_ACTIVE_FILE = "/run/auxlink/mic-active"
 VOICE_GRACE = 4.0     # s after voice search in which the car's play/pause is ignored   # read by auxlink-audio (play pressed in the car)
@@ -1069,6 +1070,23 @@ def setup_bt_source(bus, om, player):
     log(f"Music source: Bluetooth ({SOURCE or 'not paired yet'})")
 
 
+def app_command(player, cmd):
+    """A button in the AuxLink app (over USB via the XIAO, or Bluetooth)."""
+    if cmd == "fix":
+        log("App: fix sound - restarting the car's stream")
+        player.kick_audio()
+    elif cmd == "setup":
+        log("App: turn on the setup Wi-Fi")
+        try:
+            os.makedirs(os.path.dirname(SETUP_WIFI_FILE), exist_ok=True)
+            with open(SETUP_WIFI_FILE, "w") as f:
+                f.write(str(time.time()))
+        except OSError as e:
+            log(f"Cannot write {SETUP_WIFI_FILE}: {e}")
+    else:
+        log(f"App: unknown command {cmd!r}")
+
+
 class AppLink(dbus.service.Object):
     """Bluetooth serial service for the now-playing app (Bluetooth source)."""
 
@@ -1234,7 +1252,9 @@ def main():
                 continue
             try:
                 info = json.loads(line.decode("utf-8", "replace"))
-                if "art" in info:
+                if "cmd" in info:
+                    app_command(player, str(info["cmd"]))
+                elif "art" in info:
                     player.smo_art(info)
                 else:
                     player.smo_update(info)

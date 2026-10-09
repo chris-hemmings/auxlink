@@ -430,6 +430,14 @@ The app runs in the background by itself. You don't need to keep it open.
 If the car ever shows an old track, play/pause once; the app re-checks every
 5 seconds which player is playing.
 
+The app's buttons (they need the data link):
+- **Fix sound**: the car shows music playing but it's silent. The Pi restarts
+  the music stream to the car, like **Check and fix**. Pausing and pressing
+  play again in the car within a few seconds does the same.
+- **Setup: turn on the setup Wi-Fi**: the Pi turns on its setup Wi-Fi for 15
+  minutes. Connect the device to **AuxLink-setup** and tap **Open setup
+  page** (or let the sign-in prompt open it).
+
 ### 6.4 Other requirements for the device
 - **Android 8.0 or newer.**
 - **USB host / OTG** for the wired source (the XIAO).

@@ -756,6 +756,7 @@ def ap_loop():
     while True:
         try:
             c = auxconf.load()
+            app_request()
             if uptime() > 25:
                 ensure_wlan()
             now = time.monotonic()
@@ -783,6 +784,26 @@ def ap_loop():
         except Exception as e:  # never let the Wi-Fi manager die
             print(f"setup Wi-Fi: {e}", flush=True)
         time.sleep(5)
+
+
+SETUP_WIFI_FILE = "/run/auxlink/setup-wifi"   # written by auxlink-media: the app's Setup button
+
+
+def app_request():
+    """The AuxLink app's Setup button: setup Wi-Fi on for 15 minutes, like
+    the setup button."""
+    try:
+        t = os.stat(SETUP_WIFI_FILE).st_mtime
+    except OSError:
+        t = 0
+    if "app_seen" not in STATE:
+        STATE["app_seen"] = t          # one from before this start: already handled
+        return
+    if t and t != STATE["app_seen"]:
+        STATE["app_seen"] = t
+        STATE["button_until"] = time.monotonic() + 15 * 60
+        STATE["boot_window_done"] = False
+        auxconf.event("AuxLink app: setup Wi-Fi on for 15 minutes")
 
 
 def button_loop():

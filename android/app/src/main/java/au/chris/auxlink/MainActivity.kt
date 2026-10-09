@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Activity
 import android.content.ComponentName
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -12,9 +13,11 @@ import android.provider.Settings
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 
 class MainActivity : Activity() {
     private lateinit var status: TextView
+    private lateinit var note: TextView
     private val main = Handler(Looper.getMainLooper())
     private val refresh = object : Runnable {
         override fun run() { update(); main.postDelayed(this, 1000) }
@@ -30,15 +33,61 @@ class MainActivity : Activity() {
                 startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
             }
         }
+        note = TextView(this).apply { textSize = 16f }
+        // Same as pressing play in the car while it is silent: the Pi
+        // restarts the car's stream once.
+        val fix = Button(this).apply {
+            text = "Fix sound"
+            setOnClickListener { send("fix", "Asked the Pi to restart the music stream to the car") }
+        }
+        // The setup page, without the web page's own way in: the Pi turns on
+        // its setup Wi-Fi for 15 minutes.
+        val setup = Button(this).apply {
+            text = "Setup: turn on the setup Wi-Fi"
+            setOnClickListener {
+                send("setup", "Setup Wi-Fi is turning on (up to 30 s).\n" +
+                    "Connect this device's Wi-Fi to \"AuxLink-setup\" (password auxlink-setup, " +
+                    "unless you changed them), then tap Open setup page. If the Pi is on your " +
+                    "home Wi-Fi instead, it opens at http://auxlink.local")
+            }
+        }
+        val open = Button(this).apply {
+            text = "Open setup page"
+            setOnClickListener {
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("http://10.42.0.1/")))
+                } catch (e: Exception) {
+                    Toast.makeText(this@MainActivity, "No web browser on this device", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
         setContentView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(pad, pad, pad, pad)
             addView(status)
             addView(grant)
+            addView(fix)
+            addView(setup)
+            addView(open)
+            addView(note)
         })
         // Bluetooth music source: the app reaches the Pi over Bluetooth.
         if (Build.VERSION.SDK_INT >= 31 && !BtLink(this).permitted())
             requestPermissions(arrayOf(Manifest.permission.BLUETOOTH_CONNECT), 1)
+    }
+
+    private fun send(cmd: String, ok: String) {
+        val svc = NowPlayingService.instance
+        if (svc == null) {
+            note.text = "Not connected: allow notification access first."
+            return
+        }
+        note.text = "Sending..."
+        svc.command(cmd) { sent ->
+            note.text = if (sent) ok else
+                "Couldn't reach the Pi: plug in the XIAO's USB, or (Bluetooth music source) " +
+                "make sure this device is connected to AuxLink-music."
+        }
     }
 
     override fun onResume() { super.onResume(); main.post(refresh) }

@@ -44,6 +44,9 @@ class BtLink(private val context: Context) {
 
     fun isOpen() = sock != null
 
+    /** A button was pressed: try at once, not after the retry wait. */
+    fun retryNow() { if (sock == null) nextTry = 0L }
+
     @Synchronized
     fun send(line: String): Boolean {
         if (out == null && !open()) return false
