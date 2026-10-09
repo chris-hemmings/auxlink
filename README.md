@@ -276,9 +276,12 @@ No XIAO and no wiring.
 
 - **Track info, play state and car buttons:** go over Bluetooth, so the app
   is optional.
-- **Album art:** install the SMO Now Playing app (section 6) and allow it
-  **Nearby devices / Bluetooth** when it asks. It then connects to the Pi over
-  Bluetooth by itself and sends the art (and fuller track info).
+- **Album art:** passed straight through from the device over Bluetooth
+  (AVRCP cover art, Android 12+ players that publish artwork), so no app is
+  needed. It shows from the second track after connecting. If the device
+  doesn't offer it (the Pi's log says so), install the SMO Now Playing app
+  (section 6) and allow it **Nearby devices / Bluetooth**: it then sends the
+  art to the Pi over Bluetooth instead.
 - **Voice search:** the Pi is also a **Bluetooth headset** to the device, and
   its mic is the **car's cabin mic** (the Tesla shows a call while it
   listens; its hang-up button ends it). Anything the device says back (the

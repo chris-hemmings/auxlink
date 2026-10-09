@@ -24,6 +24,7 @@ import json
 import pwd
 import socket
 import os
+import struct
 import subprocess
 import sys
 import termios
@@ -608,12 +609,200 @@ BT_STATUS = {"playing": "Playing", "forward-seek": "Playing", "reverse-seek": "P
              "paused": "Paused", "stopped": "Stopped", "error": "Stopped"}
 
 
+def sdp_bip_psm(adapter, addr):
+    """The L2CAP PSM of the source's cover-art (BIP) server, from its AVRCP
+    target SDP record (Additional Protocol Descriptor List). None if it
+    doesn't offer cover art. Raises OSError if it can't be asked."""
+    s = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_SEQPACKET, socket.BTPROTO_L2CAP)
+    try:
+        s.settimeout(5)
+        s.bind((adapter, 0))
+        s.connect((addr, 1))                     # SDP
+        pattern = b"\x35\x03\x19\x11\x0c"        # { UUID16 AV Remote Control Target }
+        attrs = b"\x35\x03\x09\x00\x0d"          # { attribute 0x000D }
+        data, cont, tid = b"", b"\x00", 1
+        while True:
+            params = pattern + b"\xff\xff" + attrs + cont
+            s.send(struct.pack(">BHH", 0x06, tid, len(params)) + params)
+            r = s.recv(4096)
+            if len(r) < 7 or r[0] != 0x07:
+                return None
+            n = struct.unpack(">H", r[5:7])[0]
+            data += r[7:7 + n]
+            cont = r[7 + n:]
+            if not cont or cont[0] == 0:
+                break
+            cont, tid = cont[:1 + cont[0]], tid + 1
+    finally:
+        s.close()
+
+    def parse(b, i):
+        """One SDP data element at b[i] -> ((type, value), next index)."""
+        t, z = b[i] >> 3, b[i] & 7
+        i += 1
+        if z < 5:
+            n = 0 if t == 0 else (1, 2, 4, 8, 16)[z]
+        else:
+            k = (1, 2, 4)[z - 5]
+            n = int.from_bytes(b[i:i + k], "big")
+            i += k
+        raw = b[i:i + n]
+        if t in (6, 7):
+            items, j = [], 0
+            while j < n:
+                v, j = parse(raw, j)
+                items.append(v)
+            return ("seq", items), i + n
+        if t in (1, 3):
+            return ("uint" if t == 1 else "uuid", int.from_bytes(raw, "big")), i + n
+        return ("other", raw), i + n
+
+    def find(node):
+        kind, val = node
+        if kind != "seq":
+            return None
+        first = val[0] if val else None
+        if (first and first[0] == "seq" and len(first[1]) >= 2 and first[1][0] == ("uuid", 0x0100)
+                and first[1][1][0] == "uint" and ("seq", [("uuid", 0x0008)]) in val[1:]):
+            return first[1][1][1]                # (L2CAP, psm), (OBEX)
+        for v in val:
+            p = find(v)
+            if p:
+                return p
+        return None
+
+    try:
+        tree, _ = parse(data, 0)
+    except (IndexError, ValueError):
+        return None
+    return find(tree)
+
+
+class BtArt:
+    """MUSIC_SOURCE=bluetooth: album art straight from the source over
+    Bluetooth (AVRCP 1.6 cover art), so no app is needed for it. The image
+    is fetched by tb-bip.py (running as the audio user, where obexd is) and
+    then shown in the car exactly like the app's."""
+
+    def __init__(self, player):
+        self.player = player
+        self.proc = None
+        self.connected = False
+        self.unsupported = False    # the source has no cover art: don't keep asking
+        self.next_try = 0.0
+        self.pending = None         # handle being fetched
+        self.done = None            # handle last shown
+        self.note = ""
+        try:
+            self.uid = pwd.getpwnam(AUDIO_USER).pw_uid
+        except KeyError:
+            self.uid = None
+        self.file = f"/run/user/{self.uid}/tb-bt-art.jpg"
+
+    def say(self, msg):
+        if msg != self.note:
+            log(msg)
+            self.note = msg
+
+    def send(self, **msg):
+        if self.proc is None:
+            if self.uid is None:
+                return
+            try:
+                self.proc = subprocess.Popen(
+                    ["runuser", "-u", AUDIO_USER, "--", "env", f"XDG_RUNTIME_DIR=/run/user/{self.uid}",
+                     f"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{self.uid}/bus",
+                     "python3", "/usr/local/bin/tb-bip.py"],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
+            except OSError as e:
+                self.say(f"Bluetooth album art: cannot start tb-bip.py: {e}")
+                return
+            GLib.io_add_watch(self.proc.stdout.fileno(), GLib.IO_IN | GLib.IO_HUP, self.output)
+        try:
+            self.proc.stdin.write(json.dumps(msg) + "\n")
+            self.proc.stdin.flush()
+        except OSError:
+            self.reset()
+
+    def reset(self):
+        if self.proc:
+            try:
+                self.proc.kill()
+            except OSError:
+                pass
+        self.proc, self.connected, self.pending = None, False, None
+
+    def output(self, fd, cond):
+        line = self.proc.stdout.readline() if self.proc else ""
+        if not line:
+            self.reset()
+            return False
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            return True
+        if msg.get("connected"):
+            self.connected = True
+            self.say("Bluetooth album art: connected to the source's cover-art service")
+        elif msg.get("got"):
+            self.pending = None
+            try:
+                jpeg = open(msg["file"], "rb").read()
+            except OSError as e:
+                self.say(f"Bluetooth album art: cannot read the image: {e}")
+                return True
+            self.done = msg["got"]
+            self.player.smo_art({"art": base64.b64encode(jpeg).decode(), "art_id": "bt-" + msg["got"]})
+        elif msg.get("error"):
+            self.say(f"Bluetooth album art: {msg.get('cmd')} failed: {msg['error']}")
+            if msg.get("cmd") == "connect":
+                self.connected = False
+            elif msg.get("cmd") == "get":
+                self.done, self.pending = msg.get("handle"), None   # don't retry this one
+        return True
+
+    def update(self, have_player, handle):
+        """Called with the source's current state every few seconds and on changes."""
+        if APP_LINK["sock"] is not None:
+            return                                # the app is sending art itself
+        if not have_player:
+            if self.connected:
+                self.send(cmd="close")
+            self.connected, self.unsupported, self.pending = False, False, None
+            return
+        if self.unsupported:
+            return
+        if not self.connected:
+            if time.time() < self.next_try:
+                return
+            self.next_try = time.time() + 30
+            try:
+                psm = sdp_bip_psm(CONF.get("SOURCE_ADAPTER", "").upper(), SOURCE)
+            except OSError as e:
+                self.say(f"Bluetooth album art: can't read the source's services yet ({e})")
+                return
+            if not psm:
+                self.unsupported = True
+                self.say("Bluetooth album art: the source doesn't offer album art over Bluetooth "
+                         "(the now-playing app can send it instead)")
+                return
+            self.send(cmd="connect", dest=SOURCE, source=CONF.get("SOURCE_ADAPTER", "").upper(), psm=psm)
+            return
+        if handle and handle not in (self.done, self.pending):
+            self.pending = handle
+            self.send(cmd="get", handle=handle, file=self.file)
+        elif not handle and self.done not in (None, "none") and self.pending is None:
+            self.done = "none"
+            self.player.smo_art({"art": "", "art_id": "bt-none"})
+
+
 def setup_bt_source(bus, om, player):
     """MUSIC_SOURCE=bluetooth: the source's AVRCP player (org.bluez.MediaPlayer1
     under its device object) gives track info and play state, and receives
     the wheel buttons - the same jobs the SMO app and the XIAO do when wired."""
     global BT_KEYS
     dev_part = "/dev_" + SOURCE.replace(":", "_")
+    art = BtArt(player)
 
     def find_player():
         for path, ifaces in om.GetManagedObjects().items():
@@ -622,9 +811,10 @@ def setup_bt_source(bus, om, player):
         return None, None
 
     def report(props):
+        track = props.get("Track", {}) or {}
+        art.update(True, str(track.get("ImgHandle", "") or ""))
         if APP_LINK["sock"] is not None:
             return                     # the app is sending richer info itself
-        track = props.get("Track", {}) or {}
         player.smo_update({
             "title": str(track.get("Title", "")),
             "artist": str(track.get("Artist", "")),
@@ -643,6 +833,8 @@ def setup_bt_source(bus, om, player):
             return True
         if path:
             report(props)
+        else:
+            art.update(False, "")
         return True
 
     def changed(iface, changes, invalidated, path=None):
