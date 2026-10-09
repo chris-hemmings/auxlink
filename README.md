@@ -1,8 +1,9 @@
 # AuxLink
 
-A Raspberry Pi 4 that sits between a **Tesla**, your **phone** and an
-**Android music device** (for example a Screenmate/SMO head unit, an old phone
-or a tablet):
+Bluetooth music, calls and voice for **any car with Bluetooth**, from an
+**Android music device**: a Screenmate/SMO-style head unit, an old phone or a
+tablet. A Raspberry Pi 4 sits between your **car**, your **phone** and that
+music device:
 
 - **Music** from the Android device plays in the car over Bluetooth, with
   track title, artist, album, progress, **album art** and the car's
@@ -17,7 +18,7 @@ or a tablet):
 
 ```
                  Bluetooth (Pi = "phone")              Bluetooth (Pi = "car kit")
-   Tesla  <------------------------------>  Pi 4  <------------------------------>  your phone
+   Car    <------------------------------>  Pi 4  <------------------------------>  your phone
                                              ^
                                              |  music in: one of
                                              |   - Wired: XIAO RP2040 (USB sound card for the
@@ -60,7 +61,7 @@ as three separate kinds of release:
 | **Power for the Pi in the car** | 5 V / 3 A. A good USB-C car charger or a 12 V to 5 V 3 A converter. Weak supplies cause Bluetooth drop-outs. For the USB-C music source the Pi must be powered through its GPIO pins or a splitter instead (see 5.3). |
 | **2 × USB Bluetooth dongles** (recommended) | **TP-Link UB500** (Realtek RTL8761BU) is what this was built and tested on. Two identical ones are fine. One is for the car, one for your phone. See [Bluetooth dongles](#bluetooth-dongles). |
 | **An Android music device** | Android 8.0 or newer. For the wired source it needs **USB host (OTG)**, which any head unit with a USB port has. |
-| **A Tesla** | Any model with Bluetooth music and phone. |
+| **A car with Bluetooth** | Any car with Bluetooth hands-free calling and Bluetooth music. Track info and the car's buttons need AVRCP, which almost every car has. Album art needs a car that shows cover art for phones (AVRCP 1.6). Built and tested on a Tesla; see [Other cars](#other-cars). |
 
 ### Needed for the wired music source (recommended)
 | Item | Notes |
@@ -233,7 +234,7 @@ the Android device's USB port. Connect only the 6 wires below.
 | Setup Wi-Fi (made by the Pi) | `AuxLink-setup` | `auxlink-setup` |
 | Setup page | http://10.42.0.1 (or http://auxlink.local on your home Wi-Fi) | none, unless you set a page password |
 | Pi login (SSH or keyboard) | user `auxlink` | `auxlink`. Change it under **Pi login** |
-| Bluetooth: what the **Tesla** pairs with | **AuxLink** | code shown on the car |
+| Bluetooth: what the **car** pairs with | **AuxLink** | code shown on the car |
 | Bluetooth: what your **phone** pairs with | **AuxLink-phone** | code shown on the phone |
 | Bluetooth: a **Bluetooth music source** | **AuxLink-music** (or AuxLink-phone if it shares that adapter) | code shown on the device |
 
@@ -248,8 +249,7 @@ There is no "AuxLink-car": **AuxLink** is the car side.
 Pairings are stored on the SD card, not in the dongles. After flashing a new
 card, the car, phone and music device still remember the dongles with the
 old keys, so remove the old entries first:
-- **In the Tesla:** Bluetooth → remove **AuxLink**, or an older name such as
-  teslabridge.
+- **In the car:** Bluetooth → remove **AuxLink**.
 - **On the phone:** forget **AuxLink-phone**.
 - **On the music device:** forget **AuxLink-music**.
 
@@ -271,11 +271,11 @@ Then pair them again as below.
 3. **Bluetooth adapters:** choose which adapter is the **car** side and which
    is the **phone** side. With two dongles, use one each and leave the
    built-in unused. Then tap **Save adapters**.
-4. **Pair the car:** in the Tesla, go to **Bluetooth → Add new device**,
+4. **Pair the car:** in the car's Bluetooth settings, add a new device,
    choose **AuxLink** and confirm the code. The Pi accepts it by itself.
    With no car paired, this side is already visible; otherwise tap
    **Pair a car** first.
-   - Your real phone should **not** stay paired directly with the Tesla.
+   - Your real phone should **not** stay paired directly with the car.
      Remove it from the car's Bluetooth list; it connects through the Pi
      instead.
 5. **Pair your phone:** tap **Pair a phone**. Within 2 minutes, go to the
@@ -308,8 +308,9 @@ connection are not affected when you switch.
 - **Track info and album art:** from the **AuxLink** app (section 6),
   over the XIAO's data link.
 - **Car buttons:** reach the device as USB media keys.
-- **Voice search:** the device's mic input is the **car's cabin mic** (the
-  Tesla shows a call while it listens; its hang-up button ends it).
+- **Voice search:** the device's mic input is the **car's cabin mic**. By default
+  the car shows a call while it listens, and its hang-up button ends it (see
+  [Other cars](#other-cars)).
 
 ### 5.2 Bluetooth (phone or player)
 No XIAO and no wiring.
@@ -329,8 +330,8 @@ No XIAO and no wiring.
   (section 6) and allow it **Nearby devices / Bluetooth**: it then sends the
   art to the Pi over Bluetooth instead.
 - **Voice search:** the Pi is also a **Bluetooth headset** to the device, and
-  its mic is the **car's cabin mic** (the Tesla shows a call while it
-  listens; its hang-up button ends it). Anything the device says back (the
+  its mic is the **car's cabin mic**. By default the car shows a call while it
+  listens, and its hang-up button ends it. Anything the device says back (the
   assistant's answer) plays through the car.
   - In the device's Bluetooth settings for AuxLink-music, leave
     **Phone calls** (or "Headset") **on** as well as **Media audio**.
@@ -450,6 +451,30 @@ If the car ever shows an old track, play/pause once; the app re-checks every
 - **The app:** Obtainium (or install the newer APK).
 - **The XIAO:** only when there's a new "AuxLink XIAO firmware" release.
   Flash it again with BOOT held, as in 3.1.
+
+---
+
+## Other cars
+
+AuxLink uses only standard Bluetooth profiles, so it works with any car that
+supports Bluetooth calls and music:
+- **Calls:** HFP.
+- **Music:** A2DP.
+- **Track info and buttons:** AVRCP.
+- **Album art:** AVRCP 1.6 cover art.
+- **Contacts and recent calls:** PBAP.
+
+Its defaults were tuned on a Tesla. Three settings on the setup page
+(**Settings**) let you adjust it for other cars:
+
+| Setting | Default (Tesla) | Try this if... |
+|---|---|---|
+| **Pi reconnects the car itself** | off: the Pi waits for the car to connect | the car doesn't reconnect by itself after it starts. The Tesla dropped the connection when the Pi called it. |
+| **Car mic for voice search** | *Shown as a call* | the car shows a call you'd rather not see: try *Voice recognition*, the standard way. The Tesla ignores it, but many cars support it. |
+| **Higher-quality music (SBC-XQ)** | off | you want better sound and the car supports it. The Tesla disconnected when it was switched on. |
+
+Album art only shows on cars that display cover art for phones. Everything
+else works without it.
 
 ---
 
