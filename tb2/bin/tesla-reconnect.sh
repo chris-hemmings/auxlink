@@ -1,6 +1,7 @@
 #!/bin/bash
 # Keeps the Bluetooth links up:
-#   car adapter   -> Tesla  (the Pi is the phone / music source)
+#   car adapter   -> Tesla  (the Pi is the phone / music source; the car
+#                            connects itself - see CAR_CALLS)
 #   phone adapter -> Oppo   (the Pi is the car kit)
 # and recovers RTL8761BU dongles that come up stuck after a warm reboot.
 # Rules that keep it from hurting the car link:
@@ -74,15 +75,20 @@ while true; do
   else
     now=$(date +%s)
     if [ "$car_was" = yes ]; then
-      echo "Car disconnected; giving it ${CAR_FIRST_WAIT}s to reconnect by itself"
+      if [ "${CAR_CALLS:-0}" = 1 ]; then
+        echo "Car disconnected; giving it ${CAR_FIRST_WAIT}s to reconnect by itself"
+      else
+        echo "Car disconnected; waiting for it to reconnect"
+      fi
       car_next=$((now + CAR_FIRST_WAIT)); car_wait=$CAR_MIN_WAIT
     fi
     car_was=no
     # The Tesla hangs up on connections the Pi starts, and reconnects by
     # itself - but only if the Pi isn't calling it at that moment: a Pi
     # attempt colliding with the car's own connect made the car drop both.
-    # So call the car rarely, backing off after each failure.
-    if [ "$now" -ge "$car_next" ]; then
+    # So by default (CAR_CALLS=0) never call it; with CAR_CALLS=1 call
+    # rarely, backing off after each failure.
+    if [ "${CAR_CALLS:-0}" = 1 ] && [ "$now" -ge "$car_next" ]; then
       if err=$(timeout 25 $BT "$CAR_ADAPTER" "$CAR" connect 2>&1 >/dev/null); then
         echo "Reconnected to car"; car_err=; car_wait=$CAR_MIN_WAIT
       else
