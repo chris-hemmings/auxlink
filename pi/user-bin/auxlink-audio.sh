@@ -104,7 +104,7 @@ quick_restart() {
 }
 # Start the loopback (input -> car). The caller has lifted any suspend.
 start_loop() {
-  unmute_input
+  [ "$1" = muted ] || unmute_input
   pw-loopback -c 2 -m '[ FL FR ]' \
               --capture-props="target.object=$INPUT node.name=smo_capture audio.position=[ FL FR ]" \
               --playback-props="target.object=$SINK node.name=to_tesla audio.position=[ FL FR ]" &
@@ -298,16 +298,19 @@ while true; do
     # playing yet this starts nothing; the car sees START when the loopback
     # links, with music in it.
     timeout 5 pactl suspend-sink "$SINK" 0
-    start_loop
     if [ -n "$RECHECK" ] && [ "$RECHECK_AT" = 0 ]; then
-      # After a call the car sometimes ignores this first start. Restart at
-      # once - as soon as it is linked, well inside the car's own buffering,
-      # so the first stream is never heard - and start the fresh one
-      # straight away: one start heard, in stereo.
+      # After a call the car sometimes ignores this first start and
+      # sometimes plays it. So it carries silence (input muted), is restarted
+      # as soon as it is linked, and only the fresh stream carries the
+      # music: one start heard, in stereo, either way.
+      timeout 5 pactl set-source-mute "$INPUT" 1 && RESTART_MUTED=$INPUT
+      start_loop muted
       for _ in $(seq 20); do linked && break; sleep 0.1; done
       echo "Restarting the car's stream once ($RECHECK), so a car that ignored the first start plays it"
       RECHECK=""
       quick_restart "$SINK"
+      start_loop
+    else
       start_loop
     fi
     sleep 1; continue
