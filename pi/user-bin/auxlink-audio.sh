@@ -11,7 +11,8 @@
 # is accepted but stays silent. So the stream runs only while the car is
 # ready AND the SMO is playing AND there is no call, and every start is a
 # fresh one (new loopback) with music in it:
-#   * car (re)connects  -> wait until it is ready (HFP set up, or 12 s)
+#   * car (re)connects  -> wait until it is ready (HFP set up, or 12 s),
+#                          then start it like after a call (see below)
 #   * SMO plays         -> start (auxlink-media has already told the car
 #                          "Playing" when it writes PLAY_FILE)
 #   * SMO pauses / call -> stop, and suspend the car output (car sees pause)
@@ -218,6 +219,10 @@ while true; do
   if [ "$GONE" -ge 2 ]; then
     CONNECTED_AT=$(date +%s); WAITING_SAID=""
     echo "Car connected; waiting until it is ready before starting music"
+    # A car that connects while music already plays can take the first
+    # stream silently, like after a call: start it the same way (a muted
+    # first start, then the real one), so it plays either way.
+    RECHECK="the car just connected"; RECHECK_AT=0
   fi
   GONE=0
 
