@@ -81,14 +81,20 @@ def trim(card):
             props.append(line.rstrip("\r\n"))
     body = []
     for p in props:
-        name = p.split(":", 1)[0].split(";", 1)[0].upper()
-        if "." in name:                   # "item1.TEL" grouping prefix
-            name = name.rsplit(".", 1)[1]
-        if name in KEEP:
-            body.append(p)
+        head, sep, value = p.partition(":")
+        name, *params = head.split(";")
+        name = name.rsplit(".", 1)[-1]    # "item1.TEL" grouping prefix
+        if not sep or name.upper() not in KEEP:
+            continue
+        # obexd-dummy's parser (libical) rejects the WHOLE card if a
+        # parameter name or value doesn't start with a letter - Android's
+        # call history writes "TEL;TYPE=0:...", which dropped every call.
+        params = [q for q in params
+                  if q and all(w[:1].isalpha() for w in q.split("="))]
+        body.append(";".join([name] + params) + ":" + value)
     # A contact with many numbers: drop the last ones until it fits.
     while card_cost(["BEGIN:VCARD", "END:VCARD"] + body) > CARD_BUDGET:
-        tels = [i for i, p in enumerate(body) if p.split(":", 1)[0].split(";", 1)[0].upper().endswith("TEL")]
+        tels = [i for i, p in enumerate(body) if p.split(":", 1)[0].split(";", 1)[0].upper() == "TEL"]
         if not tels:
             break
         del body[tels[-1]]
