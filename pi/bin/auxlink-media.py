@@ -198,7 +198,7 @@ VOLUME = {"last_line": 0.0, "last_max": 0.0}
 
 
 def smo_volume_max(why):
-    if CONF.get("SMO_VOLUME_MAX", "1") != "1" or MUSIC_SOURCE != "wired":
+    if CONF.get("SMO_VOLUME_MAX", "1") != "1" or MUSIC_SOURCE not in ("wired", "usbc"):
         return
     if time.time() - VOLUME["last_max"] < 60:
         return
@@ -207,10 +207,71 @@ def smo_volume_max(why):
     left = [30]                     # more presses than any Android volume scale has steps
 
     def press():
-        send(b"+")
+        if MUSIC_SOURCE == "usbc":
+            hid_key(b"+")
+        else:
+            send(b"+")
         left[0] -= 1
         return left[0] > 0
     GLib.timeout_add(100, press)
+
+
+class UsbcReplug:
+    """MUSIC_SOURCE=usbc: Android hands the app the Pi's USB-C side (its
+    "Always" choice) only when it sees it being plugged in. Connected while
+    the music device boots, the app never gets its link and no line arrives
+    (the app sends at least every 5 s once it has it). So if nothing has
+    arrived 15 s after the host configured the gadget, switch the gadget off
+    and on: Android sees a fresh plug-in. Again after 30 s if that came too
+    early in its boot; three tries per connection at most."""
+    GADGET_UDC = "/sys/kernel/config/usb_gadget/auxlink/UDC"
+
+    def __init__(self):
+        self.up_since = None
+        self.tries = 0
+
+    @staticmethod
+    def udc():
+        try:
+            return os.listdir("/sys/class/udc")[0]
+        except (OSError, IndexError):
+            return None
+
+    def tick(self):
+        try:
+            self.check()
+        except Exception as e:   # never stop the timer
+            log(f"USB-C replug check failed: {e}")
+        return True
+
+    def check(self):
+        name = self.udc()
+        try:
+            state = open(f"/sys/class/udc/{name}/state").read().strip() if name else ""
+        except OSError:
+            state = ""
+        now = time.time()
+        if state != "configured":
+            if self.up_since is not None and state in ("not attached", ""):
+                self.tries = 0          # unplugged: a new connection starts over
+            self.up_since = None
+            return
+        if self.up_since is None:
+            self.up_since = now
+        if VOLUME["last_line"] >= self.up_since or self.tries >= 3:
+            return
+        wait = 15 if self.tries == 0 else 30
+        if now - self.up_since < wait:
+            return
+        self.tries += 1
+        log(f"USB-C: no word from the AuxLink app; replugging so Android gives it the link "
+            f"(try {self.tries} of 3)")
+        with open(self.GADGET_UDC, "w") as f:
+            f.write("\n")
+        time.sleep(0.8)
+        with open(self.GADGET_UDC, "w") as f:
+            f.write(name)
+        self.up_since = None
 
 
 class UsbcMic:
@@ -1233,6 +1294,9 @@ def main():
         return True
 
     GLib.timeout_add(250, mic_watchdog)
+
+    if MUSIC_SOURCE == "usbc":
+        GLib.timeout_add(1000, UsbcReplug().tick)
 
     if usbc_mic:
         def usbc_mic_poll():
