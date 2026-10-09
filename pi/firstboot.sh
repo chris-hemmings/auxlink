@@ -22,13 +22,16 @@ echo "===== $(date) auxlink first-boot install ====="
 
 if [ -e /etc/auxlink-image ]; then
   echo "AuxLink image $(cat /etc/auxlink-image): finishing the setup"
-  echo "Waiting for the user (set in Raspberry Pi Imager's settings)..."
+  echo "Waiting for the user (made in the image: auxlink)..."
   for i in $(seq 1 360); do getent passwd 1000 >/dev/null && break; sleep 5; done
   U=$(getent passwd 1000 | cut -d: -f1)
   if [ -z "$U" ]; then
     echo "No user yet: create one (Imager settings, or the console prompt), then reboot."
     exit 1
   fi
+  # Keep the name the setup page is found by (auxlink.local), unless it was
+  # deliberately set to something else.
+  [ "$(hostname)" = raspberrypi ] && hostnamectl set-hostname auxlink
   loginctl enable-linger "$U"
   bash /opt/auxlink/install.sh || { echo "install.sh failed"; exit 1; }
   touch "$DONE"

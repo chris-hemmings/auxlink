@@ -40,6 +40,29 @@ if ldd $BINS | grep -q "not found"; then
   ldd $BINS | grep "not found"; echo "a library the programs need was removed"; exit 1
 fi
 
+echo "-- user and hostname (Raspberry Pi Imager can't customise a custom image)"
+# A ready user, so the card works with no Imager settings and no keyboard:
+# auxlink / auxlink (change it with passwd). If Imager settings are used
+# anyway, their user is made as well; AuxLink keeps using this one.
+if ! getent passwd 1000 >/dev/null; then
+  groups=""
+  for g in sudo adm audio video plugdev netdev bluetooth dialout gpio i2c spi input render users; do
+    getent group "$g" >/dev/null && groups="$groups,$g"
+  done
+  useradd -m -u 1000 -s /bin/bash -G "${groups#,}" auxlink
+  echo "auxlink:auxlink" | chpasswd
+fi
+# Don't stop at the console asking for a new user on the first boot.
+systemctl disable userconfig.service >/dev/null 2>&1 || true
+systemctl mask userconfig.service >/dev/null 2>&1 || true
+echo auxlink > /etc/hostname
+if grep -q '^127\.0\.1\.1' /etc/hosts; then
+  sed -i 's/^127\.0\.1\.1.*/127.0.1.1\tauxlink/' /etc/hosts
+else
+  printf '127.0.1.1\tauxlink\n' >> /etc/hosts
+fi
+echo "bootfs first-boot files:"; ls /boot/firmware | grep -iE "user-data|meta-data|network-config|firstrun|userconf" || true
+
 echo "-- first-boot setup"
 install -m 644 $A/image/auxlink-firstboot.service /etc/systemd/system/
 systemctl enable auxlink-firstboot

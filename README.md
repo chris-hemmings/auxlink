@@ -108,19 +108,22 @@ testing.
    - **OS:** scroll to the bottom → **Use custom** → choose the
      `.img.xz` file. There's no need to unzip it.
    - **Storage:** your microSD card.
-3. When Imager asks to **apply OS customisation settings**, choose
-   **Edit settings**:
-   - **hostname:** `auxlink`
-   - **username and password:** your choice. This user owns the audio.
-   - **Wi-Fi country:** yours. A Wi-Fi network is optional; add your home
-     one if you like.
-   - **Services:** enable **SSH** if you want to log in later. This is
-     optional.
-4. Write the card, put it in the Pi and power it on.
-5. The first boot takes **a few minutes** and reboots once by itself. No
-   internet is needed: everything is already on the card. A log is written to
-   `bootfs/auxlink-install.log`.
-6. Then carry on with **section 4**: join the Wi-Fi **AuxLink-setup**.
+3. Write the card. There are no settings to fill in: Imager doesn't offer
+   customisation for custom images, and the image doesn't need it. It
+   comes ready with:
+   - hostname **`auxlink`**;
+   - user **`auxlink`**, password **`auxlink`**.
+4. Put the card in the Pi and power it on. The first boot takes **a few
+   minutes** and reboots once by itself. No internet, keyboard or screen is
+   needed. A log is written to `auxlink-install.log` on the card's boot
+   drive.
+5. Then carry on with **section 4**: join the Wi-Fi **AuxLink-setup**.
+
+**SSH (optional):** SSH is off by default. To turn it on, create an empty
+file called **`ssh`** (no extension) on the card's boot drive before the
+first boot. Then log in with `ssh auxlink@auxlink.local`. Change the password
+straight away with **`passwd`**, because everyone with this image knows the
+default.
 
 ### 2.2 Or install onto Raspberry Pi OS yourself
 Use this if you already have Raspberry Pi OS Lite (64-bit) running. It

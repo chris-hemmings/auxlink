@@ -34,7 +34,7 @@ jobs:
           name: AuxLink Pi image ${{ inputs.version }}
           target_commitish: ${{ github.sha }}
           body: |
-            **auxlink-pi-${{ inputs.version }}.img.xz**: flash with Raspberry Pi Imager (Choose OS → Use custom), Raspberry Pi 4. In Imager's settings set the hostname `auxlink`, a username/password and the Wi-Fi country. First boot takes a few minutes and reboots once; then join the Wi-Fi **AuxLink-setup** (password `auxlink-setup`) and open http://10.42.0.1.
+            **auxlink-pi-${{ inputs.version }}.img.xz**: flash with Raspberry Pi Imager (Raspberry Pi 4 → Use custom); no customisation settings are needed. It comes with hostname `auxlink` and user `auxlink` / password `auxlink` (change it with `passwd`; SSH is off unless you put an empty `ssh` file on the boot drive). First boot takes a few minutes and reboots once; then join the Wi-Fi **AuxLink-setup** (password `auxlink-setup`) and open http://10.42.0.1.
 
             **auxlink-pi-update-${{ inputs.version }}.zip**: to update a Pi that is already running AuxLink: setup page → Update.
           files: |
