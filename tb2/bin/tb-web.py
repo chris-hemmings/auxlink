@@ -359,29 +359,16 @@ def act_adapters(body):
     if car not in present or (phone and phone not in present) or car == phone:
         raise ValueError("pick two different adapters that are present")
     c = tbconf.load()
+    if c.get("MUSIC_SOURCE") == "bluetooth" and car == c.get("SOURCE_ADAPTER", "").upper():
+        raise ValueError("that adapter is the music source's; choose another source adapter first")
     upd = {"CAR_ADAPTER": car, "PHONE_ADAPTER": phone}
-    if "music" in body:          # the page's music adapter picker
-        music = str(body.get("music", "")).upper()
-        if music:
-            if music not in present:
-                raise ValueError("pick a music adapter that is present")
-            upd["MUSIC_SOURCE"] = "bluetooth"
-            upd["SOURCE_ADAPTER"] = music
-            if c.get("SOURCE_ADAPTER", "").upper() != music:
-                upd["SOURCE"] = ""   # pairings belong to an adapter
-        elif c.get("MUSIC_SOURCE") == "bluetooth":
-            upd["MUSIC_SOURCE"] = "wired"
-    music_on = upd.get("MUSIC_SOURCE", c.get("MUSIC_SOURCE")) == "bluetooth"
-    if music_on and car == upd.get("SOURCE_ADAPTER", c.get("SOURCE_ADAPTER", "")).upper():
-        raise ValueError("the car's adapter can't also be the music adapter")
     upd.update(bus_keys(ads, car, phone))
     if c.get("CAR_ADAPTER", "").upper() != car:
         upd["CAR"] = ""      # pairings belong to an adapter; pair again
     if c.get("PHONE_ADAPTER", "").upper() != phone:
         upd["PHONE"] = ""
     tbconf.save(upd)
-    tbconf.event("Adapters assigned: car " + car + ", phone " + (phone or "none") +
-                 (", music " + upd["SOURCE_ADAPTER"] if music_on and upd.get("SOURCE_ADAPTER") else ""))
+    tbconf.event("Adapters assigned: car " + car + ", phone " + (phone or "none"))
     tbconf.restart_all(delay=1, skip=("tb-pairing",))
     return {"ok": True}
 
