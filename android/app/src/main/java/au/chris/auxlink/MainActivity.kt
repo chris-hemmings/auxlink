@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Activity
 import android.content.ComponentName
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -74,8 +75,13 @@ class MainActivity : Activity() {
             addView(note)
         })
         // Bluetooth music source: the app reaches the Pi over Bluetooth.
+        // Microphone: only so that the USB plug-in prompt offers "Always"
+        // (see the manifest); nothing is ever recorded.
+        val want = mutableListOf<String>()
         if (Build.VERSION.SDK_INT >= 31 && !BtLink(this).permitted())
-            requestPermissions(arrayOf(Manifest.permission.BLUETOOTH_CONNECT), 1)
+            want += Manifest.permission.BLUETOOTH_CONNECT
+        if (!micAllowed()) want += Manifest.permission.RECORD_AUDIO
+        if (want.isNotEmpty()) requestPermissions(want.toTypedArray(), 1)
     }
 
     /** The setup page wherever the Pi is: its setup Wi-Fi (10.42.0.1), else
@@ -121,6 +127,9 @@ class MainActivity : Activity() {
     override fun onResume() { super.onResume(); main.post(refresh) }
     override fun onPause() { super.onPause(); main.removeCallbacks(refresh) }
 
+    private fun micAllowed() =
+        checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+
     private fun hasAccess(): Boolean {
         val flat = Settings.Secure.getString(contentResolver, "enabled_notification_listeners") ?: ""
         val me = ComponentName(this, NowPlayingService::class.java).flattenToString()
@@ -132,6 +141,8 @@ class MainActivity : Activity() {
         status.text = buildString {
             appendLine("Notification access: " + if (hasAccess()) "granted" else "NOT granted - tap below")
             appendLine("XIAO plugged in: " + if (xiao) "yes" else "no")
+            if (!micAllowed())
+                appendLine("Microphone: NOT allowed - reopen the app and allow it (only so USB can be set to Always; nothing is recorded)")
             if (xiao && !UsbLink(this@MainActivity).permitted())
                 appendLine("USB access: NOT allowed - tap Allow USB (or re-plug the XIAO and tick Always)")
             appendLine("Data link open: " + if (NowPlayingService.linkOpen) "yes - " + NowPlayingService.linkKind else "no")

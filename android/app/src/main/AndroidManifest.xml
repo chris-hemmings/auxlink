@@ -7,6 +7,11 @@
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <!-- Finding the Pi's setup page (Open setup page) -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Never used to record. The XIAO is also a USB sound card (the car's
+         mic for the SMO), and without this Android's plug-in prompt warns
+         about audio capture and drops its "Always" tick box - so it asked
+         at every plug-in. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <application
         android:label="AuxLink"
