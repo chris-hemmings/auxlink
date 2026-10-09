@@ -77,9 +77,10 @@ label.f{display:grid;gap:4px;margin:8px 0}label.f span{color:var(--dim);font-siz
     <div class="grid2">
       <label class="f"><span>Car adapter</span><select id="selCar"></select></label>
       <label class="f"><span>Phone adapter</span><select id="selPhone"></select></label>
+      <label class="f"><span>Music adapter (Bluetooth music source)</span><select id="selMusic"></select></label>
     </div>
     <div class="btns"><button class="ghost" onclick="saveAdapters()">Save adapters</button></div>
-    <div class="k" style="font-size:13px;margin-top:6px">Use the built-in Bluetooth or any plugged-in dongle for each side (for example built-in for the car and a dongle for the phone, or two dongles). Unused adapters are switched off. Changing an adapter clears that side's pairing; pair again afterwards.</div>
+    <div class="k" style="font-size:13px;margin-top:6px">Use the built-in Bluetooth or any plugged-in dongle for each side (for example built-in for the car and a dongle for the phone, or two dongles). Picking a music adapter makes Bluetooth the music source (it can share the phone's adapter, not the car's); 'none' goes back to wired. Unused adapters are switched off. Changing an adapter clears that side's pairing; pair again afterwards.</div>
   </section>
 
   <section class="card"><h2>Settings</h2>
@@ -149,7 +150,7 @@ async function wifiScan(){toast('Scanning…');try{const j=await api('wifi/scan'
 function wifiRemove(n){if(confirm('Remove '+n+'?'))post('wifi/remove',{name:n},'Removed')}
 function wifiConnect(n){if(confirm('Switch off the setup Wi-Fi and join '+n+' now? This page will disconnect; reopen it at http://teslabridge.local on that network.'))post('wifi/connect',{name:n},'Switching…')}
 function esc(t){return String(t).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-function saveAdapters(){post('adapters',{car:$('selCar').value,phone:$('selPhone').value},'Adapters saved')}
+function saveAdapters(){post('adapters',{car:$('selCar').value,phone:$('selPhone').value,music:$('selMusic').value},'Adapters saved');srcLoaded=false}
 function saveSettings(){const b={};for(const k of ['PHONE_ENABLED','PAUSE_FOR_CALLS','CONTACTS_SYNC','AUTO_PAIRABLE'])b[k]=$(k).checked?'1':'0';
   for(const k of ['CALL_RESUME_DELAY','CAR_NAME','PHONE_NAME','SETUP_WIFI_MINUTES','SETUP_WIFI_SSID','SETUP_WIFI_PASS','SETUP_BUTTON_GPIO'])b[k]=$(k).value.trim();
   if($('WEB_PASSWORD').value)b.WEB_PASSWORD=$('WEB_PASSWORD').value;post('config',b,'Settings saved; services restarting')}
@@ -179,10 +180,11 @@ function render(){const c=S.conf;
   $('inCall').textContent=S.in_call?'yes':'no';
   $('services').innerHTML=Object.entries(S.services).map(([k,v])=>'<div class="row '+(v==='active'?'ok':v==='inactive'?'warn':'bad')+'"><span><span class="dot"></span>'+k+'</span><span class="k">'+v+'</span></div>').join('');
   $('adapterList').innerHTML=S.adapters.map(a=>'<div class="row"><span class="mono">'+a.hci+' · '+a.address+'</span><span class="k">'+a.bus+(a.role?' · '+a.role:'')+(a.discoverable?' · discoverable':'')+'</span></div>').join('')||'<div class="k">No adapters found'+(S.bt_error?': '+S.bt_error:'')+'</div>';
-  for(const [sel,key] of [['selCar','CAR_ADAPTER'],['selPhone','PHONE_ADAPTER']]){const s=$(sel);if(document.activeElement===s)continue;
+  for(const [sel,key] of [['selCar','CAR_ADAPTER'],['selPhone','PHONE_ADAPTER'],['selMusic','SOURCE_ADAPTER']]){const s=$(sel);if(document.activeElement===s)continue;
     let usbN=0;const label=a=>(a.bus==='USB'?'USB dongle '+(++usbN)+' · '+a.address:'Built-in Bluetooth · '+a.address)+(a.powered?'':' (off)');
     const opts=S.adapters.map(a=>'<option value="'+a.address+'">'+label(a)+'</option>').join('');
-    s.innerHTML=(sel==='selPhone'?'<option value="">none (no phone)</option>':'')+opts;s.value=c[key]||''}
+    s.innerHTML=(sel==='selPhone'?'<option value="">none (no phone)</option>':sel==='selMusic'?'<option value="">none (wired or USB-C source)</option>':'')+opts;
+    s.value=sel==='selMusic'&&c.MUSIC_SOURCE!=='bluetooth'?'':(c[key]||'')}
   if(!settingsLoaded){for(const k of ['PHONE_ENABLED','PAUSE_FOR_CALLS','CONTACTS_SYNC','AUTO_PAIRABLE'])$(k).checked=c[k]==='1';
     for(const k of ['CALL_RESUME_DELAY','CAR_NAME','PHONE_NAME','SETUP_WIFI_MINUTES','SETUP_WIFI_SSID','SETUP_WIFI_PASS','SETUP_BUTTON_GPIO'])$(k).value=c[k]||'';settingsLoaded=true}
   $('wifiList').innerHTML=(S.home_wifi||[]).map(n=>'<div class="row"><span><span class="dot '+(n.active?'ok':'')+'"></span>'+esc(n.ssid)+(n.active?' · connected':'')+'</span><span class="btns" style="margin:0">'+
