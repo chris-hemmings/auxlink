@@ -19,6 +19,11 @@
 while [ -z "$CAR" ] || [ -z "$CAR_ADAPTER" ]; do sleep 5; . /etc/teslabridge.conf; done
 
 PLAY_FILE=/run/teslabridge/play          # "1"/"0" from teslabridge-keys (missing = play)
+# Not every app reports its play state to the SMO app (YouTube often does
+# not), so sound actually arriving from the XIAO also counts as playing.
+# Published for teslabridge-keys, which then tells the car "Playing".
+PRESENT_FILE=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/tb-audio-present
+PRESENT=0; LAST_SOUND=0; NEXT_LEVEL=0
 CAR_SLC_FILE=/run/teslabridge/car-slc    # "1" once hfp-relay has the car's HFP set up
 LOOP=""; LOOP_SINK_ID=""; LOOP_STARTED=0; UNLINKED=0; GONE=2; NO_CARD=0; NOT_ACTIVE=0; LAST_NUDGE=0
 CONNECTED_AT=0; WAITING_SAID=""; NEXT_STEREO=0; STEREO_BAD=0; STOPPED_FOR=""
@@ -41,6 +46,30 @@ nudge() {
   sleep 1; stop_loop
 }
 smo_playing() { [ "$(cat "$PLAY_FILE" 2>/dev/null || echo 1)" != 0 ]; }
+# Is sound arriving from the XIAO? 0.4 s sample; the SMO sends digital
+# silence when nothing plays, so a very low threshold is enough.
+sound_now() {
+  local f=/tmp/tb-level.wav rms
+  rm -f "$f"
+  pw-record --target "$I2S" --channels 2 --format s16 "$f" &
+  local p=$!; sleep 0.4; kill "$p" 2>/dev/null; wait "$p" 2>/dev/null
+  rms=$(sox "$f" -n stat 2>&1 | awk '/RMS +amplitude/ {print $3}')
+  [ -n "$rms" ] && awk "BEGIN{exit !($rms > 0.0003)}"
+}
+# Updates PRESENT (sound seen within the last 6 s) and its file.
+check_sound() {
+  local now; now=$(date +%s)
+  [ "$now" -lt "$NEXT_LEVEL" ] && return
+  if sound_now; then LAST_SOUND=$now; fi
+  local was=$PRESENT
+  if [ $((now - LAST_SOUND)) -lt 6 ]; then PRESENT=1; else PRESENT=0; fi
+  if [ "$PRESENT" != "$was" ] || [ ! -f "$PRESENT_FILE" ]; then
+    echo "$PRESENT" > "$PRESENT_FILE"
+    [ "$PRESENT" = 1 ] && echo "Sound arriving from the SMO" || echo "No sound from the SMO"
+  fi
+  # Quick to notice music starting; relaxed while it plays.
+  if [ -n "$LOOP" ]; then NEXT_LEVEL=$((now + 3)); else NEXT_LEVEL=$now; fi
+}
 car_ready() {
   local up=$(( $(date +%s) - CONNECTED_AT ))
   [ "$up" -ge 3 ] && { [ "$(cat "$CAR_SLC_FILE" 2>/dev/null)" = 1 ] || [ "$up" -ge 12 ]; }
@@ -131,9 +160,10 @@ while true; do
   fi
 
   # ---- should music be streaming right now? ----
+  check_sound
   WHY=""
   if in_call; then WHY="a call"
-  elif ! smo_playing; then WHY="the SMO is paused"
+  elif ! smo_playing && [ "$PRESENT" != 1 ]; then WHY="the SMO is paused"
   elif ! car_ready; then WHY="the car is still connecting"
   fi
 

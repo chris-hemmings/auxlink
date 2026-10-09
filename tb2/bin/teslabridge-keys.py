@@ -54,6 +54,21 @@ COVER_CURRENT = "/run/teslabridge/cover/current"  # 7-digit handle of the art to
 # music stream only while this says 1, so the car sees a pause and a fresh
 # start like it does with a phone. Written after the car is told the status.
 PLAY_FILE = "/run/teslabridge/play"
+
+
+def _present_file():
+    """tesla-audio (running as the audio user) writes "1" here while sound is
+    arriving from the XIAO - true for any app, including ones that never
+    report a play state to the SMO app (YouTube)."""
+    import pwd
+    try:
+        uid = pwd.getpwnam(CONF.get("AUDIO_USER", "chris")).pw_uid
+    except KeyError:
+        return ""
+    return f"/run/user/{uid}/tb-audio-present"
+
+
+PRESENT_FILE = _present_file()
 MIC_REQUEST_FILE = "/run/teslabridge/mic"   # read by hfp-relay
 MIC_SOCKET = "/run/teslabridge/mic.sock"    # hfp-relay sends the car's mic here
 MIC_TIMEOUT = 1.5    # s without a "mic on" refresh from the XIAO = closed
@@ -146,6 +161,12 @@ class Player(dbus.service.Object):
         self.paused_for_call = False
         self.resume_timer = None
         self.img_handle = ""          # cover art served by tb-cover (AVRCP 1.6)
+        # What the car is told combines two things: the state the SMO app
+        # reports, and whether sound is actually arriving (apps like YouTube
+        # never report one, and the car mutes while it thinks we're paused).
+        self.app_state = "Playing"
+        self.present = False
+        self.ignore_sound_until = 0.0  # after the car pauses: the tail of the sound doesn't count
 
     # ---------- what the car sees ----------
     def metadata(self):
@@ -206,6 +227,25 @@ class Player(dbus.service.Object):
         }, signature="sv"), [])
         self.write_play_state()
 
+    def effective_state(self):
+        sound = self.present and time.monotonic() >= self.ignore_sound_until
+        return "Playing" if (self.app_state == "Playing" or sound) else self.app_state
+
+    def sound_check(self, present):
+        """Called a few times a second with whether sound is arriving."""
+        changed = present != self.present
+        self.present = present
+        if self.in_call or time.monotonic() < self.ignore_smo_until:
+            return
+        want = self.effective_state()
+        if want != self.status:
+            self.status = want
+            why = "sound arriving" if present else "sound stopped"
+            log(f"[SMO] {why}: {want}")
+            self.publish()
+        elif changed:
+            log("[SMO] sound " + ("arriving" if present else "stopped"))
+
     def write_play_state(self):
         want = "1" if self.status == "Playing" else "0"
         if getattr(self, "_play_written", None) == want:
@@ -229,9 +269,11 @@ class Player(dbus.service.Object):
         state = info.get("state")
         status_changed = False
         if state in ("Playing", "Paused", "Stopped") and time.monotonic() >= self.ignore_smo_until:
-            if state != self.status:
+            self.app_state = state
+            want = self.effective_state()
+            if want != self.status:
                 status_changed = True
-                self.status = state
+                self.status = want
         if track_changed or status_changed:
             self.publish(track_changed)
             log(f"[SMO] {self.title} - {self.artist} [{self.status}]")
@@ -245,7 +287,12 @@ class Player(dbus.service.Object):
             return False
         smo_key(b"P", why)
         self.status = want
+        self.app_state = want          # until the app reports otherwise
         self.ignore_smo_until = time.monotonic() + 2.5
+        if not want_playing:
+            # The sound lingers a few seconds in tesla-audio's "present"
+            # flag: don't let it flip the car straight back to Playing.
+            self.ignore_sound_until = time.monotonic() + 8
         self.publish()
         return True
 
@@ -464,6 +511,11 @@ def main():
         except OSError:
             busy = False
         player.call_state(busy)
+        try:
+            present = open(PRESENT_FILE).read().strip() == "1"
+        except OSError:
+            present = False
+        player.sound_check(present)
         return True
 
     GLib.timeout_add(CALL_POLL_MS, poll_call)
