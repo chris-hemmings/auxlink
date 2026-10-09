@@ -191,7 +191,7 @@ The XIAO uses **D0, D1, D2, D3, D6, D7 and GND**:
 | XIAO pad | Signal | Pi 4 header pin | Pi GPIO |
 |---|---|---|---|
 | **D0** | I2S LRCLK (word clock) | **35** | GPIO19 (PCM_FS) |
-| **D1** | Shield (held low) | **39** (GND), or leave it unconnected | – |
+| **D1** | Shield (held low) | any **GND** pin, e.g. **39** | – |
 | **D2** | I2S BCLK (bit clock) | **12** | GPIO18 (PCM_CLK) |
 | **D3** | I2S DATA | **38** | GPIO20 (PCM_DIN) |
 | **D6** | Serial XIAO → Pi (TX) | **10** | GPIO15 (RXD) |
