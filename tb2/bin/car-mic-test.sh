@@ -9,13 +9,13 @@ RAW=/run/teslabridge/car-mic.raw
 WAV=/tmp/car-mic.wav
 [ "$(id -u)" = 0 ] || { echo "Run with sudo"; exit 1; }
 rm -f "$RAW"
-echo "Asking the car for its microphone for $SECS s: talk now..."
+echo "Asking the car for its microphone for $SECS s (the car shows a call): talk now..."
 echo 1 > "$REQ"
 sleep "$SECS"
 echo 0 > "$REQ"
 sleep 1
 echo
-journalctl -u hfp-relay --since "-$((SECS + 5)) s" --no-pager -o cat | grep -E "Car mic|BVRA"
+journalctl -u hfp-relay --since "-$((SECS + 5)) s" --no-pager -o cat | grep -E "Car mic|BVRA|CIEV|CLCC|CHUP|CHLD"
 if [ ! -s "$RAW" ]; then
   echo; echo "No audio received from the car."; exit 1
 fi

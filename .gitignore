@@ -1,4 +1,3 @@
-﻿build/
-.gradle/
-local.properties
-
+__pycache__/
+*.pyc
+firmware/rp2040/target/

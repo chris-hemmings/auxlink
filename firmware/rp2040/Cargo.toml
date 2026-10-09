@@ -1,0 +1,153 @@
+# SPDX-License-Identifier: MIT
+[package]
+name    = "teslamic-rp"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT"
+description = "RP2040 TeslaMic emulator + USB audio source bridge. `car` faces the Tesla, `source` faces the phone."
+
+# Car-facing: clones the TeslaMic, captures I2S, streams the iso IN endpoint.
+# This is the ONLY binary needed for the PCM2706 build.
+[[bin]]
+name = "car"
+path = "src/bin/car.rs"
+
+# Phone-facing: a UAC1 speaker advertising 48 kHz ONLY, re-emitting as I2S.
+# Only needed for the two-board (clock-locked) build.
+[[bin]]
+name = "source"
+path = "src/bin/source.rs"
+
+# Standalone WS2812 bring-up test: no USB, no audio, no tasks. See src/bin/ledtest.rs.
+[[bin]]
+name = "ledtest"
+path = "src/bin/ledtest.rs"
+
+# I2S bring-up: upstream embassy-rp I2S master, to test slave_rx against known
+# good code. See src/bin/i2stest.rs.
+[[bin]]
+name = "i2stest"
+path = "src/bin/i2stest.rs"
+
+# Clock presence check on the car side: plain GPIO, no PIO, no USB.
+[[bin]]
+name = "i2ssniff"
+path = "src/bin/i2ssniff.rs"
+
+# slave_rx isolation test: real PIO program, no USB. See src/bin/i2srx.rs.
+[[bin]]
+name = "i2srx"
+path = "src/bin/i2srx.rs"
+
+[features]
+default = []
+# Source board also enumerates as a USB HID consumer-control device (media keys)
+# and turns single bytes received on UART0 RX (GP1 / XIAO D7, 115200 8N1) into
+# key presses: P play/pause, N next, B previous, S stop, + vol up, - vol down.
+# Also adds a vendor bulk-OUT interface whose bytes go out UART0 TX (GP0 / D6)
+# to the Pi: the SMO app sends now-playing info over it.
+media-keys = []
+# On top of media-keys: a USB microphone for the SMO (voice search /
+# navigation). The SMO opening the mic sends 0x01 'M' '1' to the Pi on UART0
+# (repeated every 0.5 s, then 0x01 'M' '0' when closed); the Pi answers with
+# the car's cabin mic as framed G.711 mu-law (0x01, len, len bytes, 8 kHz),
+# mixed in with the key bytes. Decoded, upsampled to 48 kHz mono, sent on an
+# iso IN endpoint alongside the speaker. UART speed is unchanged (115200).
+smo-mic = ["media-keys"]
+# Board select. The RP2040-Zero has NO plain LED on GPIO25 — its only indicator
+# is a WS2812 on GPIO16 — so status has to be driven over PIO1 instead of a
+# GPIO. Everything else (Pico, RP2040-Plus) keeps the simple GPIO25 LED.
+rp2040-zero = []
+# Halve the source board's cushion: ring 512 instead of 1024, and a 32-frame I2S
+# block instead of 64. Saves ~5 ms of ~130 ms end to end, so it is only worth
+# using if it proves as reliable as the default — the deadband is set by how much
+# the HOST bunches packets, and running closer to the floor leaves less room for
+# a host that bunches more than iOS did on the day it was measured.
+low-latency = []
+# Steer the source board's I2S clock to follow the HOST, so the phone and the
+# I2S link share one clock and there is only one clock crossing in the whole
+# chain (at the car, absorbed losslessly by varying the packet size). This is
+# what the design always intended; the default build gave it up to avoid
+# unproven PIO. Uses `i2s_pio::master_tx` instead of upstream's fixed-rate
+# driver, because upstream cannot retune its divider at runtime.
+clock-steered = []
+# Diagnostic: ignore USB entirely and emit a tone on the LEFT channel only,
+# straight into the I2S slots. Isolates the I2S channel mapping from the host,
+# the pipe and the car board's USB side. See src/bin/source.rs.
+pan-test = []
+# Diagnostic: track how far the buffer level actually wanders and colour the LED
+# by the peak. That is the real lower bound on the cushion — everything else is
+# inference. See src/bin/source.rs.
+measure-excursion = []
+# Source cushion at 2x the MEASURED peak excursion rather than an inferred bound:
+# ring 256 (2.67 ms) with a 16-frame I2S block. Requires clock-steered — a
+# free-running clock has drift to absorb as well as jitter, and its slip deadband
+# would not fit this ring.
+ultra-low = ["clock-steered"]
+# Car board drives the I2S clock from the car's SOF and emits fixed-size
+# packets (PaceMode::Locked). Requires the `source` board on the other end.
+# Without it, the car board is an I2S slave to a PCM2706 and paces elastically.
+clock-locked = []
+
+# DIAGNOSTIC (car board): substitute a generated tone for the captured I2S
+# samples, keeping the capture TIMING intact. The source board still drives the
+# I2S clock, so the pipe's producer runs at exactly the rate it normally does and
+# the pacer behaves normally — but the data is known, so any hold in a recording
+# is this board's pipe running dry rather than one that arrived over I2S.
+#
+# This is what `packet-stress` cannot answer: that build writes its tone straight
+# into the packet buffer and never touches the pipe at all, so it cannot produce
+# a pipe underrun even if the pipe is the fault. Needs the source board connected
+# and streaming. See src/bin/car.rs.
+pipe-tone = []
+
+# DIAGNOSTIC (car board): measure HOW the pipe empties, not just that it did.
+# Samples the level once per USB packet and latches, on the first underrun,
+# whether the fall before it was long and shallow (the pacer being out-argued)
+# or short and steep (the producer stalling). Shown as a colour: green none,
+# red a stall, amber in between, blue a gradual drain. Combine with pipe-tone to
+# take the source board's data out of the picture. See src/bin/car.rs.
+pipe-watch = []
+
+# Hold the BOOTSEL button on the car board to drop the car-facing USB pullup, so
+# the car sees the mic leave the bus. The car clamps all media output to about
+# 60% whenever a USB audio input is present, and computes that clamp when the
+# volume is set — so hold, adjust the volume, release, and the car stays loud.
+# Only the car side is affected; the phone is on the other board.
+boot-detach = []
+# Declare the iso endpoint adaptive (attr 0x09) like the real mic, rather than
+# asynchronous (0x05), which is what it honestly is. Tried against the teardown
+# scratch: the scratch survived, changing character rather than going away.
+adaptive-ep = []
+
+
+# DIAGNOSTIC (car board): generate a 1 kHz tone internally and deliberately swing
+# the iso packet size 47/49 every frame. Answers "does Tesla tolerate variable
+# packet sizes?" with no PCM2706, no source board, no wiring — flash, plug into
+# the car, listen. Clean tone => Elastic pacing is safe. Never ship this.
+packet-stress = []
+
+[dependencies]
+embassy-rp       = { version = "0.9", features = ["rp2040", "time-driver", "critical-section-impl", "unstable-pac"] }
+# 8 interfaces: smo-mic adds a fifth (AC, speaker, mic, HID, vendor).
+embassy-usb      = { version = "0.6", default-features = false, features = ["max-interface-count-8"] }
+embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread"] }
+embassy-time     = { version = "0.5" }
+embassy-futures  = { version = "0.1" }
+embassy-sync     = { version = "0.7" }
+
+cortex-m    = { version = "0.7", features = ["inline-asm"] }
+cortex-m-rt = "0.7"
+pio          = "0.3"
+pio-proc     = "0.3"
+fixed        = "1"
+# RGB8, for the RP2040-Zero's onboard WS2812 (it has no plain LED).
+smart-leds   = "0.4"
+embedded-io-async = "0.6.1"
+
+[profile.release]
+opt-level     = "s"
+lto           = "fat"
+codegen-units = 1
+debug         = 2

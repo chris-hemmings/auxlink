@@ -10,8 +10,14 @@
   this script that paused it.
 * Phone media (notifications, the Oppo's own music) never pauses the SMO; it
   simply mixes into the car's audio.
+* Car mic for the SMO (voice search): the XIAO sends 0x01 'M' '1' while the
+  SMO has its USB mic open (0x01 'M' '0' when closed). That is passed to
+  hfp-relay, which streams the car's cabin mic back here; it goes out to the
+  XIAO as G.711 mu-law frames (0x01, len, data) between the key bytes.
 """
+import array
 import json
+import socket
 import os
 import sys
 import termios
@@ -43,6 +49,24 @@ CALL_STATE_FILE = "/run/teslabridge/call"   # written by hfp-relay
 CALL_POLL_MS = 250                          # how quickly a call is noticed
 RESUME_AFTER_CALL = float(CONF.get("CALL_RESUME_DELAY", "1.5"))  # s after the call ends
 PAUSE_FOR_CALLS = CONF.get("PAUSE_FOR_CALLS", "1") == "1"
+MIC_REQUEST_FILE = "/run/teslabridge/mic"   # read by hfp-relay
+MIC_SOCKET = "/run/teslabridge/mic.sock"    # hfp-relay sends the car's mic here
+MIC_TIMEOUT = 1.5    # s without a "mic on" refresh from the XIAO = closed
+OUT_LIMIT = 2048     # bytes queued for the XIAO before mic audio is dropped
+
+
+def _ulaw(s):
+    """16-bit linear -> G.711 mu-law (the XIAO decodes it)."""
+    sign = 0x80 if s < 0 else 0
+    s = min(-s if s < 0 else s, 32635) + 0x84
+    exp, mask = 7, 0x4000
+    while exp and not s & mask:
+        exp -= 1
+        mask >>= 1
+    return ~(sign | exp << 4 | (s >> (exp + 3)) & 0x0F) & 0xFF
+
+
+ULAW = bytes(_ulaw(i - 65536 if i > 32767 else i) for i in range(65536))
 
 
 def log(msg):
@@ -66,12 +90,40 @@ def open_port():
 FD = open_port()
 
 
-def smo_key(cmd, why):
+OUT = bytearray()     # bytes waiting for the serial port (keys + mic frames)
+OUT_WATCH = None
+
+
+def flush_out(*_):
+    """Write what the port takes; keep the rest. Frames are queued whole, so a
+    key byte can never land inside a mic frame."""
+    global OUT_WATCH
     try:
-        os.write(FD, cmd)
-        log(f"SMO {why} -> {cmd.decode()}")
+        n = os.write(FD, OUT)
+        del OUT[:n]
+    except BlockingIOError:
+        pass
     except OSError as e:
-        log(f"Serial write failed ({why}): {e}")
+        log(f"Serial write failed: {e}")
+        OUT.clear()
+    if OUT and OUT_WATCH is None:
+        OUT_WATCH = GLib.io_add_watch(FD, GLib.IO_OUT, flush_out)
+    if not OUT and OUT_WATCH is not None:
+        GLib.source_remove(OUT_WATCH)
+        OUT_WATCH = None
+        return False
+    return bool(OUT)
+
+
+def send(data):
+    OUT.extend(data)
+    if OUT_WATCH is None:
+        flush_out()
+
+
+def smo_key(cmd, why):
+    send(cmd)
+    log(f"SMO {why} -> {cmd.decode()}")
 
 
 class Player(dbus.service.Object):
@@ -279,6 +331,31 @@ def main():
         log(f"Car adapter {CAR_ADAPTER} not present yet; waiting for it")
 
     buf = bytearray()
+    mic = {"on": False, "seen": 0.0}
+
+    def set_mic(on):
+        if on:
+            mic["seen"] = time.time()
+        if on == mic["on"]:
+            return
+        mic["on"] = on
+        log("SMO mic " + ("opened: borrowing the car's mic" if on else "closed"))
+        try:
+            with open(MIC_REQUEST_FILE, "w") as f:
+                f.write("1" if on else "0")
+        except OSError as e:
+            log(f"Cannot write {MIC_REQUEST_FILE}: {e}")
+
+    set_mic(True)   # make sure the file starts out matching...
+    set_mic(False)  # ...the closed state
+
+    def mic_watchdog():
+        if mic["on"] and time.time() - mic["seen"] > MIC_TIMEOUT:
+            log("No mic refresh from the XIAO")
+            set_mic(False)
+        return True
+
+    GLib.timeout_add(250, mic_watchdog)
 
     def readable(fd, cond):
         nonlocal buf
@@ -289,6 +366,17 @@ def main():
         except OSError as e:
             log(f"Serial read error: {e}")
             return True
+        # Mic tokens from the XIAO can land anywhere, even inside a JSON
+        # line (0x01 never appears in the text itself).
+        while True:
+            i = buf.find(b"\x01")
+            if i < 0:
+                break
+            if len(buf) - i < 3:
+                break                     # token still arriving
+            if buf[i + 1:i + 2] == b"M":
+                set_mic(buf[i + 2:i + 3] == b"1")
+            del buf[i:i + 3]
         while b"\n" in buf:
             line, _, rest = bytes(buf).partition(b"\n")
             buf = bytearray(rest)
@@ -304,6 +392,34 @@ def main():
         return True
 
     GLib.io_add_watch(FD, GLib.IO_IN, readable)
+
+    # The car's mic from hfp-relay (8 kHz s16le) -> mu-law frames to the XIAO.
+    try:
+        os.unlink(MIC_SOCKET)
+    except OSError:
+        pass
+    msock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    msock.bind(MIC_SOCKET)
+    msock.setblocking(False)
+
+    def mic_audio(fd, cond):
+        try:
+            data = msock.recv(4096)
+        except OSError:
+            return True
+        if not mic["on"] or len(OUT) > OUT_LIMIT:
+            return True                   # SMO not listening, or port backed up
+        pcm = array.array("h")
+        pcm.frombytes(data[:len(data) & ~1])
+        if sys.byteorder != "little":
+            pcm.byteswap()
+        u = bytes(ULAW[x & 0xFFFF] for x in pcm)
+        for k in range(0, len(u), 255):
+            chunk = u[k:k + 255]
+            send(bytes([0x01, len(chunk)]) + chunk)
+        return True
+
+    GLib.io_add_watch(msock.fileno(), GLib.IO_IN, mic_audio)
 
     def poll_call():
         try:
