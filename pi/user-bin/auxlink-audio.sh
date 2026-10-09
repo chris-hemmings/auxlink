@@ -18,6 +18,12 @@
 # While streaming, both channels are checked every 60 s: a suspend/resume of
 # the car's output (the car can do that too) leaves a running pw-loopback
 # with a silent RIGHT channel until it is recreated.
+#
+# A car can also accept a stream and play SILENCE with everything on the Pi
+# looking healthy (seen after a call and after reconnecting), which nothing
+# here can detect. So at those moments, a few seconds after music starts, the
+# stream is restarted once anyway (what "Check and fix" does), and pressing
+# play in the car (auxlink-media writes KICK_FILE) does the same.
 . /usr/local/lib/auxlink/common.sh
 while [ -z "$CAR" ] || [ -z "$CAR_ADAPTER" ]; do sleep 5; . /etc/auxlink.conf; done
 
@@ -28,6 +34,12 @@ PLAY_FILE=/run/auxlink/play          # "1"/"0" from auxlink-media (missing = pla
 PRESENT_FILE=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/auxlink-audio-present
 PRESENT=0; LAST_SOUND=0; NEXT_LEVEL=0
 CAR_SLC_FILE=/run/auxlink/car-slc    # "1" once hfp-relay has the car's HFP set up
+KICK_FILE=/run/auxlink/audio-kick    # touched by auxlink-media when the car presses play
+KICK_SEEN=$(stat -c %Y "$KICK_FILE" 2>/dev/null || echo 0)
+RECHECK=""        # why the next fresh stream gets one restart (car connected / call ended)
+RECHECK_AT=0      # when to do it (0 = not pending)
+CALL_ENDED_AT=0; WAS_CALL=0
+CALL_SETTLE=2     # s after a call before music restarts (the car leaves call mode)
 LOOP=""; LOOP_SINK_ID=""; LOOP_INPUT=""; LOOP_STARTED=0; UNLINKED=0; GONE=2; NO_CARD=0; NOT_ACTIVE=0; LAST_NUDGE=0
 CONNECTED_AT=0; WAITING_SAID=""; NEXT_STEREO=0; STEREO_BAD=0; STOPPED_FOR=""
 XQ_FAILS=0   # SBC-XQ attempts since this script started (never reset by a disconnect)
@@ -151,7 +163,7 @@ while true; do
     sleep 2; continue
   fi
   if [ "$GONE" -ge 2 ]; then
-    CONNECTED_AT=$(date +%s); WAITING_SAID=""
+    CONNECTED_AT=$(date +%s); WAITING_SAID=""; RECHECK="the car connected"
     echo "Car connected; waiting until it is ready before starting music"
   fi
   GONE=0
@@ -203,8 +215,18 @@ while true; do
 
   # ---- should music be streaming right now? ----
   check_sound
+  # The car pressed play: restart the stream (now if it is running).
+  kick=$(stat -c %Y "$KICK_FILE" 2>/dev/null || echo 0)
+  if [ "$kick" != "$KICK_SEEN" ]; then
+    KICK_SEEN=$kick; RECHECK="play was pressed in the car"
+    [ -n "$LOOP" ] && RECHECK_AT=$(date +%s)
+  fi
+  if in_call; then WAS_CALL=1
+  elif [ "$WAS_CALL" = 1 ]; then WAS_CALL=0; CALL_ENDED_AT=$(date +%s); RECHECK="the call ended"
+  fi
   WHY=""
   if in_call; then WHY="a call"
+  elif [ $(( $(date +%s) - CALL_ENDED_AT )) -lt "$CALL_SETTLE" ]; then WHY="the call just ended"
   elif ! smo_playing && [ "$PRESENT" != 1 ]; then WHY="the SMO is paused"
   elif ! car_ready; then WHY="the car is still connecting"
   fi
@@ -214,10 +236,12 @@ while true; do
       echo "Stopping the music stream: $WHY"
       stop_loop
       # A phone suspends its stream on pause; the car sees it stop.
-      [ "$WHY" != "the car is still connecting" ] && timeout 5 pactl suspend-sink "$SINK" 1
+      case "$WHY" in "the car is still connecting"|"the call just ended") ;;
+        *) timeout 5 pactl suspend-sink "$SINK" 1 ;; esac
     fi
     if [ "$WHY" != "$WAITING_SAID" ]; then
-      [ "$WHY" = "the car is still connecting" ] || echo "Not streaming: $WHY"
+      case "$WHY" in "the car is still connecting"|"the call just ended") ;;
+        *) echo "Not streaming: $WHY" ;; esac
       WAITING_SAID=$WHY
     fi
     sleep 0.5; continue
@@ -245,6 +269,8 @@ while true; do
     LOOP=$!; LOOP_SINK_ID=$SINK_ID; LOOP_INPUT=$INPUT; LOOP_STARTED=$(date +%s); UNLINKED=0; NOT_ACTIVE=0; STEREO_BAD=0
     NEXT_STEREO=$((LOOP_STARTED + 3))
     echo "Streaming to $SINK"
+    # One restart a few seconds in, with music flowing (see the top).
+    [ -n "$RECHECK" ] && RECHECK_AT=$((LOOP_STARTED + 4))
     sleep 1; continue
   fi
 
@@ -259,6 +285,14 @@ while true; do
   UNLINKED=0
 
   now=$(date +%s)
+  if [ "$RECHECK_AT" -gt 0 ] && [ "$now" -ge "$RECHECK_AT" ]; then
+    if [ "$PRESENT" = 1 ]; then
+      echo "Restarting the car's stream once ($RECHECK), so a car that took it silently plays it"
+      RECHECK=""; RECHECK_AT=0
+      nudge "$SINK"; continue
+    fi
+    RECHECK_AT=$((now + 2))       # wait for music before restarting
+  fi
   # Both channels really reaching the car? (two bad checks in a row = act)
   if [ "$now" -ge "$NEXT_STEREO" ]; then
     NEXT_STEREO=$((now + 60))

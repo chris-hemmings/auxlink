@@ -69,6 +69,7 @@ PATH = "/auxlink/player"
 IFACE = "org.mpris.MediaPlayer2.Player"
 BLUEZ = "org.bluez"
 CALL_STATE_FILE = "/run/auxlink/call"   # written by hfp-relay
+KICK_FILE = "/run/auxlink/audio-kick"   # read by auxlink-audio (play pressed in the car)
 CALL_POLL_MS = 250                          # how quickly a call is noticed
 RESUME_AFTER_CALL = float(CONF.get("CALL_RESUME_DELAY", "1.5"))  # s after the call ends
 PAUSE_FOR_CALLS = CONF.get("PAUSE_FOR_CALLS", "1") == "1"
@@ -547,7 +548,20 @@ class Player(dbus.service.Object):
         return False
 
     # ---------- steering-wheel buttons ----------
+    @staticmethod
+    def kick_audio():
+        """Play pressed in the car: auxlink-audio restarts the car's stream once,
+        so a stream the car took silently plays (what "Check and fix" does)."""
+        try:
+            os.makedirs(os.path.dirname(KICK_FILE), exist_ok=True)
+            with open(KICK_FILE, "w") as f:
+                f.write(str(time.time()))
+        except OSError as e:
+            log(f"Cannot write {KICK_FILE}: {e}")
+
     def wheel(self, what):
+        if what in ("play", "toggle") and (what == "play" or self.status != "Playing"):
+            self.kick_audio()
         if what == "play":
             self.paused_for_call = False if not self.in_call else self.paused_for_call
             self.set_playing(True, "play")
