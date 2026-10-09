@@ -26,9 +26,11 @@ mic, the car's cabin mic is borrowed (shown to the Tesla as a call) and sent
 Requires PipeWire's own HFP/HSP roles to be disabled, so this script owns HFP.
 Every AT line is logged with its direction for debugging.
 """
+import math
 import os
 import re
 import socket
+import struct
 import time
 
 import dbus
@@ -121,6 +123,13 @@ MIC_MODE = CONF.get("CAR_MIC_MODE", "call")
 # Never hold the car's mic longer than this per request (an app that keeps
 # the SMO mic open, like always-on "Hey Google", must not lock the car).
 MIC_MAX_SECONDS = 30
+
+# Played into the car's speakers the moment its mic is live, so the person
+# knows when to talk: 150 ms of 880 Hz at 8 kHz, 16-bit (the call-audio format).
+READY_BEEP = b"".join(
+    struct.pack("<h", int(9000 * math.sin(2 * math.pi * 880 * i / 8000)
+                          * min(1.0, i / 80, (1200 - i) / 80)))   # soft edges, no click
+    for i in range(1200))
 
 # Car commands we can safely answer "OK" to while no phone is bridged.
 OK_WHEN_ALONE = ("AT+CLIP", "AT+CCWA", "AT+CMEE", "AT+NREC", "AT+VGS", "AT+VGM",
@@ -224,6 +233,7 @@ class Relay:
         self.mic_note = ""       # last "can't start" reason logged (no repeats)
         self.mic_since = 0.0
         self.mic_tx = None       # datagram socket to auxlink-media
+        self.beep = bytearray()  # ready beep still to play into the car
         self.src = None          # HFP link to a Bluetooth music source (we are HF)
         self.src_slc = False
         self.src_queue = []
@@ -402,6 +412,7 @@ class Relay:
             log(f"Car mic: cannot write {MIC_DUMP}: {e}")
             self.mic_out = None
         self.mic, self.mic_sco, self.mic_bytes = True, s, 0
+        self.beep = bytearray(READY_BEEP)     # "talk now", once the audio flows
         self.mic_since = time.time()
         if self.mic_tx is None:
             self.mic_tx = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
@@ -439,10 +450,14 @@ class Relay:
         if self.src_sco is not None:
             self.src_buf += data
             del self.src_buf[:max(0, len(self.src_buf) - SOURCE_BUF_MAX)]
-        # To the car's speakers: the source's own audio if it sends any
-        # (a Bluetooth source's assistant answering), else silence.
-        out = bytes(self.car_buf[:len(data)])
-        del self.car_buf[:len(data)]
+        # To the car's speakers: first the ready beep, then the source's own
+        # audio if it sends any (a Bluetooth source's assistant), else silence.
+        if self.beep:
+            out = bytes(self.beep[:len(data)])
+            del self.beep[:len(data)]
+        else:
+            out = bytes(self.car_buf[:len(data)])
+            del self.car_buf[:len(data)]
         try:
             self.mic_sco.send(out + bytes(len(data) - len(out)))
         except OSError:
