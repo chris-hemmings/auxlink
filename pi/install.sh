@@ -164,6 +164,7 @@ echo "ok (hardware watchdog reboots the Pi if it ever freezes; logs capped at 50
 
 echo
 hostnamectl set-hostname "$(hostname)" >/dev/null 2>&1 || true
+sync   # everything onto the SD card before anyone pulls the power
 echo "All installed. Reboot now:  sudo reboot"
 echo "Setup page: http://$(hostname).local  (on your Wi-Fi)  or join the setup Wi-Fi and open http://10.42.0.1"
 echo "Setup Wi-Fi: $(grep ^SETUP_WIFI_SSID= /etc/auxlink.conf | cut -d= -f2) / password $(grep ^SETUP_WIFI_PASS= /etc/auxlink.conf | cut -d= -f2)"

@@ -51,6 +51,9 @@ for t in serial0 ttyS0 ttyAMA0; do systemctl mask --now "serial-getty@$t.service
 install -D -m 644 "$HERE/etc/captive-portal.conf" /etc/NetworkManager/dnsmasq-shared.d/auxlink-captive.conf
 install -o "$U" -g "$U" -m 644 "$HERE"/systemd/user/*.service "$H/.config/systemd/user/"
 install -o "$U" -g "$U" -m 644 "$HERE"/wireplumber/*.conf "$H/.config/wireplumber/wireplumber.conf.d/"
+# Onto the SD card now: a power cut right after an update otherwise leaves
+# freshly written files EMPTY (empty unit files then show as "masked").
+sync
 echo "Programs and services copied"
 
 systemctl daemon-reload
@@ -59,4 +62,5 @@ systemctl restart auxlink-usb-gadget
 systemctl restart auxlink-pairing auxlink-reconnect hfp-relay auxlink-media auxlink-web auxlink-cover
 asuser systemctl --user daemon-reload
 asuser systemctl --user restart auxlink-audio pbap-sync
+sync
 echo "Services restarted. Done (no reboot needed)."
