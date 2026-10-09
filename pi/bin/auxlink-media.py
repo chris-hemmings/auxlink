@@ -872,6 +872,28 @@ def setup_bt_source(bus, om, player):
                 return str(path), ifaces["org.bluez.MediaPlayer1"]
         return None, None
 
+    # Play state from the source's audio stream (A2DP transport): it starts
+    # on play and goes idle on pause, reliably - unlike the AVRCP status,
+    # which some devices (the SMO) leave on "playing" after a pause. The
+    # car must see "Paused" then "Playing", or it ignores the new stream.
+    stream = {"active_at": 0.0}
+    IDLE_GRACE = 1.5    # s of idle before "Paused" (track changes blip)
+
+    def stream_state():
+        state = None
+        for path, ifaces in om.GetManagedObjects().items():
+            t = ifaces.get("org.bluez.MediaTransport1")
+            if t and dev_part in str(path):
+                state = str(t.get("State", ""))
+                break
+        now = time.monotonic()
+        if state in ("active", "pending"):
+            stream["active_at"] = now
+            return "Playing"
+        if now - stream["active_at"] < IDLE_GRACE:
+            return "Playing"
+        return "Paused"
+
     def report(props):
         track = props.get("Track", {}) or {}
         art.update(True, str(track.get("ImgHandle", "") or ""))
@@ -883,7 +905,7 @@ def setup_bt_source(bus, om, player):
             "album": str(track.get("Album", "")),
             "dur": int(track.get("Duration", 0) or 0),
             "pos": int(props.get("Position", 0) or 0),
-            "state": BT_STATUS.get(str(props.get("Status", "")), "Stopped"),
+            "state": stream_state(),
         })
 
     def poll():
@@ -916,7 +938,7 @@ def setup_bt_source(bus, om, player):
         return True
 
     def changed(iface, changes, invalidated, path=None):
-        if iface == "org.bluez.MediaPlayer1" and dev_part in str(path):
+        if iface in ("org.bluez.MediaPlayer1", "org.bluez.MediaTransport1") and dev_part in str(path):
             poll()      # (logs and swallows errors itself)
 
     def keys(cmd):
@@ -927,7 +949,7 @@ def setup_bt_source(bus, om, player):
         ctl = dbus.Interface(bus.get_object(BLUEZ, path), "org.bluez.MediaPlayer1")
         method = {b"N": "Next", b"B": "Previous", b"S": "Stop"}.get(cmd)
         if cmd == b"P":
-            method = "Pause" if str(props.get("Status", "")) == "playing" else "Play"
+            method = "Pause" if stream_state() == "Playing" else "Play"
         if method:
             try:
                 getattr(ctl, method)()
