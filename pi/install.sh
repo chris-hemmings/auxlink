@@ -156,7 +156,10 @@ for t in serial0 ttyS0 ttyAMA0; do systemctl mask --now "serial-getty@$t.service
 grep -q 'systemd.zram=0' /boot/firmware/cmdline.txt || sed -i '1 s/$/ systemd.zram=0/' /boot/firmware/cmdline.txt
 mkdir -p /etc/systemd/system.conf.d /etc/systemd/journald.conf.d
 printf '[Manager]\nRuntimeWatchdogSec=15s\nRebootWatchdogSec=2min\n' > /etc/systemd/system.conf.d/auxlink-watchdog.conf
-printf '[Journal]\nSystemMaxUse=50M\n' > /etc/systemd/journald.conf.d/auxlink.conf
+printf '[Journal]\nStorage=persistent\nSystemMaxUse=50M\n' > /etc/systemd/journald.conf.d/auxlink.conf
+# Keep logs across reboots (capped above), so a boot that went wrong can be
+# looked at afterwards (journalctl -b -1).
+mkdir -p /var/log/journal && systemd-tmpfiles --create --prefix /var/log/journal >/dev/null 2>&1 || true
 echo "ok (hardware watchdog reboots the Pi if it ever freezes; logs capped at 50 MB)"
 
 echo

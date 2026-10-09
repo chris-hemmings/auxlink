@@ -30,6 +30,12 @@ install -D -m 644 "$HERE/share/cover-test.jpg" /usr/local/share/auxlink/cover-te
 install -m 755 "$HERE"/bin/* /usr/local/bin/
 install -o "$U" -g "$U" -m 755 "$HERE"/user-bin/* "$H/.local/bin/"
 install -m 644 "$HERE"/systemd/system/*.service /etc/systemd/system/
+mkdir -p /etc/systemd/journald.conf.d
+printf '[Journal]\nStorage=persistent\nSystemMaxUse=50M\n' > /etc/systemd/journald.conf.d/auxlink.conf
+# Keep logs across reboots (capped above), so a boot that went wrong can be
+# looked at afterwards (journalctl -b -1).
+mkdir -p /var/log/journal && systemd-tmpfiles --create --prefix /var/log/journal >/dev/null 2>&1 || true
+systemctl restart systemd-journald 2>/dev/null || true
 # The login user needs a real shell (Raspberry Pi OS's placeholder "pi"
 # has none), or SSH says "This account is currently not available".
 case "$(getent passwd "$U" | cut -d: -f7)" in
