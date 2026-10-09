@@ -1191,19 +1191,23 @@ static INFO_SEEN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBoo
 /// Android hands the app this board (its "Always" choice) only when it sees
 /// the board being plugged in. A board already plugged in while the SMO
 /// boots can come up without that: the app never gets its link, and nothing
-/// arrives on the vendor endpoint. So if nothing has arrived 45 s after the
-/// SMO configured us, drop off the bus for a moment, once per power-up:
-/// Android then sees a fresh plug-in and gives the app the board.
+/// arrives on the vendor endpoint (the app sends at least every 5 s once it
+/// has it). So if nothing has arrived 15 s after the SMO configured us, drop
+/// off the bus for a moment: Android then sees a fresh plug-in and gives the
+/// app the board. Again after 30 s if that came too early in the SMO's boot;
+/// three tries per power-up at most.
 #[cfg(feature = "smo-mic")]
 #[embassy_executor::task]
 async fn replug_if_unused() -> ! {
     use core::sync::atomic::Ordering::Relaxed;
-    loop {
+    let mut tries = 0u8;
+    while tries < 3 {
         while !USB_UP.load(Relaxed) {
             Timer::after(Duration::from_secs(1)).await;
         }
+        let wait = if tries == 0 { 15 } else { 30 };
         let mut waited = 0u32;
-        while waited < 45 && USB_UP.load(Relaxed) && !INFO_SEEN.load(Relaxed) {
+        while waited < wait && USB_UP.load(Relaxed) && !INFO_SEEN.load(Relaxed) {
             Timer::after(Duration::from_secs(1)).await;
             waited += 1;
         }
@@ -1213,10 +1217,10 @@ async fn replug_if_unused() -> ! {
         if !USB_UP.load(Relaxed) {
             continue; // the SMO let go of us meanwhile: start over
         }
+        tries += 1;
         embassy_rp::pac::USB.sie_ctrl().modify(|w| w.set_pullup_en(false));
         Timer::after(Duration::from_millis(800)).await;
         embassy_rp::pac::USB.sie_ctrl().modify(|w| w.set_pullup_en(true));
-        break;
     }
     loop {
         Timer::after(Duration::from_secs(3600)).await;

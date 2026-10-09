@@ -1093,6 +1093,8 @@ def setup_bt_source(bus, om, player):
 
 def app_command(player, cmd):
     """A button in the AuxLink app (over USB via the XIAO, or Bluetooth)."""
+    if cmd == "ping":
+        return                      # the app saying it is connected (nothing playing)
     if cmd == "fix":
         log("App: fix sound - restarting the car's stream")
         player.kick_audio()

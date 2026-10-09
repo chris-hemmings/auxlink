@@ -95,6 +95,9 @@ class NowPlayingService : NotificationListenerService() {
     private val heartbeat = object : Runnable {
         override fun run() {
             pickController()          // also resends (clears lastLine, pushes)
+            // Nothing playing anywhere: say "still here" anyway, so the XIAO
+            // sees the app has its USB link (else it replugs to get it one).
+            if (controller == null) io.execute { sendLine("{\"cmd\":\"ping\"}") }
             main.postDelayed(this, 5000)
         }
     }
@@ -115,7 +118,7 @@ class NowPlayingService : NotificationListenerService() {
         val me = ComponentName(this, NowPlayingService::class.java)
         sessions?.addOnActiveSessionsChangedListener(sessionsChanged, me, main)
         pickController()
-        main.postDelayed(heartbeat, 5000)
+        main.post(heartbeat)
     }
 
     override fun onListenerDisconnected() {
