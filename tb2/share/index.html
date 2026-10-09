@@ -53,7 +53,8 @@ label.f{display:grid;gap:4px;margin:8px 0}label.f span{color:var(--dim);font-siz
       <option value="usbc">USB-C (Pi as a USB sound card)</option>
     </select></label>
     <div id="srcBt" class="hide">
-      <label class="f"><span>Adapter for the music source (not the car's; can share the phone's)</span><select id="selSrcAd"></select></label>
+      <label class="f"><span>Bluetooth adapter for the music source</span><select id="selSrcAd"></select></label>
+      <div class="k" style="font-size:13px">Any adapter except the car's; it can share the phone's. Save, then tap <b>Pair a music source</b> and pair the player with the name the pairing banner shows.</div>
       <div class="row"><span class="k">Source</span><span id="sourceState">&ndash;</span></div>
       <div class="row"><span class="k">Address</span><span class="mono" id="sourceAddr">&ndash;</span></div>
     </div>
@@ -169,7 +170,7 @@ function render(){const c=S.conf;
   dev('carState',S.car);dev('phoneState',S.phone);$('carAddr').textContent=c.CAR||'–';$('phoneAddr').textContent=c.PHONE||'–';
   dev('sourceState',S.source);$('sourceAddr').textContent=c.SOURCE||'–';
   if(!srcLoaded&&document.activeElement!==$('selSource')){$('selSource').value=c.MUSIC_SOURCE||'wired';srcLoaded=true}
-  {const s=$('selSrcAd');if(document.activeElement!==s){let n=0;s.innerHTML=S.adapters.filter(a=>a.address!==c.CAR_ADAPTER).map(a=>'<option value="'+a.address+'">'+(a.bus==='USB'?'USB dongle':'Built-in Bluetooth')+' &middot; '+a.address+(a.role?' ('+a.role+')':'')+'</option>').join('');s.value=c.SOURCE_ADAPTER||c.PHONE_ADAPTER||''}}
+  {const s=$('selSrcAd');if(document.activeElement!==s){let n=0;s.innerHTML=S.adapters.map(a=>[a,a.bus==='USB'?'USB dongle '+(++n):'Built-in Bluetooth']).filter(([a])=>a.address!==c.CAR_ADAPTER).map(([a,l])=>'<option value="'+a.address+'">'+l+' &middot; '+a.address+(a.role&&a.role!=='source'?' (shared with '+a.role+')':'')+'</option>').join('');s.value=c.SOURCE_ADAPTER||c.PHONE_ADAPTER||''}}
   {const u=S.usbc||{};$('usbState').textContent=c.MUSIC_SOURCE!=='usbc'?'':u.reboot_needed?'Reboot the Pi to finish switching the port.':u.gadget?'USB-C input is ready.':''}
   sourceForm();
   const w=$('window');if(S.window){w.classList.remove('hide');const n=S.window.role==='car'?c.CAR_NAME:S.window.role==='phone'?c.PHONE_NAME:(c.SOURCE_ADAPTER===c.PHONE_ADAPTER?c.PHONE_NAME:c.SOURCE_NAME);
