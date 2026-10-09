@@ -81,7 +81,7 @@ class NowPlayingService : NotificationListenerService() {
     private val usbEvents = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
             when (i.action) {
-                UsbManager.ACTION_USB_DEVICE_DETACHED -> io.execute { link.close(); link.resetPermissionPrompt() }
+                UsbManager.ACTION_USB_DEVICE_DETACHED -> io.execute { link.close() }
                 else -> { lastLine = ""; artSentId = ""; push() } // attached or permission granted: resend
             }
         }

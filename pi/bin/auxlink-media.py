@@ -191,6 +191,27 @@ def send(data):
 
 BT_KEYS = None     # set in main() for MUSIC_SOURCE=bluetooth
 
+# The SMO (Android) starts each USB connection with its media volume low
+# (~23%); the car's own volume is what people use. So on a new connection the
+# XIAO presses "volume up" until it is at the top. SMO_VOLUME_MAX=0 turns it off.
+VOLUME = {"last_line": 0.0, "last_max": 0.0}
+
+
+def smo_volume_max(why):
+    if CONF.get("SMO_VOLUME_MAX", "1") != "1" or MUSIC_SOURCE != "wired":
+        return
+    if time.time() - VOLUME["last_max"] < 60:
+        return
+    VOLUME["last_max"] = time.time()
+    log(f"SMO volume to 100% ({why})")
+    left = [30]                     # more presses than any Android volume scale has steps
+
+    def press():
+        send(b"+")
+        left[0] -= 1
+        return left[0] > 0
+    GLib.timeout_add(100, press)
+
 
 class UsbcMic:
     """MUSIC_SOURCE=usbc: the mic on the Pi's USB sound card (gadget).
@@ -1252,6 +1273,12 @@ def main():
                 continue
             try:
                 info = json.loads(line.decode("utf-8", "replace"))
+                # The app sends a line at least every 5 s while connected: the
+                # first after a long gap means the SMO has (re)connected.
+                now = time.time()
+                if now - VOLUME["last_line"] > 20:
+                    smo_volume_max("the SMO connected")
+                VOLUME["last_line"] = now
                 if "cmd" in info:
                     app_command(player, str(info["cmd"]))
                 elif "art" in info:

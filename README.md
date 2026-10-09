@@ -416,7 +416,10 @@ signed with the same key.
 2. Plug in the XIAO (or connect the device to the Pi's USB-C). Android asks
    **"Open AuxLink (USB) when this device is connected?"** Tick
    **Always** and tap **OK**.
-   - This is the USB permission. Nothing visible opens on later plug-ins.
+   - This is the USB permission. Nothing visible opens on later plug-ins,
+     and the app never asks again by itself. If you missed **Always**, the
+     app screen shows "USB access: NOT allowed": tap **Allow USB**, or
+     re-plug the XIAO and tick **Always**.
 3. Go back to the app. Its status should show:
    - Notification access: **granted**
    - XIAO plugged in: **yes**
@@ -424,7 +427,9 @@ signed with the same key.
 4. Recommended: **Settings → Apps → AuxLink → Battery → Unrestricted**,
    so that Android never stops it in the background.
 5. Play something. The car shows the track and, after a second or two, the
-   album art.
+   album art. Each time the SMO connects, the Pi turns its media volume up to
+   100% (Android starts USB audio low); use the car's volume. Turn this off
+   on the setup page (Settings) if you prefer.
 
 The app runs in the background by itself. You don't need to keep it open.
 If the car ever shows an old track, play/pause once; the app re-checks every

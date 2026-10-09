@@ -37,6 +37,10 @@ class MainActivity : Activity() {
             }
         }
         note = TextView(this).apply { textSize = 16f }
+        val allowUsb = Button(this).apply {
+            text = "Allow USB"
+            setOnClickListener { UsbLink(this@MainActivity).askPermission() }
+        }
         // Same as pressing play in the car while it is silent: the Pi
         // restarts the car's stream once.
         val fix = Button(this).apply {
@@ -63,6 +67,7 @@ class MainActivity : Activity() {
             setPadding(pad, pad, pad, pad)
             addView(status)
             addView(grant)
+            addView(allowUsb)
             addView(fix)
             addView(setup)
             addView(open)
@@ -127,6 +132,8 @@ class MainActivity : Activity() {
         status.text = buildString {
             appendLine("Notification access: " + if (hasAccess()) "granted" else "NOT granted - tap below")
             appendLine("XIAO plugged in: " + if (xiao) "yes" else "no")
+            if (xiao && !UsbLink(this@MainActivity).permitted())
+                appendLine("USB access: NOT allowed - tap Allow USB (or re-plug the XIAO and tick Always)")
             appendLine("Data link open: " + if (NowPlayingService.linkOpen) "yes - " + NowPlayingService.linkKind else "no")
             if (!BtLink(this@MainActivity).permitted())
                 appendLine("Bluetooth (for a Bluetooth music source): NOT allowed - reopen the app to allow")

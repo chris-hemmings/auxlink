@@ -33,12 +33,24 @@ class UsbLink(private val context: Context) {
     private var conn: UsbDeviceConnection? = null
     private var iface: UsbInterface? = null
     private var ep: UsbEndpoint? = null
-    private var asked = false
 
     fun findDevice(): UsbDevice? =
         usb.deviceList.values.firstOrNull { it.vendorId == VID && (it.productId == PID || it.productId == PID_PI) }
 
     fun isOpen() = conn != null
+
+    fun permitted() = findDevice()?.let { usb.hasPermission(it) } ?: false
+
+    /** Android's USB permission prompt; only from the app screen (a person is there). */
+    fun askPermission() {
+        val dev = findDevice() ?: return
+        if (usb.hasPermission(dev)) return
+        val flags = if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0
+        val pi = PendingIntent.getBroadcast(
+            context, 0, Intent(ACTION_PERMISSION).setPackage(context.packageName), flags
+        )
+        usb.requestPermission(dev, pi)
+    }
 
     @Synchronized
     fun send(line: String): Boolean {
@@ -62,18 +74,11 @@ class UsbLink(private val context: Context) {
     @Synchronized
     fun open(): Boolean {
         val dev = findDevice() ?: return false
-        if (!usb.hasPermission(dev)) {
-            if (!asked) {
-                asked = true
-                val flags = if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0
-                val pi = PendingIntent.getBroadcast(
-                    context, 0,
-                    Intent(ACTION_PERMISSION).setPackage(context.packageName), flags
-                )
-                usb.requestPermission(dev, pi)
-            }
-            return false
-        }
+        // No asking from here: this runs in the background at every plug-in,
+        // and Android's plain permission prompt has no "always" - it came back
+        // every time. Permission comes from ticking "Always" on the plug-in
+        // prompt (UsbAttachActivity), or the app screen's Allow USB button.
+        if (!usb.hasPermission(dev)) return false
         for (i in 0 until dev.interfaceCount) {
             val itf = dev.getInterface(i)
             if (itf.interfaceClass != UsbConstants.USB_CLASS_VENDOR_SPEC &&
@@ -112,5 +117,4 @@ class UsbLink(private val context: Context) {
         conn = null; iface = null; ep = null
     }
 
-    fun resetPermissionPrompt() { asked = false }
 }
