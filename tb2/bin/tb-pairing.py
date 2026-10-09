@@ -39,9 +39,10 @@ ROLE_KEYS = {"car": ("CAR", "CAR_ADAPTER"), "phone": ("PHONE", "PHONE_ADAPTER")}
 # Kernel Bluetooth management interface (what btmgmt uses), spoken directly.
 AF_BLUETOOTH, BTPROTO_HCI = 31, 1
 HCI_DEV_NONE, HCI_CHANNEL_CONTROL = 0xFFFF, 3
-MGMT_OP_READ_INFO, MGMT_OP_SET_CONNECTABLE = 0x0004, 0x0007
+MGMT_OP_READ_INFO, MGMT_OP_SET_CONNECTABLE, MGMT_OP_SET_DEV_CLASS = 0x0004, 0x0007, 0x000E
 MGMT_EV_CMD_COMPLETE, MGMT_EV_CMD_STATUS = 0x0001, 0x0002
 MGMT_SETTING_CONNECTABLE = 0x00000002
+PHONE_MAJOR, SMARTPHONE_MINOR = 0x02, 0x0C   # class of device: Phone / Smartphone
 _libc = ctypes.CDLL(None, use_errno=True)
 
 
@@ -282,8 +283,9 @@ class Pairing:
                 pass
         self._unused_streak = streak
 
-    def ensure_connectable(self, adapter_path, addr, force=False):
-        """Make sure the controller accepts incoming connections (page scan).
+    def ensure_connectable(self, adapter_path, addr, role, force=False):
+        """Make sure the controller accepts incoming connections (page scan)
+        and, on the car side, presents itself as a smartphone.
 
         Throttled to once per 10 s per adapter UNLESS force=True, which the
         caller sets the moment an adapter is newly assigned a role or freshly
@@ -292,6 +294,13 @@ class Pairing:
         once, with no retry of their own, so a connectable gap that survives
         even a few seconds right then causes a hard pairing failure, not
         just a delay.
+
+        Device class: bluetoothd leaves it at "Miscellaneous" (0x7c0000). The
+        Tesla then lists the Pi with a generic Bluetooth icon instead of a
+        phone and hangs up on it straight after the baseband connect, before
+        any authentication, and never auto-connects it. Phone/smartphone fixes
+        that. bluetoothd resets the class when it restarts, so it is checked
+        every time, like connectable.
 
         Talks to the kernel's management interface directly: btmgmt hangs
         when run from a service (no terminal) and always timed out here."""
@@ -306,14 +315,21 @@ class Pairing:
         self._conn_checked = last
         try:
             status, info = mgmt(MGMT_OP_READ_INFO, idx)
-            if status or len(info) < 17:
+            if status or len(info) < 20:
                 log(f"hci{idx}: read info failed (status {status})")
                 return
-            # bdaddr(6, reversed) version(1) manufacturer(2) supported(4) current(4)
+            # bdaddr(6, reversed) version(1) manufacturer(2) supported(4)
+            # current(4) class(3: minor, major, services)
             got = ":".join(f"{b:02X}" for b in reversed(info[:6]))
             if got != addr:
                 log(f"hci{idx} is {got}, not {addr}; skipping connectable check")
                 return
+            if role == "car" and (info[18], info[17]) != (PHONE_MAJOR, SMARTPHONE_MINOR):
+                status, _ = mgmt(MGMT_OP_SET_DEV_CLASS, idx, bytes([PHONE_MAJOR, SMARTPHONE_MINOR]))
+                if status:
+                    log(f"hci{idx} ({addr}): setting phone device class failed (status {status})")
+                else:
+                    log(f"hci{idx} ({addr}): device class set to smartphone")
             current = struct.unpack_from("<I", info, 13)[0]
             if current & MGMT_SETTING_CONNECTABLE:
                 return
@@ -387,7 +403,7 @@ class Pairing:
                         props.Set("org.bluez.Adapter1", "Discoverable", dbus.Boolean(False))
                     if not a.get("Pairable"):
                         props.Set("org.bluez.Adapter1", "Pairable", dbus.Boolean(True))
-                self.ensure_connectable(str(path), ad, force=(newly_assigned or just_powered_on))
+                self.ensure_connectable(str(path), ad, role, force=(newly_assigned or just_powered_on))
                 if dev and dev.get("Paired") and not dev.get("Trusted"):
                     self.trust(f"{path}/dev_{target.replace(':', '_')}")
             except dbus.DBusException as e:
