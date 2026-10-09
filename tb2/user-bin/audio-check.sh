@@ -45,8 +45,10 @@ else ok "volume $(timeout 5 pactl get-sink-volume "$SINK" | grep -o '[0-9]*%' | 
 
 echo "5. Links inside the Pi"
 links=$(timeout 5 pw-link -l 2>/dev/null); in_ok=no; out_ok=no
-echo "$links" | grep -A2 "^$I2S:capture_FL" | grep -q "smo_capture:" && in_ok=yes
-echo "$links" | grep -A2 "^to_tesla:output_FL" | grep -q "bluez_output" && out_ok=yes
+echo "$links" | grep -A2 "^$I2S:capture_FL" | grep -q "smo_capture:" &&
+  echo "$links" | grep -A2 "^$I2S:capture_FR" | grep -q "smo_capture:" && in_ok=yes
+echo "$links" | grep -A2 "^to_tesla:output_FL" | grep -q "bluez_output" &&
+  echo "$links" | grep -A2 "^to_tesla:output_FR" | grep -q "bluez_output" && out_ok=yes
 [ $in_ok = yes ] && ok "I2S input -> loopback" || bad "I2S input not linked to the loopback"
 [ $out_ok = yes ] && ok "loopback -> car" || bad "loopback not linked to the car"
 if [ $FIX = yes ] && { [ $in_ok = no ] || [ $out_ok = no ]; }; then

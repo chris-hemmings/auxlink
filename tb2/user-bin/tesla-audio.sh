@@ -19,7 +19,9 @@ stop_loop() { [ -n "$LOOP" ] && kill "$LOOP" 2>/dev/null; LOOP=""; LOOP_SINK_ID=
 linked() {
   local links; links=$(timeout 5 pw-link -l 2>/dev/null)
   echo "$links" | grep -A2 "^$I2S:capture_FL" | grep -q "smo_capture:" &&
-  echo "$links" | grep -A2 "^to_tesla:output_FL" | grep -q "bluez_output"
+  echo "$links" | grep -A2 "^$I2S:capture_FR" | grep -q "smo_capture:" &&
+  echo "$links" | grep -A2 "^to_tesla:output_FL" | grep -q "bluez_output" &&
+  echo "$links" | grep -A2 "^to_tesla:output_FR" | grep -q "bluez_output"
 }
 # Pause/resume the stream (AVDTP suspend/start): wakes a car that is
 # "playing" but silent. Short, so it is barely audible.
@@ -104,8 +106,12 @@ while true; do
   fi
 
   if [ -z "$LOOP" ] || ! kill -0 "$LOOP" 2>/dev/null; then
-    pw-loopback --capture-props="target.object=$I2S node.name=smo_capture" \
-                --playback-props="target.object=$SINK node.name=to_tesla" &
+    # Channel layout spelled out on both sides: left unspecified, the right
+    # channel was dropped inside the loopback (all four ports linked, right
+    # always silent at the car) - the car only ever got the left channel.
+    pw-loopback -c 2 -m '[ FL FR ]' \
+                --capture-props="target.object=$I2S node.name=smo_capture audio.position=[ FL FR ]" \
+                --playback-props="target.object=$SINK node.name=to_tesla audio.position=[ FL FR ]" &
     LOOP=$!; LOOP_SINK_ID=$SINK_ID; LOOP_STARTED=$(date +%s); UNLINKED=0; NOT_ACTIVE=0
     echo "Streaming to $SINK"
     # Check again quickly while a reconnect nudge is still due.
