@@ -465,6 +465,12 @@ class Relay:
         return True
 
     def mic_stop(self, why, tell_car=True):
+        # Ended from the car's side (hang-up, timeout, car gone, a real
+        # call) while a Bluetooth source still holds its headset mic open:
+        # end that too, or the source stays in call mode with its music
+        # held back (Google Assistant doesn't let go by itself).
+        if self.src_sco is not None and why != "SMO stopped listening":
+            self.src_end_voice(why)
         if self.mic_watch:
             GLib.source_remove(self.mic_watch)
             self.mic_watch = None
@@ -570,6 +576,23 @@ class Relay:
         except OSError:
             pass
         return True
+
+    def src_end_voice(self, why):
+        """Tell the source to stop voice recognition (the headset way:
+        AT+BVRA=0) and close its headset audio link."""
+        if self.src and self.src_slc:
+            log("  -> source AT+BVRA=0")
+            self.src.send("AT+BVRA=0\r")
+        sco, self.src_sco = self.src_sco, None
+        if self.src_watch:
+            GLib.source_remove(self.src_watch)
+            self.src_watch = None
+        for f in (lambda: sco.shutdown(socket.SHUT_RDWR), sco.close):
+            try:
+                f()
+            except OSError:
+                pass
+        log(f"Music source: ended its voice session ({why})")
 
     def src_sco_close(self, why):
         if self.src_watch:
