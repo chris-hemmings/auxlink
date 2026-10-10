@@ -121,7 +121,10 @@ ln -sf /usr/lib/systemd/user/obex.service "$H/.config/systemd/user/default.targe
 chown -h "$U:$U" "$H/.config/systemd/user/default.target.wants/obex.service"
 if [ -x /usr/local/libexec/obexd-dummy ]; then
   install -d -o "$U" -g "$U" "$H/.config/systemd/user/obex.service.d"
-  printf '[Service]\nExecStart=\nExecStart=/usr/local/libexec/obexd-dummy\n' > "$H/.config/systemd/user/obex.service.d/dummy-phonebook.conf"
+  # Contacts and recent calls only: no messages server (-P mas,mns). AuxLink
+  # relays no texts, and a car that opened the empty one waited a minute on
+  # "Connecting..." and then reset its Bluetooth.
+  printf '[Service]\nExecStart=\nExecStart=/usr/local/libexec/obexd-dummy -P mas,mns\n' > "$H/.config/systemd/user/obex.service.d/dummy-phonebook.conf"
   chown -R "$U:$U" "$H/.config/systemd/user/obex.service.d"
   echo "contacts server: file-based obexd found"
 else

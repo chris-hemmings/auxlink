@@ -38,7 +38,7 @@ mkdir -p ~/.config/systemd/user/obex.service.d
 cat > ~/.config/systemd/user/obex.service.d/dummy-phonebook.conf <<'CONF'
 [Service]
 ExecStart=
-ExecStart=/usr/local/libexec/obexd-dummy
+ExecStart=/usr/local/libexec/obexd-dummy -P mas,mns
 CONF
 systemctl --user daemon-reload
 systemctl --user restart obex

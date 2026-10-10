@@ -67,7 +67,21 @@ systemctl daemon-reload
 systemctl enable auxlink-cover auxlink-usb-gadget >/dev/null 2>&1 || true
 systemctl restart auxlink-usb-gadget
 systemctl restart auxlink-pairing auxlink-reconnect hfp-relay auxlink-media auxlink-web auxlink-cover
+# Contacts server: contacts and recent calls only, no messages server (a car
+# that opened the empty one hung on "Connecting..." and reset its Bluetooth).
+OBEX_DROPIN="$H/.config/systemd/user/obex.service.d/dummy-phonebook.conf"
+OBEX_WANT='[Service]
+ExecStart=
+ExecStart=/usr/local/libexec/obexd-dummy -P mas,mns'
+OBEX_RESTART=0
+if [ -x /usr/local/libexec/obexd-dummy ] && [ "$(cat "$OBEX_DROPIN" 2>/dev/null)" != "$OBEX_WANT" ]; then
+  install -d -o "$U" -g "$U" "$(dirname "$OBEX_DROPIN")"
+  printf '%s\n' "$OBEX_WANT" > "$OBEX_DROPIN"
+  chown "$U:$U" "$OBEX_DROPIN"
+  OBEX_RESTART=1
+fi
 asuser systemctl --user daemon-reload
 asuser systemctl --user restart auxlink-audio pbap-sync
+[ "$OBEX_RESTART" = 1 ] && asuser systemctl --user restart obex && echo "Contacts server: messages part turned off"
 sync
 echo "Services restarted. Done (no reboot needed)."

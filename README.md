@@ -568,6 +568,7 @@ awake (Tesla: **Controls → Electrical → Keep Accessory Power On**), or tap
 | No album art | With the image it is built in; on a manual install run `build-bluetoothd-cover.sh` (2.2). Test with `sudo cover-test.sh` on the Pi, then turn the car's Bluetooth off and on once. |
 | No contacts / recent calls in the car | With a manual install, build the contacts server (2.2). Allow contacts and call history on the phone, then on the setup page restart the services. |
 | Car doesn't reconnect | It reconnects by itself when it wakes. After a fresh start of the Pi it may already have given up: see "Pi powered by the car" in [Other cars](#other-cars). Otherwise open **Recent events / Logs** on the setup page. |
+| Car pairs, then shows "Connecting..." for a minute and restarts its Bluetooth | Update the Pi (1.0.44+): older versions offered the car an empty text-messages service that some cars wait on. Meanwhile, turn off **Sync Messages** for AuxLink in the car. |
 | Music shows as playing but is silent (e.g. the car connected after the music started) | Pause and play again in the car within a few seconds, or the app's **Fix sound**, or **Check and fix**. |
 | The app asks for USB access at every plug-in | Allow the app's **Microphone** permission, re-plug the XIAO and tick **Always**. |
 | After a restart of the music device the app has no data link | Update the XIAO to firmware 1.0.2+ (it re-plugs itself); meanwhile tap **Allow USB** in the app. |
