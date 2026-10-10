@@ -130,6 +130,16 @@ class NowPlayingService : NotificationListenerService() {
     }
 
     private val callBar by lazy { CallBar(this) { callCommand(it) } }
+
+    /** The app screen's "Test call bar": a pretend call for 8 seconds. */
+    fun testCallBar() {
+        main.post {
+            channels()
+            showCall("incoming", "Test caller", "")
+            main.postDelayed({ if (callState == "incoming") showCall("active", "Test caller", "") }, 3000)
+            main.postDelayed({ if (callState == "active") showCall("idle", "", "") }, 8000)
+        }
+    }
     private var callState = "idle"
     private var callSince = 0L      // elapsedRealtime when the call was answered
     private var callSinceWall = 0L  // the same, as a clock time (notification timer)

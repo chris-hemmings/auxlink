@@ -83,6 +83,17 @@ class MainActivity : Activity() {
                 }
             }
         }
+        val testBar = Button(this).apply {
+            text = "Test call bar"
+            setOnClickListener {
+                val svc = NowPlayingService.instance
+                if (svc == null) note.text = "Not running: allow notification access first."
+                else {
+                    note.text = "A pretend call: the bar should show for 8 seconds (go to another app to see it over it)."
+                    svc.testCallBar()
+                }
+            }
+        }
         val open = Button(this).apply {
             text = "Open setup page"
             setOnClickListener { openSetup() }
@@ -94,6 +105,7 @@ class MainActivity : Activity() {
             addView(grant)
             addView(battery)
             addView(overlay)
+            addView(testBar)
             addView(allowUsb)
             addView(fix)
             addView(setup)
@@ -178,6 +190,8 @@ class MainActivity : Activity() {
                 "battery saving may stop it - tap Let AuxLink run in the background")
             appendLine("Call controls over other apps: " + if (Settings.canDrawOverlays(this@MainActivity))
                 "allowed" else "NOT allowed - tap Show call controls over other apps")
+            if (CallBar.lastProblem.isNotEmpty())
+                appendLine("Call bar couldn't show: " + CallBar.lastProblem)
             if (!micAllowed())
                 appendLine("Microphone: NOT allowed - reopen the app and allow it (only so USB can be set to Always; nothing is recorded)")
             if (xiao && !UsbLink(this@MainActivity).permitted())

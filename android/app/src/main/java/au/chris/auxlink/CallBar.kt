@@ -40,7 +40,10 @@ class CallBar(private val ctx: Context, private val onCmd: (String) -> Unit) {
     /** [state]: incoming, outgoing or active. [since]: when it was answered
      *  (SystemClock.elapsedRealtime), for the timer. */
     fun show(state: String, name: String, since: Long) {
-        if (!allowed()) return hide()
+        if (!allowed()) {
+            lastProblem = "\"Display over other apps\" is off for AuxLink"
+            return hide()
+        }
         try {
             if (root == null) build()
             title.text = when (state) {
@@ -68,9 +71,11 @@ class CallBar(private val ctx: Context, private val onCmd: (String) -> Unit) {
                 }
                 shown = state
             }
+            lastProblem = ""
         } catch (e: Exception) {
             // Permission taken away meanwhile, or the system refused: the
-            // notification is still there.
+            // notification is still there. The app screen shows why.
+            lastProblem = "Android refused: ${e.javaClass.simpleName}: ${e.message}"
             hide()
         }
     }
@@ -148,5 +153,7 @@ class CallBar(private val ctx: Context, private val onCmd: (String) -> Unit) {
 
     companion object {
         fun now() = SystemClock.elapsedRealtime()
+        /** Why the bar last couldn't be shown ("" = it could). */
+        @Volatile var lastProblem = ""
     }
 }
