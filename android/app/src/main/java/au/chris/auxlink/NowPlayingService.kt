@@ -123,8 +123,12 @@ class NowPlayingService : NotificationListenerService() {
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(
             "calls", "Incoming calls", NotificationManager.IMPORTANCE_HIGH))
+        // High importance = pops up on screen. (The first "texts" channel
+        // was normal importance, which Android never lets an app raise, so
+        // it is replaced by a new one.)
+        nm.deleteNotificationChannel("texts")
         nm.createNotificationChannel(NotificationChannel(
-            "texts", "Text messages", NotificationManager.IMPORTANCE_DEFAULT))
+            "texts_popup", "Text messages", NotificationManager.IMPORTANCE_HIGH))
     }
 
     /** A line from the Pi: {"call": state, "number", "name"} or {"text": {...}}. */
@@ -161,6 +165,9 @@ class NowPlayingService : NotificationListenerService() {
             .setContentText(if (name.isNotEmpty() && number.isNotEmpty()) "$name  $number" else who)
             .setCategory(Notification.CATEGORY_CALL)
             .setOngoing(true)
+            // Keeps the pop-up on screen until answered or declined.
+            .setFullScreenIntent(PendingIntent.getActivity(this, 3,
+                Intent(this, MainActivity::class.java), flags), true)
             .addAction(Notification.Action.Builder(null as android.graphics.drawable.Icon?, "Answer", answer).build())
             .addAction(Notification.Action.Builder(null as android.graphics.drawable.Icon?, "Decline", decline).build())
             .build()
@@ -170,7 +177,7 @@ class NowPlayingService : NotificationListenerService() {
     private var textId = 100
 
     private fun showText(from: String, body: String) {
-        val n = Notification.Builder(this, "texts")
+        val n = Notification.Builder(this, "texts_popup")
             .setSmallIcon(android.R.drawable.sym_action_email)
             .setContentTitle(from.ifEmpty { "Text message" })
             .setContentText(body)
