@@ -23,6 +23,7 @@ import base64
 import json
 import pwd
 import socket
+import re
 import os
 import struct
 import subprocess
@@ -1220,6 +1221,12 @@ class Notify:
         d = "".join(c for c in str(number) if c.isdigit())
         return d[-9:] if len(d) >= 6 else d
 
+    @staticmethod
+    def phone_number(s):
+        """A real phone number, not an app's caller ID."""
+        return bool(re.fullmatch(r"\+?[\d\s()./-]{3,20}", s.strip())) and \
+            len(re.sub(r"\D", "", s)) <= 15
+
     def name_of(self, number):
         try:
             t = os.stat(self.pb).st_mtime
@@ -1269,10 +1276,16 @@ class Notify:
         except (OSError, ValueError):
             return
         state, number = info.get("state", "idle"), info.get("number", "")
-        if (state, number) == self.last_call:
+        name = info.get("name", "")
+        if (state, number, name) == self.last_call:
             return
-        self.last_call = (state, number)
-        app_send({"call": state, "number": number, "name": self.name_of(number) if number else ""})
+        self.last_call = (state, number, name)
+        if number and not self.phone_number(number):
+            # Messenger, WhatsApp etc. calls: the phone sends the app's own
+            # ID (often a long code) where the number goes. Not worth showing.
+            number, name = "", name or "Internet call"
+        app_send({"call": state, "number": number,
+                  "name": (self.name_of(number) if number else "") or name})
 
     def check_texts(self):
         try:

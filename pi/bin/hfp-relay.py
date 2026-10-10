@@ -141,6 +141,21 @@ OK_WHEN_ALONE = ("AT+CLIP", "AT+CCWA", "AT+CMEE", "AT+NREC", "AT+VGS", "AT+VGM",
                  "AT+CSRSF", "AT+CSR", "AT+XEVENT", "AT+APLSIRI")
 
 
+def clip_fields(s):
+    """Comma-separated fields with "quoted" ones (commas inside quotes kept)."""
+    out, cur, q = [], "", False
+    for c in s.strip():
+        if c == '"':
+            q = not q
+        elif c == "," and not q:
+            out.append(cur.strip())
+            cur = ""
+        else:
+            cur += c
+    out.append(cur.strip())
+    return out
+
+
 def log(msg):
     print(msg, flush=True)
 
@@ -229,6 +244,7 @@ class Relay:
         self.sco_watches = []
         self.in_call = False
         self.caller = ""         # number from +CLIP while ringing
+        self.caller_name = ""    # name, when the phone sends one with it
         self.call_info = None    # last written (state, number)
         self.own_pending = 0     # our own commands to the phone after SLC (their OK isn't the car's)
         try:
@@ -364,15 +380,15 @@ class Relay:
         state = ("incoming" if setup == 1 else "outgoing" if setup in (2, 3)
                  else "active" if call else "idle")
         if state == "idle":
-            self.caller = ""
-        info = (state, self.caller)
+            self.caller = self.caller_name = ""
+        info = (state, self.caller, self.caller_name)
         if info == self.call_info:
             return
         self.call_info = info
         try:
             os.makedirs(os.path.dirname(CALL_INFO_FILE), exist_ok=True)
             with open(CALL_INFO_FILE + ".tmp", "w") as f:
-                json.dump({"state": state, "number": self.caller}, f)
+                json.dump({"state": state, "number": self.caller, "name": self.caller_name}, f)
             os.replace(CALL_INFO_FILE + ".tmp", CALL_INFO_FILE)
         except OSError as e:
             log(f"Could not write {CALL_INFO_FILE}: {e}")
@@ -738,9 +754,11 @@ class Relay:
         if up.startswith("+BCS:"):
             return  # codec negotiation is off; never pass this on
         if up.startswith("+CLIP:") and '"' in line:
-            num = line.split('"')[1]
-            if num != self.caller:
-                self.caller = num
+            # +CLIP: "number",type[,subaddr,satype,"name"[,validity]]
+            f = clip_fields(line.split(":", 1)[1])
+            num, name = f[0], (f[4] if len(f) > 4 else "")
+            if (num, name) != (self.caller, self.caller_name):
+                self.caller, self.caller_name = num, name
                 self.write_call_info()
         if self.own_pending and (up in ("OK", "ERROR") or up.startswith("+CME ERROR")):
             self.own_pending -= 1
