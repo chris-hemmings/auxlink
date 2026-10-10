@@ -156,6 +156,33 @@ def clip_fields(s):
     return out
 
 
+def phone_number(s):
+    """A real phone number, not an app's caller ID (Messenger sends a UUID)."""
+    return (not s or bool(re.fullmatch(r"\+?[\d\s()./*#-]{1,20}", s.strip()))) \
+        and len(re.sub(r"\D", "", s)) <= 15
+
+
+# Where the number and the name are in each caller-ID line.
+CALLER_FIELDS = {"+CLIP:": (0, 4), "+CCWA:": (0, 3), "+CLCC:": (5, 7)}
+
+
+def car_caller(line):
+    """The car shows the "number" as it is: for an app's call put the name
+    there ("Messenger user") instead of a long ID."""
+    for tag, (n, a) in CALLER_FIELDS.items():
+        if line.upper().startswith(tag):
+            f = clip_fields(line.split(":", 1)[1])
+            if len(f) <= n or phone_number(f[n]):
+                return line
+            name = (f[a] if len(f) > a else "") or "Internet call"
+            f[n] = name
+            if len(f) > n + 1:
+                f[n + 1] = "129"
+            return tag + " " + ",".join(f'"{v}"' if i in (n, a) else v
+                                       for i, v in enumerate(f))
+    return line
+
+
 def log(msg):
     print(msg, flush=True)
 
@@ -770,9 +797,10 @@ class Relay:
                 self.phone_next()
             return
         # Everything else (RING, +CLIP, +CLCC, +CCWA, +VGS, OK/ERROR for the
-        # car's own commands...) goes to the car as-is.
+        # car's own commands...) goes to the car as-is (caller IDs from apps
+        # like Messenger swapped for their name).
         if self.car_slc:
-            self.to_car(line)
+            self.to_car(car_caller(line))
 
     def set_value(self, name, value):
         if self.values.get(name) == value:
