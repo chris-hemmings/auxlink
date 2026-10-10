@@ -322,7 +322,7 @@ yet it opens on **Devices**; a dot marks a tab that needs attention.
     message access for AuxLink-phone), offers them to the car like a phone
     does, and tells the car about each new one, so it pops up and can be
     read aloud. Replies from the car are sent by your phone (they appear in
-    its sent messages; Recent events says "Reply to ...: sent"). If the car
+    its sent messages; Recent events says "Reply to ...: sent"; the texts themselves only go to the service's log). If the car
     then hangs on "Connecting..." and resets its Bluetooth, turn it off again.
 11. **Development** tab (optional): services, logs, and a terminal on the Pi
     inside the setup page, the same as SSH, with one-tap buttons for the main

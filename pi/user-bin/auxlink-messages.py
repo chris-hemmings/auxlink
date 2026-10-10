@@ -328,7 +328,7 @@ class Messages:
             self.save()
             who = name or number or "unknown"
             preview = body.replace("\n", " ")
-            event(f"New text from {who}: {preview[:60]}{'…' if len(preview) > 60 else ''}")
+            log(f"New text from {who}: {preview[:60]}{'…' if len(preview) > 60 else ''}")
         except (dbus.DBusException, OSError) as e:
             log(f"Could not fetch message {handle}: {e}")
         finally:
