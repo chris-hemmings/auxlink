@@ -153,6 +153,7 @@ section[data-tab].off{display:none}
       <button class="ghost" onclick="termCtrlC()">Ctrl+C</button>
     </div>
     <div id="term" style="margin-top:10px;height:420px;background:#000;border-radius:8px;display:none"></div>
+    <div class="btns" style="flex-wrap:nowrap"><input id="termPaste" placeholder="Paste or type a command here (phones), then Send" autocomplete="off" autocapitalize="off" spellcheck="false" onkeydown="if(event.key==='Enter'){event.preventDefault();termPasteSend()}"><button onclick="termPasteSend()">Send</button></div>
   </details></section>
 
   <section class="card" data-tab="updates" id="xiaoCard"><h2>XIAO firmware</h2>
@@ -221,11 +222,23 @@ function b64d(s){const b=atob(s),u=new Uint8Array(b.length);for(let i=0;i<b.leng
 function termSend(s){if(TID)api('term/write',{id:TID,data:b64e(s)}).catch(e=>toast(e.message))}
 function termRun(cmd){if(!TID)return toast('Open the terminal first');termSend('\x03');setTimeout(()=>termSend(cmd+'\r'),150)}
 function termCtrlC(){termSend('\x03')}
+function termPasteSend(){const i=$('termPaste');if(!TID)return toast('Open the terminal first');
+  if(i.value)termSend(i.value.replace(/\r?\n/g,'\r')+'\r');i.value='';if(T)T.focus()}
+function termCopy(t){// http:// pages can't use the clipboard API: copy through a hidden text box
+  const a=document.createElement('textarea');a.value=t;a.style.position='fixed';a.style.opacity='0';document.body.appendChild(a);
+  a.select();try{document.execCommand('copy');toast('Copied')}catch(e){}a.remove();if(T)T.focus()}
 async function termOpen(){
   try{await termLib()}catch(e){return toast('Terminal files missing: update the Pi')}
   $('term').style.display='block';
   if(!T){T=new Terminal({cursorBlink:true,fontSize:13,convertEol:false,scrollback:5000});TF=new FitAddon.FitAddon();T.loadAddon(TF);T.open($('term'));
-    T.onData(d=>termSend(d));window.addEventListener('resize',()=>termFit())}
+    T.onData(d=>termSend(d));window.addEventListener('resize',()=>termFit());
+    // Ctrl+V / Cmd+V (and Ctrl+Shift+V): let the browser paste, which the
+    // terminal then types, instead of sending ^V. Ctrl+C with text selected:
+    // copy it rather than interrupt.
+    T.attachCustomKeyEventHandler(e=>{if(e.type!=='keydown')return true;const k=(e.key||'').toLowerCase();
+      if((e.ctrlKey||e.metaKey)&&!e.altKey&&k==='v')return false;
+      if((e.ctrlKey||e.metaKey)&&k==='c'&&T.hasSelection()){termCopy(T.getSelection());return false}
+      return true})}
   TF.fit();T.clear();
   try{const r=await api('term/open',{cols:T.cols,rows:T.rows});TID=r.id;TPOS=0;T.focus();termPoll()}
   catch(e){T.writeln('\r\n'+e.message);TID=null}}
