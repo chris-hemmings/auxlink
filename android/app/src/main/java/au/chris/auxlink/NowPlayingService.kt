@@ -113,11 +113,26 @@ class NowPlayingService : NotificationListenerService() {
     // ---------- calls and texts from the Pi (shown on this device) ----------
     private val callButtons = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
-            val cmd = if (i.action == ACTION_ANSWER) "answer" else "decline"
-            command(cmd) { }
-            getSystemService(NotificationManager::class.java).cancel(NOTIF_CALL)
+            callCommand(if (i.action == ACTION_ANSWER) "answer" else "decline")
         }
     }
+
+    /** Answer / Decline / Hang up, from the notification or the call bar.
+     *  Answering keeps both up (they turn into the "On a call" controls when
+     *  the Pi says the call is active); ending removes them straight away. */
+    private fun callCommand(cmd: String) {
+        command(cmd) { }
+        if (cmd == "decline") {
+            getSystemService(NotificationManager::class.java).cancel(NOTIF_CALL)
+            callBar.hide()
+            callState = "idle"
+        }
+    }
+
+    private val callBar by lazy { CallBar(this) { callCommand(it) } }
+    private var callState = "idle"
+    private var callSince = 0L      // elapsedRealtime when the call was answered
+    private var callSinceWall = 0L  // the same, as a clock time (notification timer)
 
     private fun channels() {
         val nm = getSystemService(NotificationManager::class.java)
@@ -129,6 +144,8 @@ class NowPlayingService : NotificationListenerService() {
         nm.deleteNotificationChannel("texts")
         nm.createNotificationChannel(NotificationChannel(
             "texts_popup", "Text messages", NotificationManager.IMPORTANCE_HIGH))
+        nm.createNotificationChannel(NotificationChannel(
+            "call_ongoing", "Call in progress", NotificationManager.IMPORTANCE_LOW))
     }
 
     /** A line from the Pi: {"call": state, "number", "name"} or {"text": {...}}. */
@@ -151,14 +168,38 @@ class NowPlayingService : NotificationListenerService() {
 
     private fun showCall(state: String, name: String, number: String) {
         val nm = getSystemService(NotificationManager::class.java)
-        if (state != "incoming") {
+        if (state !in listOf("incoming", "outgoing", "active")) {
             nm.cancel(NOTIF_CALL)
+            callBar.hide()
+            callState = "idle"
             return
         }
+        if (state == "active" && callState != "active") {
+            callSince = CallBar.now()
+            callSinceWall = System.currentTimeMillis()
+        }
+        callState = state
         val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         val answer = PendingIntent.getBroadcast(this, 1, Intent(ACTION_ANSWER).setPackage(packageName), flags)
         val decline = PendingIntent.getBroadcast(this, 2, Intent(ACTION_DECLINE).setPackage(packageName), flags)
-        val who = name.ifEmpty { number.ifEmpty { "Unknown caller" } }
+        val who = name.ifEmpty { number.ifEmpty { if (state == "incoming") "Unknown caller" else "" } }
+        callBar.show(state, who, callSince)
+        if (state != "incoming") {
+            // During the call: a quiet notification (no pop-up) with Hang up.
+            val n = Notification.Builder(this, "call_ongoing")
+                .setSmallIcon(android.R.drawable.sym_action_call)
+                .setContentTitle(if (state == "active") "On a call" else "Calling...")
+                .setContentText(who)
+                .setCategory(Notification.CATEGORY_CALL)
+                .setOngoing(true)
+                .setShowWhen(state == "active")
+                .setWhen(if (state == "active") callSinceWall else System.currentTimeMillis())
+                .setUsesChronometer(state == "active")
+                .addAction(Notification.Action.Builder(null as android.graphics.drawable.Icon?, "Hang up", decline).build())
+                .build()
+            nm.notify(NOTIF_CALL, n)
+            return
+        }
         val n = Notification.Builder(this, "calls")
             .setSmallIcon(android.R.drawable.sym_call_incoming)
             .setContentTitle("Incoming call")

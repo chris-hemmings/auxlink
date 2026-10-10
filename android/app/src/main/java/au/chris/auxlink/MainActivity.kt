@@ -71,6 +71,18 @@ class MainActivity : Activity() {
                     "home Wi-Fi instead, it opens at http://auxlink.local")
             }
         }
+        // The call bar (who's calling, Answer / Hang up) floats over other apps.
+        val overlay = Button(this).apply {
+            text = "Show call controls over other apps"
+            setOnClickListener {
+                try {
+                    startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        Uri.parse("package:$packageName")))
+                } catch (e: Exception) {
+                    startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION))
+                }
+            }
+        }
         val open = Button(this).apply {
             text = "Open setup page"
             setOnClickListener { openSetup() }
@@ -81,6 +93,7 @@ class MainActivity : Activity() {
             addView(status)
             addView(grant)
             addView(battery)
+            addView(overlay)
             addView(allowUsb)
             addView(fix)
             addView(setup)
@@ -163,6 +176,8 @@ class MainActivity : Activity() {
             appendLine("XIAO plugged in: " + if (xiao) "yes" else "no")
             appendLine("Background running: " + if (unrestricted()) "allowed" else
                 "battery saving may stop it - tap Let AuxLink run in the background")
+            appendLine("Call controls over other apps: " + if (Settings.canDrawOverlays(this@MainActivity))
+                "allowed" else "NOT allowed - tap Show call controls over other apps")
             if (!micAllowed())
                 appendLine("Microphone: NOT allowed - reopen the app and allow it (only so USB can be set to Always; nothing is recorded)")
             if (xiao && !UsbLink(this@MainActivity).permitted())
