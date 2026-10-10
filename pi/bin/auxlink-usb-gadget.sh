@@ -12,14 +12,47 @@
 #   auxlink-usb-gadget.sh          set up (or tear down if another source is selected)
 #   auxlink-usb-gadget.sh stop     tear down
 G=/sys/kernel/config/usb_gadget/auxlink
+BOOT_CONFIG=/boot/firmware/config.txt
+OVERLAY="dtoverlay=dwc2,dr_mode=peripheral"
+
+event() {   # also shown in the setup page's Recent events
+  mkdir -p /run/auxlink && echo "$(date +%H:%M:%S) $1" >> /run/auxlink/events.log
+}
+
+# Let go of the gadget's sound card before taking it down: removing it while
+# PipeWire still has it open (the music loop streaming from it) hangs in the
+# kernel, and the gadget then can't be removed or re-made until a reboot. So
+# stop the music loop and suspend the card's inputs/outputs (this closes the
+# device; unlike switching its profile off, nothing is remembered).
+asaudio() {
+  local user=${AUDIO_USER:-chris} uid
+  uid=$(id -u "$user" 2>/dev/null) || return 1
+  runuser -u "$user" -- env XDG_RUNTIME_DIR=/run/user/$uid "$@"
+}
+release_card() {
+  local udc n
+  udc=$(cat "$G/UDC" 2>/dev/null); [ -n "$udc" ] || return 0
+  asaudio timeout 10 systemctl --user stop auxlink-audio 2>/dev/null
+  for n in $(asaudio timeout 5 pactl list sources short 2>/dev/null | awk -v u="$udc" 'index($2, u) && $2 !~ /\.monitor$/ {print $2}'); do
+    asaudio timeout 5 pactl suspend-source "$n" 1 2>/dev/null
+  done
+  for n in $(asaudio timeout 5 pactl list sinks short 2>/dev/null | awk -v u="$udc" 'index($2, u) {print $2}'); do
+    asaudio timeout 5 pactl suspend-sink "$n" 1 2>/dev/null
+  done
+  sleep 1
+  RESTART_AUDIO=1
+}
 
 teardown() {
   [ -d "$G" ] || return 0
+  release_card
   echo "" > "$G/UDC" 2>/dev/null
   rm -f "$G"/configs/c.1/*.usb0
   rmdir "$G"/configs/c.1/strings/0x409 "$G"/configs/c.1 2>/dev/null
   rmdir "$G"/functions/* "$G"/strings/0x409 2>/dev/null
   rmdir "$G" 2>/dev/null && echo "USB-C gadget removed"
+  [ "${RESTART_AUDIO:-0}" = 1 ] && asaudio systemctl --user start auxlink-audio 2>/dev/null
+  RESTART_AUDIO=0
 }
 
 . /etc/auxlink.conf
@@ -31,7 +64,22 @@ modprobe libcomposite 2>/dev/null
 mountpoint -q /sys/kernel/config || mount -t configfs none /sys/kernel/config
 UDC=$(ls /sys/class/udc 2>/dev/null | head -1)
 if [ -z "$UDC" ]; then
-  echo "No USB device controller: dtoverlay=dwc2,dr_mode=peripheral is missing or the Pi has not been rebooted since"
+  # The USB-C port only becomes a device with this line in config.txt (the
+  # setup page adds it when USB-C is chosen; make sure, whatever happened).
+  if ! grep -qxF "$OVERLAY" "$BOOT_CONFIG" 2>/dev/null; then
+    printf '\n[all]\n# auxlink: USB-C music source (Pi as a USB sound card)\n%s\n' "$OVERLAY" >> "$BOOT_CONFIG"
+    sync
+    echo "Added $OVERLAY to $BOOT_CONFIG: reboot once to finish setting up USB-C"
+    event "USB-C mode set up: reboot once to finish"
+  else
+    echo "No USB device controller yet: reboot once to finish setting up USB-C"
+  fi
+  exit 0
+fi
+# Already up and bound (e.g. after an update): leave it alone, so the music
+# device stays connected.
+if [ -n "$(cat "$G/UDC" 2>/dev/null)" ]; then
+  echo "USB-C gadget already up on $(cat "$G/UDC"); left as it is"
   exit 0
 fi
 teardown

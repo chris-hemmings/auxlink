@@ -389,7 +389,10 @@ shows up as a USB sound card (plus a data link and media keys).
   cable. Use a splitter whose device side is data-only, or a USB
   "power blocker" (data-only) adapter between the device and the Pi.
 - After saving, **reboot once**; the page says when this is needed. Saving
-  adds `dtoverlay=dwc2,dr_mode=peripheral` to `/boot/firmware/config.txt`.
+  adds `dtoverlay=dwc2,dr_mode=peripheral` to `/boot/firmware/config.txt`
+  (and the Pi adds it at boot if it's ever missing, then asks for one more
+  reboot). Pi updates leave the USB-C connection up, so the music device
+  stays connected.
 - **Track info and album art:** from the AuxLink app (v1.0.5 or
   newer), over the same cable.
 - **Car buttons:** reach the device as USB media keys.
