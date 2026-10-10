@@ -39,6 +39,7 @@ if [ -f "$HERE/share/auxlink-xiao.uf2" ]; then
   install -D -m 644 "$HERE/share/auxlink-xiao.version" /usr/local/share/auxlink/auxlink-xiao.version
 fi
 rm -f /etc/udev/rules.d/99-auxlink-xiao.rules /etc/systemd/system/auxlink-xiao-flash@.service   # 1.0.40 flashed by itself
+MAP_BEFORE=$(md5sum /usr/local/bin/auxlink-map.py 2>/dev/null | cut -d' ' -f1)
 install -m 755 "$HERE"/bin/* /usr/local/bin/
 install -o "$U" -g "$U" -m 755 "$HERE"/user-bin/* "$H/.local/bin/"
 install -m 644 "$HERE"/systemd/system/*.service /etc/systemd/system/
@@ -77,7 +78,14 @@ if grep -q '^MUSIC_SOURCE=usbc' /etc/auxlink.conf; then
 else
   systemctl restart auxlink-usb-gadget
 fi
-systemctl restart auxlink-pairing auxlink-reconnect hfp-relay auxlink-media auxlink-web auxlink-cover auxlink-map
+systemctl restart auxlink-pairing auxlink-reconnect hfp-relay auxlink-media auxlink-web auxlink-cover
+# The car's messages service only when it changed: while it is gone the car
+# switches "Sync Messages" off.
+if [ "$(md5sum /usr/local/bin/auxlink-map.py | cut -d' ' -f1)" != "$MAP_BEFORE" ]; then
+  systemctl restart auxlink-map
+else
+  systemctl start auxlink-map
+fi
 # Contacts server: contacts and recent calls only, no messages server (a car
 # that opened the empty one hung on "Connecting..." and reset its Bluetooth).
 OBEX_DROPIN="$H/.config/systemd/user/obex.service.d/dummy-phonebook.conf"

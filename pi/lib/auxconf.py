@@ -68,7 +68,10 @@ def restart_all(delay=1, skip=()):
     user = load().get("AUDIO_USER", "chris")
     # Never the USB-C gadget: restarting it unplugs the music device (it
     # pauses, and the app loses its link). Choosing the source restarts it.
-    sys_units = " ".join(u for u in SYSTEM_UNITS if u not in skip and u != "auxlink-usb-gadget")
+    # Nor the car's messages service: while it is gone the car switches its
+    # "Sync Messages" off. It restarts only when the messages setting changes.
+    sys_units = " ".join(u for u in SYSTEM_UNITS
+                         if u not in skip and u not in ("auxlink-usb-gadget", "auxlink-map"))
     env = user_env(user)
     cmd = (f"sleep {delay}; systemctl restart {sys_units}; "
            f"/usr/sbin/runuser -u {user} -- env XDG_RUNTIME_DIR={env['XDG_RUNTIME_DIR']} "

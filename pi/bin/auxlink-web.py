@@ -358,6 +358,8 @@ def act_config(body):
         STATE["ap"] = False
     auxconf.event("Settings changed: " + ", ".join(sorted(upd)))
     auxconf.restart_all(delay=1, skip=("auxlink-pairing",))
+    if "MESSAGES" in upd and old.get("MESSAGES", "0") != upd["MESSAGES"]:
+        sh("systemctl", "restart", "auxlink-map", timeout=30)
     return {"ok": True}
 
 
