@@ -26,6 +26,7 @@ import socket
 import os
 import struct
 import subprocess
+import threading
 import sys
 import termios
 import time
@@ -65,7 +66,8 @@ APP_UUID = "7e5b1a20-3c4d-4f8e-9a6b-74657362726b"
 APP_PATH = "/auxlink/app_link"
 APP_LINK = {"sock": None, "watch": None}
 AUDIO_USER = CONF.get("AUDIO_USER", "chris")
-KEY_USAGE = {b"P": 0x00CD, b"N": 0x00B5, b"B": 0x00B6, b"S": 0x00B7, b"+": 0x00E9, b"-": 0x00EA}
+KEY_USAGE = {b"P": 0x00CD, b"N": 0x00B5, b"B": 0x00B6, b"S": 0x00B7, b"+": 0x00E9, b"-": 0x00EA,
+             b">": 0x00B0, b"|": 0x00B1}   # Play, Pause (USB-C: no toggling into the wrong state)
 PATH = "/auxlink/player"
 IFACE = "org.mpris.MediaPlayer2.Player"
 BLUEZ = "org.bluez"
@@ -214,6 +216,21 @@ def smo_volume_max(why):
         left[0] -= 1
         return left[0] > 0
     GLib.timeout_add(100, press)
+
+
+def usbc_repair():
+    """Quick pause-play in the car with the USB-C source: re-plug or rebuild
+    the USB-C connection if it is broken (never a working one), in the
+    background; its result goes to this log."""
+    def run():
+        try:
+            r = subprocess.run(["/usr/local/bin/auxlink-usb-gadget.sh", "repair"],
+                               capture_output=True, text=True, timeout=90)
+            for line in (r.stdout or "").splitlines():
+                log("USB-C check: " + line.strip())
+        except (OSError, subprocess.TimeoutExpired) as e:
+            log(f"USB-C check failed: {e}")
+    threading.Thread(target=run, daemon=True).start()
 
 
 class UsbcReplug:
@@ -640,7 +657,12 @@ class Player(dbus.service.Object):
         if self.status == want:
             self.publish()   # make sure the car agrees (it mutes while it thinks we're paused)
             return False
-        smo_key(b"P", why)
+        # USB-C (the Pi's own media keys): a plain Play or Pause, so a source
+        # already in that state stays there. The XIAO only has the toggle.
+        if MUSIC_SOURCE == "usbc":
+            smo_key(b">" if want_playing else b"|", why)
+        else:
+            smo_key(b"P", why)
         if not want_playing:
             self.paused_at = time.monotonic()
         self.status = want
@@ -737,6 +759,8 @@ class Player(dbus.service.Object):
         quick = (MUSIC_SOURCE != "bluetooth"
                  and time.monotonic() - getattr(self, "car_paused_at", -99) < 8)
         if what == "play" and (self.status == "Playing" or quick) and not self.in_call:
+            if MUSIC_SOURCE == "usbc" and quick:
+                usbc_repair()
             self.kick_audio()
         if what == "play":
             self.paused_for_call = False if not self.in_call else self.paused_for_call

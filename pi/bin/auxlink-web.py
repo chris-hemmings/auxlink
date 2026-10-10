@@ -281,13 +281,17 @@ def act_source(body):
             upd["SOURCE"] = ""            # pairings belong to an adapter
         msg += f" on {ad}; now use Pair a music source"
     reboot = False
+    # Rebuild the USB-C connection only when switching to or from USB-C:
+    # rebuilding unplugs the music device.
+    usbc_change = (src == "usbc") != (c.get("MUSIC_SOURCE") == "usbc")
     if src == "usbc":
         reboot = enable_gadget_overlay()
         msg += ("; power the Pi externally for reliable use" +
                 ("; REBOOT to switch the USB-C port to device mode" if reboot else ""))
     auxconf.save(upd)
     auxconf.event(msg)
-    sh("systemctl", "restart", "auxlink-usb-gadget")
+    if usbc_change:
+        sh("systemctl", "restart", "auxlink-usb-gadget", timeout=60)
     auxconf.restart_all(delay=1, skip=("auxlink-pairing",))
     return {"ok": True, "reboot_needed": reboot}
 
@@ -384,8 +388,17 @@ def act_check(body):
     user = c.get("AUDIO_USER", "chris")
     home = os.path.expanduser(f"~{user}")
     args = [f"{home}/.local/bin/audio-check.sh"] + (["--fix"] if body.get("fix") else [])
+    pre = ""
+    if c.get("MUSIC_SOURCE") == "usbc":
+        # The USB-C connection first (needs root; re-plugs only if broken).
+        rc, out = sh("/usr/local/bin/auxlink-usb-gadget.sh", "repair",
+                     *([] if body.get("fix") else ["--check"]), timeout=60)
+        pre = "0. USB-C connection to the music device\n" + \
+              "\n".join("  " + l for l in out.splitlines()) + "\n"
+        if rc == 2:
+            return {"ok": True, "output": pre + "\nReboot the Pi to clear it (Pi login tab or sudo reboot)."}
     r = auxconf.run_as_user(user, args, timeout=90)
-    text = re.sub(r"\x1b\[[0-9;]*m", "", (r.stdout or "") + (r.stderr or ""))
+    text = pre + re.sub(r"\x1b\[[0-9;]*m", "", (r.stdout or "") + (r.stderr or ""))
     return {"ok": True, "output": text}
 
 
