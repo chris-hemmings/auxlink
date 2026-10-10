@@ -14,7 +14,7 @@ i2s_source() {
 # The Pi's USB-C port as a USB sound card (MUSIC_SOURCE=usbc): its ALSA card.
 usbc_source() {
   timeout 5 pactl list sources 2>/dev/null |
-    awk '/^[ \t]*Name: /{n=$2} /alsa.card_name = "UAC1Gadget"/ && n !~ /\.monitor$/ {print n; exit}'
+    awk '/^[ \t]*Name: /{n=$2} /alsa.card_name = "(UAC1Gadget|UAC1_Gadget)"/ && n !~ /\.monitor$/ {print n; exit}'
 }
 # A Bluetooth music source's input node (MUSIC_SOURCE=bluetooth), if streaming
 # is set up: bluez_input.<MAC with _>.<n>.
