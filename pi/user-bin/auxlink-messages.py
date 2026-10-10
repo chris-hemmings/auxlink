@@ -69,12 +69,24 @@ def mime_text(body):
         return body
     try:
         msg = email.message_from_bytes(body.lstrip().encode("utf-8"), policy=policy.default)
+
+        def content(part):
+            # Not get_content(): it turns badly encoded bytes into "�".
+            raw = part.get_payload(decode=True) or b""
+            cs = (part.get_content_charset() or "").lower().replace("_", "-")
+            if cs and cs not in ("utf-8", "utf8", "us-ascii"):
+                try:
+                    return raw.decode(cs).strip()
+                except (LookupError, UnicodeDecodeError):
+                    pass
+            return decode_text(raw)[0].strip()
+
         parts = []
         for part in msg.walk():
             if part.get_content_type() == "text/plain" and not part.is_attachment():
-                parts.append(part.get_content().strip())
+                parts.append(content(part))
         if not parts and msg.get_content_type().startswith("text/") and not msg.is_multipart():
-            parts.append(msg.get_content().strip())
+            parts.append(content(msg))
         text = "\n".join(p for p in parts if p)
         if not text:
             subject = str(msg.get("Subject", "") or "").strip()
@@ -83,6 +95,39 @@ def mime_text(body):
         return text
     except Exception:
         return body
+
+
+def decode_text(raw):
+    """Phone bytes -> text, without losing characters. Phones don't always
+    send plain UTF-8: Android often sends emoji as Java's "modified UTF-8"
+    (each emoji as two 3-byte halves), some send UTF-16, a few Latin-1."""
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff") or (len(raw) > 8 and raw.count(b"\0") > len(raw) // 4):
+        try:
+            return raw.decode("utf-16"), "utf-16"
+        except UnicodeDecodeError:
+            pass
+    try:
+        return raw.decode("utf-8"), ""
+    except UnicodeDecodeError:
+        pass
+    # Keep emoji halves (surrogates) and take any other stray byte as cp1252.
+    try:
+        text = raw.decode("utf-8", errors="surrogatepass")
+    except UnicodeDecodeError:
+        out, i = [], 0
+        while i < len(raw):
+            try:
+                out.append(raw[i:].decode("utf-8", errors="surrogatepass"))
+                break
+            except UnicodeDecodeError as e:
+                out.append(raw[i:i + e.start].decode("utf-8", errors="surrogatepass"))
+                bad = raw[i + e.start:i + e.end]
+                out.append(bad.decode("cp1252", errors="ignore") or bad.decode("latin-1"))
+                i += e.end
+        text = "".join(out)
+    # Join the emoji halves back into whole emoji; drop any lone half.
+    text = text.encode("utf-16-le", errors="surrogatepass").decode("utf-16-le", errors="ignore")
+    return text, "repaired"
 
 
 def parse_bmessage(text):
@@ -321,7 +366,16 @@ class Messages:
                 if st in ("complete", "error"):
                     break
                 time.sleep(0.25)
-            name, number, body = parse_bmessage(open(target, encoding="utf-8", errors="replace").read())
+            raw = open(target, "rb").read()
+            text, how = decode_text(raw)
+            if how:
+                try:
+                    raw.decode("utf-8")
+                    at = 0
+                except UnicodeDecodeError as e:
+                    at = e.start
+                log(f"Message {handle} wasn't plain UTF-8 ({how}); bytes there: {raw[max(0, at - 8):at + 16].hex()}")
+            name, number, body = parse_bmessage(text)
             self.messages.append({"handle": handle, "folder": "inbox",
                                   "time": time.strftime("%Y%m%dT%H%M%S"),
                                   "sender": name, "number": number, "text": body, "read": False})

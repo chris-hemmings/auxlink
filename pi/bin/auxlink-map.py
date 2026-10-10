@@ -198,7 +198,7 @@ def dt(value):
 def listing_xml(msgs, subject_len):
     rows = []
     for m in msgs:
-        text = car_text(m.get("text")).replace("\n", " ")
+        text = car_body(m.get("text")).replace("\n", " ")
         subj = text[:subject_len] if subject_len else text[:256]
         e = lambda s: html.escape(str(s or ""), quote=True)  # noqa: E731
         rows.append(
@@ -224,8 +224,8 @@ def car_text(text):
     out = []
     for ch in str(text or ""):
         cp = ord(ch)
-        if cp in (0x200D, 0xFE0E, 0xFE0F) or 0x1F3FB <= cp <= 0x1F3FF:
-            continue                     # joiner, emoji/text style, skin tone
+        if cp in (0x200D, 0xFE0E, 0xFE0F, 0xFFFD) or 0x1F3FB <= cp <= 0x1F3FF:
+            continue                     # joiner, emoji/text style, skin tone, "?" box
         if cp > 0xFFFF or unicodedata.category(ch) == "So":
             name = unicodedata.name(ch, "").lower()
             for junk in (" sign", "black ", "white ", "heavy ", "smiling face with ", "face with "):
@@ -236,9 +236,16 @@ def car_text(text):
     return "".join(out)
 
 
+def car_body(text):
+    """The message text for the car; something readable if nothing is left
+    (a phone that couldn't convert an RCS reaction sends only "?" boxes)."""
+    t = car_text(text)
+    return t if t.strip() else "(message can't be shown here)"
+
+
 def bmessage(m):
     name = car_text(m.get("sender") or m.get("number") or "").replace("\r", " ").replace("\n", " ")
-    text = car_text(m.get("text")).replace("\r\n", "\n").replace("\n", "\r\n")
+    text = car_body(m.get("text")).replace("\r\n", "\n").replace("\n", "\r\n")
     msg = f"BEGIN:MSG\r\n{text}\r\nEND:MSG\r\n"
     return ("BEGIN:BMSG\r\nVERSION:1.0\r\n"
             f"STATUS:{'READ' if m.get('read') else 'UNREAD'}\r\nTYPE:SMS_GSM\r\nFOLDER:TELECOM/MSG/INBOX\r\n"
