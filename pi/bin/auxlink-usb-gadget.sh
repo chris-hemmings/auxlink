@@ -5,8 +5,9 @@
 #     with a mic (mono) carrying the car's cabin mic for voice search,
 #   * a serial port (ACM)  - the now-playing app sends track info / art,
 #   * a media-key keyboard (HID consumer control) - wheel buttons go back.
-# The USB-C port is also the Pi's power input: in this mode the Pi must be
-# POWERED EXTERNALLY (5 V GPIO pins, or a USB-C power/data splitter).
+# The USB-C port is also the Pi's power input: in this mode the Pi should be
+# powered externally for reliable use (5 V GPIO pins, or a USB-C power/data
+# splitter); powered by the music device alone it may drop out or restart.
 # Needs dtoverlay=dwc2,dr_mode=peripheral in config.txt (set by the setup
 # page when USB-C is chosen) and a reboot.
 #   auxlink-usb-gadget.sh          set up (or tear down if another source is selected)

@@ -283,7 +283,7 @@ def act_source(body):
     reboot = False
     if src == "usbc":
         reboot = enable_gadget_overlay()
-        msg += ("; the Pi must be powered externally" +
+        msg += ("; power the Pi externally for reliable use" +
                 ("; REBOOT to switch the USB-C port to device mode" if reboot else ""))
     auxconf.save(upd)
     auxconf.event(msg)
@@ -528,9 +528,9 @@ class TermSession:
 def term_allowed():
     c = auxconf.load()
     if c.get("DEV_TERMINAL", "0") != "1":
-        raise ValueError("the development terminal is off (Settings → Development terminal)")
+        raise ValueError("the development terminal is off (Settings tab → Development terminal)")
     if os.path.exists(DEFAULT_PW_FLAG):
-        raise ValueError("change the Pi login password first (Pi login card)")
+        raise ValueError("change the Pi login password first (Pi login tab)")
     return c.get("AUDIO_USER", "chris")
 
 

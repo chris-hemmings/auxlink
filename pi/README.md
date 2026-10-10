@@ -114,7 +114,7 @@ Pick what plays into the car on the setup page's **Music source** card:
   itself.
 - **USB-C (Pi as a USB sound card)**: plug the player into the Pi's USB-C
   port, where it appears as a USB sound card plus a serial link for the
-  now-playing app (v1.0.5+). **The Pi must then be powered externally**
+  now-playing app (v1.0.5+). **Power the Pi externally for reliable use**
   (5 V on the GPIO pins or a USB-C power/data splitter), because the USB-C
   port is now a data port. Switching to it needs **one reboot** (the page
   says so).

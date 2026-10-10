@@ -58,7 +58,7 @@ as three separate kinds of release:
 |---|---|
 | **Raspberry Pi 4** (2 GB or more) | Built and tested on a Pi 4. |
 | **microSD card**, 16 GB or more | A good brand (Samsung/SanDisk). |
-| **Power for the Pi in the car** | 5 V / 3 A. A good USB-C car charger or a 12 V to 5 V 3 A converter. Weak supplies cause Bluetooth drop-outs. For the USB-C music source the Pi must be powered through its GPIO pins or a splitter instead (see 5.3). |
+| **Power for the Pi in the car** | 5 V / 3 A. A good USB-C car charger or a 12 V to 5 V 3 A converter. Weak supplies cause Bluetooth drop-outs. For the USB-C music source, power the Pi through its GPIO pins or a splitter for reliable use (see 5.3). |
 | **2 × USB Bluetooth dongles** (recommended) | **TP-Link UB500** (Realtek RTL8761BU) is what this was built and tested on. Two identical ones are fine. One is for the car, one for your phone. See [Bluetooth dongles](#bluetooth-dongles). |
 | **An Android music device** | Android 8.0 or newer. For the wired source it needs **USB host (OTG)**, which any head unit with a USB port has. |
 | **A car with Bluetooth** | Any car with Bluetooth hands-free calling and Bluetooth music. Track info and the car's buttons need AVRCP, which almost every car has. Album art needs a car that shows cover art for phones (AVRCP 1.6). Built and tested on a Tesla; see [Other cars](#other-cars). |
@@ -120,7 +120,7 @@ testing.
    drive.
 5. Then carry on with **section 4**: join the Wi-Fi **AuxLink-setup**.
 
-**Password and SSH:** on the setup page, the **Pi login** section sets your
+**Password and SSH:** on the setup page, the **Pi login** tab sets your
 own login password (the page warns while the default one is still set) and
 turns **SSH** on or off. SSH is off by default and can only be turned on once
 the password has been changed. Then log in with `ssh auxlink@auxlink.local`.
@@ -175,7 +175,7 @@ sudo reboot
    its RGB LED lights up.
 
 **Easier, once the Pi is set up:** update it from the setup page's **XIAO
-firmware** card, without a computer and without updating the Pi. Unplug the
+firmware** (Updates tab), without a computer and without updating the Pi. Unplug the
 XIAO's USB-C from the Android device, hold **B** and plug it into one of the
 **Pi's** USB ports (USB-A to USB-C cable; the wires to the Pi can stay
 connected). The card shows "XIAO in update mode". Choose the new `.uf2` and
@@ -249,7 +249,7 @@ SD card, on the inside row):
 |---|---|---|
 | Setup Wi-Fi (made by the Pi) | `AuxLink-setup` | `auxlink-setup` |
 | Setup page | http://10.42.0.1 (or http://auxlink.local on your home Wi-Fi) | none, unless you set a page password |
-| Pi login (SSH or keyboard) | user `auxlink` | `auxlink`. Change it under **Pi login** |
+| Pi login (SSH or keyboard) | user `auxlink` | `auxlink`. Change it on the **Pi login** tab |
 | Bluetooth: what the **car** pairs with | **AuxLink** | code shown on the car |
 | Bluetooth: what your **phone** pairs with | **AuxLink-phone** | code shown on the phone |
 | Bluetooth: a **Bluetooth music source** | **AuxLink-music** (or AuxLink-phone if it shares that adapter) | code shown on the device |
@@ -282,9 +282,15 @@ Then pair them again as below.
    - The setup Wi-Fi is on whenever no car is paired, for 10 minutes after
      each boot, and for 15 minutes after holding the setup button. You can
      change the times and password on the page.
-2. **Pi login:** set your own login password. Only after that can you turn
+The page has tabs: **Status** (music check, recent events), **Devices**
+(pairing, Bluetooth adapters, music source), **Settings**, **Wi-Fi**, **Pi
+login** (password, SSH), **Updates** (Pi update; XIAO firmware with the wired
+source) and **Development** (services, logs, terminal). With nothing paired
+yet it opens on **Devices**; a dot marks a tab that needs attention.
+
+2. **Pi login** tab: set your own login password. Only after that can you turn
    **SSH** on, if you want it. You don't need SSH for anything else here.
-3. **Bluetooth adapters:** choose which adapter is the **car** side and which
+3. **Devices** tab, **Bluetooth adapters:** choose which adapter is the **car** side and which
    is the **phone** side. With two dongles, use one each and leave the
    built-in unused. Then tap **Save adapters**.
 4. **Pair the car:** in the car's Bluetooth settings, add a new device,
@@ -298,22 +304,22 @@ Then pair them again as below.
    phone's Bluetooth settings, add **AuxLink-phone** and confirm the code.
    Allow **contacts and call history** access when the phone asks. That is
    what fills the car's contacts and recent calls.
-6. **Music source:** choose how music gets into the Pi (see section 5), then
+6. **Music source** (Devices tab): choose how music gets into the Pi (see section 5), then
    tap **Save music source**.
    - **Bluetooth:** also tap **Pair a music source** and pair the device with
      **AuxLink-music**.
    - **Wired or USB-C:** also set up the app (section 6).
-7. **Home Wi-Fi** (optional): add your home network so that you can open
+7. **Wi-Fi** tab (optional): add your home network so that you can open
    http://auxlink.local and install updates from home.
-8. **Settings:** a page password, whether to pause music for calls, contacts
+8. **Settings** tab: a page password, whether to pause music for calls, contacts
    sync, the Bluetooth names, turning the music device's volume to 100% when
    it connects (wired/USB-C, on by default), and the car settings in
    [Other cars](#other-cars). The defaults are fine.
-9. Use **Check audio** / **Check and fix** on the Music card any time the
+9. Use **Check audio** / **Check and fix** on the **Status** tab any time the
    music is not coming through.
-10. **Development** (optional): a terminal on the Pi inside the setup page,
-    the same as SSH, with one-tap buttons for the main logs. Turn on
-    **Development terminal** under Settings (it needs your own Pi login
+10. **Development** tab (optional): services, logs, and a terminal on the Pi
+    inside the setup page, the same as SSH, with one-tap buttons for the main
+    logs. Turn on **Development terminal** in the Settings tab (it needs your own Pi login
     password; set a page password too, since anyone on the setup Wi-Fi can
     open the page). It logs in as the Pi user, so `sudo` asks for that
     password, and it closes after 15 minutes idle.
@@ -322,7 +328,7 @@ Then pair them again as below.
 
 ## 5. Music sources
 
-Pick one on the setup page's **Music source** card. Calls and the car
+Pick one on the setup page's **Devices** tab (**Music source**). Calls and the car
 connection are not affected when you switch.
 
 ### 5.1 Wired: XIAO RP2040 (I2S) (recommended)
@@ -380,10 +386,12 @@ No XIAO and no wiring.
 The Android device plugs straight into the **Pi's USB-C port**, and the Pi
 shows up as a USB sound card (plus a data link and media keys).
 - **Not yet tested on real hardware;** the wired XIAO is the proven source.
-- **The Pi must then be powered externally:** 5 V into GPIO **pin 2 or 4**
+- **Power warning: it may not work reliably powered by the music device.**
+  Power the Pi externally if you can: 5 V into GPIO **pin 2 or 4**
   plus **GND (pin 6)**, from a solid 5 V / 3 A supply, or through a **USB-C
-  power/data splitter**. Its USB-C port is now a data port. The music device
-  can't power the Pi (a USB host gives 0.5-1.5 A; the Pi needs up to 3 A).
+  power/data splitter**. Its USB-C port is now a data port. Powered by the
+  music device alone it may run, but expect drop-outs or restarts (a USB
+  host gives 0.5-1.5 A; the Pi needs up to 3 A).
 - **Keep the music device's 5 V off the Pi:** the Pi's USB-C 5 V and its
   GPIO 5 V are the same wire, and the device (as USB host) puts 5 V on the
   cable. Use a splitter whose device side is data-only, or a USB
@@ -519,7 +527,7 @@ While the app is connected it also sends a small "still here" message every
 ## 7. Updating
 
 - **The Pi:**
-  - **From the web page:** go to **Update**, choose `auxlink-pi-update-X.zip`
+  - **From the web page:** go to the **Updates** tab, choose `auxlink-pi-update-X.zip`
     from the latest "AuxLink Pi image" release (or GitHub's "Download ZIP" of
     this repository) and tap **Install update**.
     No reboot is needed, and the car and phone stay connected.
@@ -528,7 +536,7 @@ While the app is connected it also sends a small "still here" message every
   - Or flash the newest image again (it starts unpaired).
 - **The app:** Obtainium (or install the newer APK).
 - **The XIAO:** only when there's a new "AuxLink XIAO firmware" release.
-  Easiest: the setup page's **XIAO firmware** card. Hold **B**, plug the
+  Easiest: the setup page's **Updates** tab (**XIAO firmware**). Hold **B**, plug the
   XIAO into one of the Pi's USB ports, choose the `.uf2` and tap **Flash
   this file** (no Pi update needed). Or flash it from a computer or an
   Android device's Files app with BOOT held, as in 3.1. Afterwards Android
@@ -547,7 +555,7 @@ supports Bluetooth calls and music:
 - **Contacts and recent calls:** PBAP.
 
 Its defaults were tuned on a Tesla. Three settings on the setup page
-(**Settings**) let you adjust it for other cars:
+(**Settings** tab) let you adjust it for other cars:
 
 | Setting | Default (Tesla) | Try this if... |
 |---|---|---|

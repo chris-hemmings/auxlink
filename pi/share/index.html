@@ -26,15 +26,23 @@ label.f{display:grid;gap:4px;margin:8px 0}label.f span{color:var(--dim);font-siz
 .sw input{width:auto;transform:scale(1.3)}pre{white-space:pre-wrap;background:#0b0d11;border:1px solid var(--line);border-radius:8px;padding:10px;max-height:340px;overflow:auto;font-size:12px}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}@media(max-width:560px){.grid2{grid-template-columns:1fr}}
 .tabs{display:flex;gap:6px;flex-wrap:wrap}.tabs button{padding:6px 10px;font-size:13px}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:10px 14px;border-bottom:1px solid var(--line);max-width:860px;margin:0 auto;scrollbar-width:none}
+.tabbar button{background:transparent;border:1px solid var(--line);color:var(--dim);white-space:nowrap;padding:7px 12px;font-size:14px}
+.tabbar button.on{background:var(--acc);border-color:var(--acc);color:#fff}
+.tabbar button .flag{color:var(--warn);margin-left:4px}
+section[data-tab].off{display:none}
 #msg{position:fixed;bottom:14px;left:50%;transform:translateX(-50%);background:#222838;border:1px solid var(--line);padding:9px 14px;border-radius:10px;display:none}
 </style></head>
 <body>
 <header><div><h1>AuxLink</h1><div class="sub" id="sub">loading…</div></div></header>
+<nav class="tabbar" id="tabbar">
+  <button data-go="status">Status</button><button data-go="devices">Devices</button><button data-go="settings">Settings</button><button data-go="wifi">Wi-Fi</button><button data-go="login">Pi login</button><button data-go="updates">Updates</button><button data-go="dev">Development</button>
+</nav>
 <main>
   <div id="window" class="banner hide"></div>
   <div id="setupHint" class="banner hide"></div>
 
-  <section class="card"><h2>Devices</h2>
+  <section class="card" data-tab="devices"><h2>Devices</h2>
     <div class="grid2">
       <div><div class="row"><span class="k">Car</span><span id="carState"></span></div>
         <div class="row"><span class="k">Address</span><span class="mono" id="carAddr">–</span></div>
@@ -45,7 +53,7 @@ label.f{display:grid;gap:4px;margin:8px 0}label.f span{color:var(--dim);font-siz
     </div>
   </section>
 
-  <section class="card"><h2>Music source</h2>
+  <section class="card" data-tab="devices"><h2>Music source</h2>
     <div class="k" style="font-size:13px">What plays into the car. Calls and the car connection are not affected by switching.</div>
     <label class="f"><span>Source</span><select id="selSource" onchange="sourceForm()">
       <option value="wired">Wired: XIAO RP2040 (I&sup2;S)</option>
@@ -58,22 +66,22 @@ label.f{display:grid;gap:4px;margin:8px 0}label.f span{color:var(--dim);font-siz
       <div class="row"><span class="k">Source</span><span id="sourceState">&ndash;</span></div>
       <div class="row"><span class="k">Address</span><span class="mono" id="sourceAddr">&ndash;</span></div>
     </div>
-    <div id="srcUsb" class="banner hide"><b>The Pi must be powered externally</b> &mdash; its USB-C port becomes the music input, so power it through the 5&nbsp;V GPIO pins (pin 2/4 + ground) or a USB-C power/data splitter. The source device plugs into the Pi's USB-C port. <span id="usbState"></span></div>
+    <div id="srcUsb" class="banner hide"><b>Power warning:</b> the Pi's USB-C port becomes the music input, so the music device would also be powering the Pi through it. That may not be enough: expect drop-outs or restarts, especially during calls. For reliable use, power the Pi through the 5&nbsp;V GPIO pins (pin 2/4 + ground) or a USB-C power/data splitter. The music device plugs into the Pi's USB-C port. <span id="usbState"></span></div>
     <div class="btns"><button class="ghost" onclick="saveSource()">Save music source</button>
       <span id="srcPairBtns" class="btns hide" style="margin:0"><button onclick="pair('source')">Pair a music source</button><button class="ghost" onclick="forget('source')">Forget</button></span></div>
   </section>
 
-  <section class="card"><h2>Music</h2>
+  <section class="card" data-tab="status"><h2>Music</h2>
     <div class="row"><span class="k">Call in progress</span><span id="inCall">–</span></div>
     <div class="btns"><button onclick="check(false)">Check audio</button><button class="ghost" onclick="check(true)">Check and fix</button></div>
     <pre id="checkOut" class="hide"></pre>
   </section>
 
-  <section class="card"><h2>Services</h2><div id="services"></div>
+  <section class="card" data-tab="dev"><h2>Services</h2><div id="services"></div>
     <div class="btns"><button class="ghost" onclick="post('restart',{}, 'Restarting services…')">Restart all</button></div>
   </section>
 
-  <section class="card"><h2>Bluetooth adapters</h2>
+  <section class="card" data-tab="devices"><h2>Bluetooth adapters</h2>
     <div id="adapterList"></div>
     <div class="grid2">
       <label class="f"><span>Car adapter</span><select id="selCar"></select></label>
@@ -83,7 +91,7 @@ label.f{display:grid;gap:4px;margin:8px 0}label.f span{color:var(--dim);font-siz
     <div class="k" style="font-size:13px;margin-top:6px">Use the built-in Bluetooth or any plugged-in dongle for each side (for example built-in for the car and a dongle for the phone, or two dongles). Unused adapters are switched off. Changing an adapter clears that side's pairing; pair again afterwards.</div>
   </section>
 
-  <section class="card"><h2>Settings</h2>
+  <section class="card" data-tab="settings"><h2>Settings</h2>
     <div class="sw"><span>Phone features (calls, contacts)</span><input type="checkbox" id="PHONE_ENABLED"></div>
     <div class="sw"><span>Pause the music source during calls</span><input type="checkbox" id="PAUSE_FOR_CALLS"></div>
     <div class="sw"><span>Sync contacts &amp; call history to the car</span><input type="checkbox" id="CONTACTS_SYNC"></div>
@@ -109,7 +117,7 @@ label.f{display:grid;gap:4px;margin:8px 0}label.f span{color:var(--dim);font-siz
       <button class="ghost" onclick="post('wifi/off',{}, 'Setup Wi-Fi will switch off')">Finish setup (Wi-Fi off)</button></div>
   </section>
 
-  <section class="card"><h2>Pi login</h2>
+  <section class="card" data-tab="login"><h2>Pi login</h2>
     <div id="pwWarn" class="banner hide"><b>The Pi still has its default password</b> (auxlink), which everyone with the image knows. Set your own below.</div>
     <div class="row"><span class="k">User</span><span class="mono" id="loginUser">&ndash;</span></div>
     <div class="row"><span class="k">SSH</span><span id="sshState">&ndash;</span></div>
@@ -122,7 +130,7 @@ label.f{display:grid;gap:4px;margin:8px 0}label.f span{color:var(--dim);font-siz
     <div class="k" style="font-size:13px;margin-top:6px">For logging in to the Pi itself (SSH or a keyboard and screen). Separate from the page password and the setup Wi-Fi password above.</div>
   </section>
 
-  <section class="card"><h2>Home Wi-Fi</h2>
+  <section class="card" data-tab="wifi"><h2>Home Wi-Fi</h2>
     <div class="k" style="font-size:13px">Networks the Pi joins by itself when they're in range (then the page is at http://auxlink.local). While the setup Wi-Fi is on, new networks are saved and joined once setup Wi-Fi switches off.</div>
     <div id="wifiList" style="margin-top:8px"></div>
     <div class="grid2">
@@ -132,8 +140,8 @@ label.f{display:grid;gap:4px;margin:8px 0}label.f span{color:var(--dim);font-siz
     <div class="btns"><button onclick="wifiAdd()">Save network</button><button class="ghost" onclick="wifiScan()">Scan nearby</button></div>
   </section>
 
-  <section class="card"><details id="devCard"><summary style="cursor:pointer"><h2 style="display:inline">Development</h2></summary>
-    <div class="k" style="font-size:13px;margin-top:8px">A terminal on the Pi, the same as SSH: it logs in as the Pi user (sudo asks for that password). Turn it on under Settings; it needs your own Pi login password, and a page password is recommended. It closes after 15 minutes idle.</div>
+  <section class="card" data-tab="dev"><details id="devCard" open><summary style="cursor:pointer"><h2 style="display:inline">Development</h2></summary>
+    <div class="k" style="font-size:13px;margin-top:8px">A terminal on the Pi, the same as SSH: it logs in as the Pi user (sudo asks for that password). Turn it on in the Settings tab; it needs your own Pi login password, and a page password is recommended. It closes after 15 minutes idle.</div>
     <div id="termState" style="margin:8px 0;font-weight:600"></div>
     <div class="btns"><button id="termOpen" onclick="termOpen()">Open terminal</button><button class="ghost" onclick="termClose()">Close</button></div>
     <div class="btns" id="termQuick">
@@ -147,7 +155,7 @@ label.f{display:grid;gap:4px;margin:8px 0}label.f span{color:var(--dim);font-siz
     <div id="term" style="margin-top:10px;height:420px;background:#000;border-radius:8px;display:none"></div>
   </details></section>
 
-  <section class="card"><h2>XIAO firmware</h2>
+  <section class="card" data-tab="updates" id="xiaoCard"><h2>XIAO firmware</h2>
     <div class="k" style="font-size:13px">Update the XIAO on its own: unplug its USB-C from the music device, hold its <b>B</b> button and plug it into a USB port on the Pi (the wires to the Pi can stay). Then flash the firmware file from the releases page, or the one that came with this AuxLink. Afterwards plug it back into the music device (Android asks once: tick Always).</div>
     <div id="xiaoState" style="margin:8px 0;font-weight:600">…</div>
     <label class="f"><span>Firmware file (.uf2)</span><input type="file" id="uf2File" accept=".uf2"></label>
@@ -155,16 +163,16 @@ label.f{display:grid;gap:4px;margin:8px 0}label.f span{color:var(--dim);font-siz
     <pre id="xiaoOut" class="hide"></pre>
   </section>
 
-  <section class="card"><h2>Update</h2>
+  <section class="card" data-tab="updates"><h2>Update</h2>
     <div class="k" style="font-size:13px">Choose an AuxLink zip (the release zip, or the whole-repository download from GitHub) to install it. Settings and pairings are kept; services restart, so a call in progress drops. No internet or reboot needed.</div>
     <label class="f"><span>Zip file</span><input type="file" id="zipFile" accept=".zip,application/zip"></label>
     <div class="btns"><button onclick="upload()">Install update</button></div>
     <pre id="updOut" class="hide"></pre>
   </section>
 
-  <section class="card"><h2>Recent events</h2><pre id="events"></pre></section>
+  <section class="card" data-tab="status"><h2>Recent events</h2><pre id="events"></pre></section>
 
-  <section class="card"><h2>Logs</h2>
+  <section class="card" data-tab="dev"><h2>Logs</h2>
     <div class="tabs" id="logTabs"></div><pre id="logOut" class="hide"></pre>
   </section>
 </main>
@@ -187,7 +195,7 @@ function pair(role){post('pair',{role,seconds:120},'Pairing window open for 2 mi
 function sourceForm(){const v=$('selSource').value;$('srcBt').classList.toggle('hide',v!=='bluetooth');$('srcUsb').classList.toggle('hide',v!=='usbc');
   $('srcPairBtns').classList.toggle('hide',!(v==='bluetooth'&&S&&S.conf.MUSIC_SOURCE==='bluetooth'))}
 async function saveSource(){const source=$('selSource').value,adapter=$('selSrcAd').value;
-  if(source==='usbc'&&!confirm('USB-C turns the Pi\'s power port into the music input: the Pi must be powered through the GPIO pins or a power/data splitter. Continue?'))return;
+  if(source==='usbc'&&!confirm('USB-C turns the Pi\'s power port into the music input. Powered only by the music device, the Pi may drop out or restart; for reliable use power it through the GPIO pins or a power/data splitter. Continue?'))return;
   try{const j=await api('source',{source,adapter});srcLoaded=false;toast(j.reboot_needed?'Saved. Reboot the Pi to switch the USB-C port to device mode':'Music source saved; services restarting');setTimeout(load,1500)}catch(e){toast('Error: '+e.message)}}
 function forget(role){if(confirm('Forget the '+role+'? You will need to pair it again.'))post('forget',{role},'Forgotten')}
 async function check(fix){const o=$('checkOut');o.classList.remove('hide');o.textContent=fix?'Checking and fixing…':'Checking…';
@@ -232,7 +240,7 @@ async function termClose(){if(TID){const id=TID;TID=null;await api('term/close',
 function renderTerm(){const c=S.conf||{},l=S.login||{};
   const on=c.DEV_TERMINAL==='1',ok=on&&!l.default_password;
   $('termState').textContent=!on?'Off: turn on "Development terminal" in Settings'
-    :l.default_password?'Change the Pi login password first (Pi login card)':(TID?'Connected as '+(l.user||'the Pi user'):'Ready');
+    :l.default_password?'Change the Pi login password first (Pi login tab)':(TID?'Connected as '+(l.user||'the Pi user'):'Ready');
   $('termOpen').disabled=!ok}
 async function xiaoFlash(useFile){let body=new Uint8Array(0),name;
   if(useFile){const f=$('uf2File').files[0];if(!f)return toast('Choose the .uf2 file first');body=f;name=f.name}
@@ -258,7 +266,9 @@ function renderXiao(){const x=S.xiao||{};
     :'No XIAO on the Pi\'s USB ports';
   $('xiaoFlashFile').disabled=$('xiaoFlashBuiltin').disabled=x.mode!=='update';
   $('xiaoFlashBuiltin').textContent='Flash built-in firmware'+(x.builtin?' ('+x.builtin+')':'')}
-function render(){const c=S.conf;renderXiao();renderTerm();
+function render(){const c=S.conf;renderXiao();renderTerm();renderTabs();
+  // Nothing paired yet: start on the Devices tab (unless a tab was asked for).
+  if(firstState){firstState=false;if(!c.CAR&&!ASKED_TAB)showTab('devices')}
   $('sub').textContent=(S.setup_wifi?'Setup Wi-Fi on · ':'')+(c.CAR?'car '+c.CAR:'no car paired yet');
   dev('carState',S.car);dev('phoneState',S.phone);$('carAddr').textContent=c.CAR||'–';$('phoneAddr').textContent=c.PHONE||'–';
   dev('sourceState',S.source);$('sourceAddr').textContent=c.SOURCE||'–';
@@ -288,5 +298,28 @@ function render(){const c=S.conf;renderXiao();renderTerm();
   if(!$('logTabs').children.length)$('logTabs').innerHTML=Object.keys(S.services).concat(['kernel']).map(u=>'<button class="ghost" onclick="logs(\''+u+'\')">'+u+'</button>').join('');
 }
 async function load(){try{S=await api('state');render()}catch(e){$('sub').textContent='Cannot reach the Pi: '+e.message}}
+// ---- tabs ----
+let TAB=null;
+function showTab(t){TAB=t;
+  document.querySelectorAll('section[data-tab]').forEach(e=>e.classList.toggle('off',e.dataset.tab!==t));
+  document.querySelectorAll('#tabbar button').forEach(b=>{b.classList.toggle('on',b.dataset.go===t);
+    if(b.dataset.go===t)b.scrollIntoView({block:'nearest',inline:'nearest'})});
+  if(location.hash!=='#'+t)history.replaceState(null,'','#'+t);
+  try{localStorage.setItem('auxlinkTab',t)}catch(e){}
+  if(S&&S.conf)renderTabs()}
+document.querySelectorAll('#tabbar button').forEach(b=>b.onclick=()=>showTab(b.dataset.go));
+function renderTabs(){const c=S.conf||{},l=S.login||{};
+  // The XIAO card only for the wired (XIAO) source.
+  $('xiaoCard').style.display=(c.MUSIC_SOURCE||'wired')==='wired'?'':'none';
+  // Point at what needs attention.
+  const flags={devices:!c.CAR,login:!!l.default_password};
+  document.querySelectorAll('#tabbar button').forEach(b=>{let f=b.querySelector('.flag');
+    if(flags[b.dataset.go]&&!f){f=document.createElement('span');f.className='flag';f.textContent='●';b.appendChild(f)}
+    else if(!flags[b.dataset.go]&&f)f.remove()})}
+const ASKED_TAB=(location.hash||'').slice(1);
+(function(){let t=ASKED_TAB;
+  if(!document.querySelector('#tabbar [data-go="'+t+'"]')){try{t=localStorage.getItem('auxlinkTab')}catch(e){t=null}}
+  showTab(document.querySelector('#tabbar [data-go="'+t+'"]')?t:'status')})();
+let firstState=true;
 load();setInterval(load,3000);
 </script></body></html>
