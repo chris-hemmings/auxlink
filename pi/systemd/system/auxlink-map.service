@@ -2,11 +2,18 @@
 Description=AuxLink: text messages for the car (when turned on in Settings)
 After=bluetooth.service
 Wants=bluetooth.service
+# Registered before the car can connect: a car that connects first and finds
+# no messages service switches its "Sync Messages" off.
+Before=auxlink-pairing.service auxlink-reconnect.service hfp-relay.service auxlink-media.service
 
 [Service]
+# "Ready" only once the service is registered with Bluetooth (or idle).
+Type=notify
+NotifyAccess=all
+TimeoutStartSec=30
 ExecStart=/usr/local/bin/auxlink-map.py
 Restart=always
-RestartSec=5
+RestartSec=2
 
 [Install]
 WantedBy=multi-user.target

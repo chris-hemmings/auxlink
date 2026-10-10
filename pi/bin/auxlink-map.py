@@ -652,26 +652,53 @@ class Profile(dbus.service.Object):
         pass
 
 
+def ready():
+    """Tell systemd we're up, so the services that let the car connect start
+    after the messages service is registered."""
+    os.system("systemd-notify --ready 2>/dev/null")
+
+
 def main():
     if CONF.get("MESSAGES", "0") != "1":
+        ready()
         log("Text messages off (Settings tab): no messages service for the car")
         while True:
             time.sleep(3600)
     if not CAR or not CAR_ADAPTER or not STORE:
+        ready()
         log("No car paired yet; idle")
         while True:
             time.sleep(3600)
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
     bus = dbus.SystemBus()
     Profile(bus, PROFILE_PATH)
-    dbus.Interface(bus.get_object("org.bluez", "/org/bluez"), "org.bluez.ProfileManager1").RegisterProfile(
-        PROFILE_PATH, MAS_UUID16, dbus.Dictionary({
-            "Name": "AuxLink messages",
-            "Role": "server",
-            "RequireAuthentication": dbus.Boolean(True),
-            "RequireAuthorization": dbus.Boolean(False),
-        }, signature="sv"))
+    # bluetoothd may still be starting at boot: keep trying for a while.
+    for attempt in range(60):
+        try:
+            dbus.Interface(bus.get_object("org.bluez", "/org/bluez"), "org.bluez.ProfileManager1").RegisterProfile(
+                PROFILE_PATH, MAS_UUID16, dbus.Dictionary({
+                    "Name": "AuxLink messages",
+                    "Role": "server",
+                    "RequireAuthentication": dbus.Boolean(True),
+                    "RequireAuthorization": dbus.Boolean(False),
+                }, signature="sv"))
+            break
+        except dbus.DBusException as e:
+            if attempt == 59:
+                ready()
+                raise
+            time.sleep(0.5)
+    ready()
     log("Messages service for the car registered")
+    try:   # tells us whether the boot race was lost
+        om = dbus.Interface(bus.get_object("org.bluez", "/"), "org.freedesktop.DBus.ObjectManager")
+        for path, ifaces in om.GetManagedObjects().items():
+            d = ifaces.get("org.bluez.Device1")
+            if d and str(d.get("Address", "")).upper() == CAR and d.get("Connected"):
+                log("Note: the car was already connected before this service was ready "
+                    "(it may have switched Sync Messages off)")
+    except dbus.DBusException:
+        pass
     threading.Thread(target=watch_store, daemon=True).start()
     os.makedirs(OUTBOX, exist_ok=True)
     os.chmod(OUTBOX, 0o1777)        # auxlink-messages (the audio user) writes results here
