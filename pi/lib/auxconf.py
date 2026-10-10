@@ -66,7 +66,9 @@ def restart_all(delay=1, skip=()):
     """Restart every auxlink service in the background (so a caller that
     is itself one of them can finish what it is doing first)."""
     user = load().get("AUDIO_USER", "chris")
-    sys_units = " ".join(u for u in SYSTEM_UNITS if u not in skip)
+    # Never the USB-C gadget: restarting it unplugs the music device (it
+    # pauses, and the app loses its link). Choosing the source restarts it.
+    sys_units = " ".join(u for u in SYSTEM_UNITS if u not in skip and u != "auxlink-usb-gadget")
     env = user_env(user)
     cmd = (f"sleep {delay}; systemctl restart {sys_units}; "
            f"/usr/sbin/runuser -u {user} -- env XDG_RUNTIME_DIR={env['XDG_RUNTIME_DIR']} "

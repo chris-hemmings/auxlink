@@ -422,7 +422,7 @@ class Player(dbus.service.Object):
         self.album = ""
         self.length_us = 0
         self.position_us = 0
-        self.status = "Playing"
+        self.status = "Paused"
         self.track = 1
         self.ignore_smo_until = 0.0   # after we press a key, ignore stale reports briefly
         self.in_call = False
@@ -436,7 +436,9 @@ class Player(dbus.service.Object):
         # What the car is told combines two things: the state the SMO app
         # reports, and whether sound is actually arriving (apps like YouTube
         # never report one, and the car mutes while it thinks we're paused).
-        self.app_state = "Playing"
+        # Start from Paused: after a restart the car must not show Playing
+        # until the source says so or sound actually arrives.
+        self.app_state = "Paused"
         self.present = False
         self.ignore_sound_until = 0.0  # after the car pauses: the tail of the sound doesn't count
         self.art_id = None            # artwork id last received from the SMO app
