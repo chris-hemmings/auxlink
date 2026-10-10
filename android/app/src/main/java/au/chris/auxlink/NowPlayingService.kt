@@ -47,6 +47,9 @@ class NowPlayingService : NotificationListenerService() {
         @Volatile var lastSent: String = "(nothing yet)"
         @Volatile var linkOpen: Boolean = false
         @Volatile var linkKind: String = ""
+        const val ACTION_ANSWER = "au.chris.auxlink.ANSWER"
+        const val ACTION_DECLINE = "au.chris.auxlink.DECLINE"
+        const val NOTIF_CALL = 2
         /** The running service, for the app screen's buttons. */
         @Volatile var instance: NowPlayingService? = null
     }
@@ -107,6 +110,78 @@ class NowPlayingService : NotificationListenerService() {
         }
     }
 
+    // ---------- calls and texts from the Pi (shown on this device) ----------
+    private val callButtons = object : BroadcastReceiver() {
+        override fun onReceive(c: Context, i: Intent) {
+            val cmd = if (i.action == ACTION_ANSWER) "answer" else "decline"
+            command(cmd) { }
+            getSystemService(NotificationManager::class.java).cancel(NOTIF_CALL)
+        }
+    }
+
+    private fun channels() {
+        val nm = getSystemService(NotificationManager::class.java)
+        nm.createNotificationChannel(NotificationChannel(
+            "calls", "Incoming calls", NotificationManager.IMPORTANCE_HIGH))
+        nm.createNotificationChannel(NotificationChannel(
+            "texts", "Text messages", NotificationManager.IMPORTANCE_DEFAULT))
+    }
+
+    /** A line from the Pi: {"call": state, "number", "name"} or {"text": {...}}. */
+    private fun onPiLine(line: String) {
+        val j = try { JSONObject(line) } catch (e: Exception) { return }
+        main.post {
+            try {
+                channels()
+                when {
+                    j.has("call") -> showCall(j.optString("call"), j.optString("name"), j.optString("number"))
+                    j.has("text") -> j.optJSONObject("text")?.let {
+                        showText(it.optString("from"), it.optString("body"))
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "notification failed: ${e.message}")
+            }
+        }
+    }
+
+    private fun showCall(state: String, name: String, number: String) {
+        val nm = getSystemService(NotificationManager::class.java)
+        if (state != "incoming") {
+            nm.cancel(NOTIF_CALL)
+            return
+        }
+        val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        val answer = PendingIntent.getBroadcast(this, 1, Intent(ACTION_ANSWER).setPackage(packageName), flags)
+        val decline = PendingIntent.getBroadcast(this, 2, Intent(ACTION_DECLINE).setPackage(packageName), flags)
+        val who = name.ifEmpty { number.ifEmpty { "Unknown caller" } }
+        val n = Notification.Builder(this, "calls")
+            .setSmallIcon(android.R.drawable.sym_call_incoming)
+            .setContentTitle("Incoming call")
+            .setContentText(if (name.isNotEmpty() && number.isNotEmpty()) "$name  $number" else who)
+            .setCategory(Notification.CATEGORY_CALL)
+            .setOngoing(true)
+            .addAction(Notification.Action.Builder(null as android.graphics.drawable.Icon?, "Answer", answer).build())
+            .addAction(Notification.Action.Builder(null as android.graphics.drawable.Icon?, "Decline", decline).build())
+            .build()
+        nm.notify(NOTIF_CALL, n)
+    }
+
+    private var textId = 100
+
+    private fun showText(from: String, body: String) {
+        val n = Notification.Builder(this, "texts")
+            .setSmallIcon(android.R.drawable.sym_action_email)
+            .setContentTitle(from.ifEmpty { "Text message" })
+            .setContentText(body)
+            .setStyle(Notification.BigTextStyle().bigText(body))
+            .setCategory(Notification.CATEGORY_MESSAGE)
+            .setAutoCancel(true)
+            .build()
+        getSystemService(NotificationManager::class.java).notify(textId++, n)
+        if (textId > 150) textId = 100
+    }
+
     /** Keep running: a permanent low-key notification makes this a
      *  foreground service, which Android (and head units' app killers) leave
      *  alone. If Android refuses (e.g. started in the background on a
@@ -137,8 +212,11 @@ class NowPlayingService : NotificationListenerService() {
     override fun onListenerConnected() {
         instance = this
         goForeground()
-        link = UsbLink(this)
-        bt = BtLink(this)
+        link = UsbLink(this) { onPiLine(it) }
+        bt = BtLink(this) { onPiLine(it) }
+        val actions = IntentFilter().apply { addAction(ACTION_ANSWER); addAction(ACTION_DECLINE) }
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(callButtons, actions, Context.RECEIVER_NOT_EXPORTED)
+        else @Suppress("UnspecifiedRegisterReceiverFlag") registerReceiver(callButtons, actions)
         val f = IntentFilter().apply {
             addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
             addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
@@ -161,6 +239,7 @@ class NowPlayingService : NotificationListenerService() {
         sessions?.removeOnActiveSessionsChangedListener(sessionsChanged)
         controller?.unregisterCallback(callback)
         try { unregisterReceiver(usbEvents) } catch (_: Exception) {}
+        try { unregisterReceiver(callButtons) } catch (_: Exception) {}
         io.execute { link.close(); bt.close() }
     }
 

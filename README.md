@@ -520,6 +520,13 @@ buttons:
 While the app is connected it also sends a small "still here" message every
 5 seconds, so the Pi and the XIAO know it has its link.
 
+**Calls and texts on the music device** (Settings tab, on by default; USB-C
+or Bluetooth source, not the XIAO yet): an incoming call pops up with the
+caller's name (from the synced contacts) and **Answer** / **Decline**
+buttons that answer or decline it on your phone; new texts show as
+notifications (with **Text messages in the car** on). Allow the app's
+notifications; each kind can be turned off in Android's settings for the app.
+
 ### 6.4 Other requirements for the device
 - **Android 8.0 or newer.**
 - **USB host / OTG** for the wired source (the XIAO).

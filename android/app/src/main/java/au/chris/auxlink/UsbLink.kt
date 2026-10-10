@@ -20,7 +20,7 @@ import android.util.Log
  *    standard USB serial port (CDC ACM); the bytes arrive on /dev/ttyGS0.
  * Opens lazily and reopens after any failure.
  */
-class UsbLink(private val context: Context) {
+class UsbLink(private val context: Context, private val onLine: ((String) -> Unit)? = null) {
     companion object {
         const val VID = 0x1209
         const val PID = 0x0001          // the XIAO
@@ -94,6 +94,11 @@ class UsbLink(private val context: Context) {
                     }
                     conn = c; iface = itf; ep = end
                     if (itf.interfaceClass == UsbConstants.USB_CLASS_CDC_DATA) {
+                        // The Pi also talks back here (calls, texts): read it.
+                        val inEp = (0 until itf.endpointCount).map { itf.getEndpoint(it) }.firstOrNull {
+                            it.type == UsbConstants.USB_ENDPOINT_XFER_BULK && it.direction == UsbConstants.USB_DIR_IN
+                        }
+                        if (inEp != null && onLine != null) startReader(c, inEp)
                         // Serial port on the Pi: raise DTR/RTS on its control
                         // interface (the one before the data interface), as a
                         // terminal would, so the Pi side sees the line open.
@@ -108,6 +113,20 @@ class UsbLink(private val context: Context) {
         }
         Log.w(TAG, "XIAO found but no vendor bulk-OUT interface (old firmware?)")
         return false
+    }
+
+    private var reader: Thread? = null
+
+    private fun startReader(c: UsbDeviceConnection, inEp: UsbEndpoint) {
+        val lines = PiLines { l -> onLine?.invoke(l) }
+        reader = Thread {
+            val b = ByteArray(512)
+            while (conn === c) {
+                val n = c.bulkTransfer(inEp, b, b.size, 1000)
+                if (n > 0) lines.feed(b, n)
+                else if (n < 0 && conn !== c) break
+            }
+        }.apply { isDaemon = true; start() }
     }
 
     @Synchronized

@@ -23,7 +23,7 @@ import java.util.UUID
  * a device without the Pi nearby isn't searched constantly.
  */
 @SuppressLint("MissingPermission")   // every call checks permitted() first
-class BtLink(private val context: Context) {
+class BtLink(private val context: Context, private val onLine: ((String) -> Unit)? = null) {
     companion object {
         val APP_UUID: UUID = UUID.fromString("7e5b1a20-3c4d-4f8e-9a6b-74657362726b")
         private const val RETRY_MS = 20_000L
@@ -95,6 +95,20 @@ class BtLink(private val context: Context) {
                 s.connect()
                 sock = s
                 out = s.outputStream
+                if (onLine != null) {
+                    val lines = PiLines { l -> onLine.invoke(l) }
+                    Thread {
+                        val b = ByteArray(1024)
+                        try {
+                            val input = s.inputStream
+                            while (sock === s) {
+                                val n = input.read(b)
+                                if (n < 0) break
+                                lines.feed(b, n)
+                            }
+                        } catch (_: Exception) {}
+                    }.apply { isDaemon = true; start() }
+                }
                 deviceName = dev.name ?: dev.address
                 lastGood = dev.address
                 lastTry = "connected to $deviceName"
