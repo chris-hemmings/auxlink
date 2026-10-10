@@ -317,7 +317,11 @@ yet it opens on **Devices**; a dot marks a tab that needs attention.
    [Other cars](#other-cars). The defaults are fine.
 9. Use **Check audio** / **Check and fix** on the **Status** tab any time the
    music is not coming through.
-10. **Development** tab (optional): services, logs, and a terminal on the Pi
+10. **Text messages** (Settings tab, test, off by default): the Pi reads new
+    texts from your phone over Bluetooth (the phone asks once to allow
+    message access for AuxLink-phone) and lists them in Recent events. They
+    don't show in the car yet; that is the next step.
+11. **Development** tab (optional): services, logs, and a terminal on the Pi
     inside the setup page, the same as SSH, with one-tap buttons for the main
     logs. Turn on **Development terminal** in the Settings tab (it needs your own Pi login
     password; set a page password too, since anyone on the setup Wi-Fi can

@@ -27,6 +27,9 @@ install -D -m 644 "$HERE/lib/common.sh" /usr/local/lib/auxlink/common.sh
 install -D -m 644 "$HERE/lib/auxconf.py" /usr/local/lib/auxlink/auxconf.py
 install -D -m 644 "$HERE/share/index.html" /usr/local/share/auxlink/index.html
 install -D -m 644 "$HERE/share/cover-test.jpg" /usr/local/share/auxlink/cover-test.jpg
+printf 'd /run/auxlink 0755 root root -\nf /run/auxlink/events.log 0666 root root -\n' > /etc/tmpfiles.d/auxlink.conf
+systemd-tmpfiles --create /etc/tmpfiles.d/auxlink.conf 2>/dev/null || true
+chmod 666 /run/auxlink/events.log 2>/dev/null || true   # user services add to Recent events
 install -d /usr/local/share/auxlink/xterm   # the setup page's development terminal
 install -m 644 "$HERE"/share/xterm/* /usr/local/share/auxlink/xterm/
 # The XIAO firmware this release came with (setup page → XIAO firmware).
@@ -78,9 +81,10 @@ systemctl restart auxlink-pairing auxlink-reconnect hfp-relay auxlink-media auxl
 # Contacts server: contacts and recent calls only, no messages server (a car
 # that opened the empty one hung on "Connecting..." and reset its Bluetooth).
 OBEX_DROPIN="$H/.config/systemd/user/obex.service.d/dummy-phonebook.conf"
-OBEX_WANT='[Service]
+OBEX_P=mas,mns; grep -q '^MESSAGES=1' /etc/auxlink.conf && OBEX_P=mas   # mns: text messages (auxlink-messages)
+OBEX_WANT="[Service]
 ExecStart=
-ExecStart=/usr/local/libexec/obexd-dummy -P mas,mns'
+ExecStart=/usr/local/libexec/obexd-dummy -P $OBEX_P"
 OBEX_RESTART=0
 if [ -x /usr/local/libexec/obexd-dummy ] && [ "$(cat "$OBEX_DROPIN" 2>/dev/null)" != "$OBEX_WANT" ]; then
   install -d -o "$U" -g "$U" "$(dirname "$OBEX_DROPIN")"
@@ -89,7 +93,8 @@ if [ -x /usr/local/libexec/obexd-dummy ] && [ "$(cat "$OBEX_DROPIN" 2>/dev/null)
   OBEX_RESTART=1
 fi
 asuser systemctl --user daemon-reload
-asuser systemctl --user restart auxlink-audio pbap-sync
+asuser systemctl --user enable auxlink-messages >/dev/null 2>&1 || true
+asuser systemctl --user restart auxlink-audio pbap-sync auxlink-messages
 [ "$OBEX_RESTART" = 1 ] && asuser systemctl --user restart obex && echo "Contacts server: messages part turned off"
 sync
 echo "Services restarted. Done (no reboot needed)."

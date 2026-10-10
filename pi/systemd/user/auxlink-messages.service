@@ -1,0 +1,12 @@
+[Unit]
+Description=AuxLink: text messages from the phone (when turned on in Settings)
+After=obex.service
+Wants=obex.service
+
+[Service]
+ExecStart=%h/.local/bin/auxlink-messages.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

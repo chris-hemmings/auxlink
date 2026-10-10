@@ -6,7 +6,7 @@ import tempfile
 
 PATH = "/etc/auxlink.conf"
 SYSTEM_UNITS = ["auxlink-reconnect", "hfp-relay", "auxlink-media", "auxlink-pairing", "auxlink-cover", "auxlink-usb-gadget"]
-USER_UNITS = ["auxlink-audio", "pbap-sync"]
+USER_UNITS = ["auxlink-audio", "pbap-sync", "auxlink-messages"]
 
 
 def load(path=PATH):
