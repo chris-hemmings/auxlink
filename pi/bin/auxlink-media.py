@@ -186,6 +186,8 @@ def flush_out(*_):
 
 
 def send(data):
+    if len(OUT) > 65536:      # nothing reading the port: drop rather than grow
+        del OUT[:]
     OUT.extend(data)
     if OUT_WATCH is None:
         flush_out()
@@ -1178,10 +1180,130 @@ def setup_bt_source(bus, om, player):
     log(f"Music source: Bluetooth ({SOURCE or 'not paired yet'})")
 
 
+# ---------- calls and texts on the music device (the AuxLink app) ----------
+CALL_INFO_FILE = "/run/auxlink/call-info.json"   # written by hfp-relay
+CALL_CMD_FILE = "/run/auxlink/call-cmd"          # read by hfp-relay
+
+
+def app_send(obj):
+    """A line for the AuxLink app. Only links that carry data back to it:
+    USB-C (its serial port) and Bluetooth. Not the XIAO: bytes to it are
+    key presses."""
+    line = (json.dumps(obj, ensure_ascii=False) + "\n").encode()
+    if MUSIC_SOURCE == "usbc" and FD is not None:
+        send(line)
+    elif APP_LINK["sock"] is not None:
+        try:
+            APP_LINK["sock"].sendall(line)
+        except OSError as e:
+            log(f"App link write failed: {e}")
+
+
+class Notify:
+    """Incoming calls (with the caller's name from the synced contacts) and
+    new texts, passed to the app as notifications (SMO_NOTIFY=1)."""
+
+    def __init__(self):
+        try:
+            home = pwd.getpwnam(AUDIO_USER).pw_dir
+        except KeyError:
+            home = "/nonexistent"
+        self.pb = os.path.join(home, "phonebook/telecom/pb.vcf")
+        self.store = os.path.join(home, ".local/share/auxlink/messages.json")
+        self.names, self.pb_mtime = {}, None
+        self.call_mtime = self.store_mtime = None
+        self.seen = {m.get("handle") for m in self.messages()}
+        self.last_call = None
+
+    @staticmethod
+    def key(number):
+        d = "".join(c for c in str(number) if c.isdigit())
+        return d[-9:] if len(d) >= 6 else d
+
+    def name_of(self, number):
+        try:
+            t = os.stat(self.pb).st_mtime
+        except OSError:
+            return ""
+        if t != self.pb_mtime:
+            self.pb_mtime, self.names, fn = t, {}, ""
+            try:
+                for line in open(self.pb, encoding="utf-8", errors="replace"):
+                    u = line.upper()
+                    if u.startswith("BEGIN:VCARD"):
+                        fn = ""
+                    elif u.startswith("FN") and ":" in line:
+                        fn = line.split(":", 1)[1].strip()
+                    elif u.startswith("TEL") and ":" in line and fn:
+                        self.names.setdefault(self.key(line.split(":", 1)[1]), fn)
+            except OSError:
+                pass
+        return self.names.get(self.key(number), "")
+
+    def messages(self):
+        try:
+            return json.load(open(self.store))
+        except (OSError, ValueError):
+            return []
+
+    def tick(self):
+        if CONF.get("SMO_NOTIFY", "1") != "1":
+            return True
+        try:
+            self.check_call()
+            self.check_texts()
+        except Exception as e:   # never stop the timer
+            log(f"Notify: {e}")
+        return True
+
+    def check_call(self):
+        try:
+            t = os.stat(CALL_INFO_FILE).st_mtime
+        except OSError:
+            return
+        if t == self.call_mtime:
+            return
+        self.call_mtime = t
+        try:
+            info = json.load(open(CALL_INFO_FILE))
+        except (OSError, ValueError):
+            return
+        state, number = info.get("state", "idle"), info.get("number", "")
+        if (state, number) == self.last_call:
+            return
+        self.last_call = (state, number)
+        app_send({"call": state, "number": number, "name": self.name_of(number) if number else ""})
+
+    def check_texts(self):
+        try:
+            t = os.stat(self.store).st_mtime
+        except OSError:
+            return
+        if t == self.store_mtime:
+            return
+        self.store_mtime = t
+        for m in reversed(self.messages()):
+            h = m.get("handle")
+            if h in self.seen:
+                continue
+            self.seen.add(h)
+            sender = m.get("sender") or self.name_of(m.get("number", "")) or m.get("number", "")
+            app_send({"text": {"from": sender, "number": m.get("number", ""), "body": m.get("text", "")}})
+
+
 def app_command(player, cmd):
     """A button in the AuxLink app (over USB via the XIAO, or Bluetooth)."""
     if cmd == "ping":
         return                      # the app saying it is connected (nothing playing)
+    if cmd in ("answer", "decline"):
+        log(f"App: {cmd} the call")
+        try:
+            os.makedirs(os.path.dirname(CALL_CMD_FILE), exist_ok=True)
+            with open(CALL_CMD_FILE, "w") as f:
+                f.write(cmd)
+        except OSError as e:
+            log(f"Cannot write {CALL_CMD_FILE}: {e}")
+        return
     if cmd == "fix":
         log("App: fix sound - restarting the car's stream")
         player.kick_audio()
@@ -1478,6 +1600,7 @@ def main():
     player.write_play_state()
     player.cover_check()
     GLib.timeout_add(1000, player.cover_check)
+    GLib.timeout_add(500, Notify().tick)
     GLib.MainLoop().run()
 
 

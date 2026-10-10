@@ -198,12 +198,12 @@ def dt(value):
 def listing_xml(msgs, subject_len):
     rows = []
     for m in msgs:
-        text = (m.get("text") or "").replace("\n", " ")
+        text = car_text(m.get("text")).replace("\n", " ")
         subj = text[:subject_len] if subject_len else text[:256]
         e = lambda s: html.escape(str(s or ""), quote=True)  # noqa: E731
         rows.append(
             f'<msg handle="{e(m["map"])}" subject="{e(subj)}" datetime="{dt(m.get("time"))}" '
-            f'sender_name="{e(m.get("sender"))}" sender_addressing="{e(m.get("number"))}" '
+            f'sender_name="{e(car_text(m.get("sender")))}" sender_addressing="{e(m.get("number"))}" '
             f'recipient_addressing="" type="SMS_GSM" size="{len(text.encode())}" text="yes" '
             f'reception_status="complete" attachment_size="0" priority="no" '
             f'read="{"yes" if m.get("read") else "no"}" sent="no" protected="no"/>')
@@ -217,9 +217,28 @@ def folder_xml(names):
             f'<folder-listing version="1.0">{rows}</folder-listing>\n').encode()
 
 
+def car_text(text):
+    """The car shows emoji as "????" (and reads nothing): turn each into its
+    name, e.g. 👍 -> (thumbs up). Joiners and variation selectors go."""
+    import unicodedata
+    out = []
+    for ch in str(text or ""):
+        cp = ord(ch)
+        if cp in (0x200D, 0xFE0E, 0xFE0F) or 0x1F3FB <= cp <= 0x1F3FF:
+            continue                     # joiner, emoji/text style, skin tone
+        if cp > 0xFFFF or unicodedata.category(ch) == "So":
+            name = unicodedata.name(ch, "").lower()
+            for junk in (" sign", "black ", "white ", "heavy ", "smiling face with ", "face with "):
+                name = name.replace(junk, " " if junk.startswith(" ") is False else "")
+            out.append(f"({' '.join(name.split()) or 'emoji'})")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 def bmessage(m):
-    name = (m.get("sender") or m.get("number") or "").replace("\r", " ").replace("\n", " ")
-    text = (m.get("text") or "").replace("\r\n", "\n").replace("\n", "\r\n")
+    name = car_text(m.get("sender") or m.get("number") or "").replace("\r", " ").replace("\n", " ")
+    text = car_text(m.get("text")).replace("\r\n", "\n").replace("\n", "\r\n")
     msg = f"BEGIN:MSG\r\n{text}\r\nEND:MSG\r\n"
     return ("BEGIN:BMSG\r\nVERSION:1.0\r\n"
             f"STATUS:{'READ' if m.get('read') else 'UNREAD'}\r\nTYPE:SMS_GSM\r\nFOLDER:TELECOM/MSG/INBOX\r\n"

@@ -27,6 +27,7 @@ Requires PipeWire's own HFP/HSP roles to be disabled, so this script owns HFP.
 Every AT line is logged with its direction for debugging.
 """
 import math
+import json
 import os
 import re
 import socket
@@ -98,6 +99,9 @@ SOURCE_BUF_MAX = 3200
 
 AUDIO_USER = CONF.get("AUDIO_USER", "chris")
 CALL_STATE_FILE = "/run/auxlink/call"  # "1" during a call, "0" otherwise
+# For the AuxLink app's call notification (auxlink-media passes it on):
+CALL_INFO_FILE = "/run/auxlink/call-info.json"   # {"state", "number"}
+CALL_CMD_FILE = "/run/auxlink/call-cmd"          # "answer" / "decline", from the app
 # "1" once the car's HFP link is set up (SLC complete): auxlink-audio waits for
 # it after a reconnect before starting music, so the car sees the stream start
 # when it is ready to play it rather than mid-connect.
@@ -224,6 +228,13 @@ class Relay:
         self.sco_car = None
         self.sco_watches = []
         self.in_call = False
+        self.caller = ""         # number from +CLIP while ringing
+        self.call_info = None    # last written (state, number)
+        self.own_pending = 0     # our own commands to the phone after SLC (their OK isn't the car's)
+        try:
+            self.cmd_seen = os.stat(CALL_CMD_FILE).st_mtime
+        except OSError:
+            self.cmd_seen = 0.0
         self.mic = False         # car-mic session for the SMO is open
         self.mic_sco = None
         self.mic_watch = None
@@ -347,6 +358,45 @@ class Relay:
             log(f"Could not write {path}: {e}")
 
     # ------------------------------------------------- car mic for the SMO
+    def write_call_info(self):
+        """The call's state for the app's notification on the music device."""
+        setup, call = self.values.get("callsetup", 0), self.values.get("call", 0)
+        state = ("incoming" if setup == 1 else "outgoing" if setup in (2, 3)
+                 else "active" if call else "idle")
+        if state == "idle":
+            self.caller = ""
+        info = (state, self.caller)
+        if info == self.call_info:
+            return
+        self.call_info = info
+        try:
+            os.makedirs(os.path.dirname(CALL_INFO_FILE), exist_ok=True)
+            with open(CALL_INFO_FILE + ".tmp", "w") as f:
+                json.dump({"state": state, "number": self.caller}, f)
+            os.replace(CALL_INFO_FILE + ".tmp", CALL_INFO_FILE)
+        except OSError as e:
+            log(f"Could not write {CALL_INFO_FILE}: {e}")
+
+    def call_cmd_poll(self):
+        """Answer / Decline pressed on the music device (the AuxLink app)."""
+        try:
+            t = os.stat(CALL_CMD_FILE).st_mtime
+            if t == self.cmd_seen:
+                return True
+            self.cmd_seen = t
+            cmd = open(CALL_CMD_FILE).read().strip()
+        except OSError:
+            return True
+        if not (self.phone and self.phone_slc):
+            log(f"App asked to {cmd} the call, but the phone isn't connected")
+            return True
+        at = {"answer": "ATA", "decline": "AT+CHUP", "hangup": "AT+CHUP"}.get(cmd)
+        if at:
+            log(f"App: {cmd} the call -> phone {at}")
+            self.own_pending += 1
+            self.phone.send(at + "\r")
+        return True
+
     def mic_poll(self):
         """Follow MIC_REQUEST_FILE: start/stop the car-mic session."""
         try:
@@ -687,6 +737,14 @@ class Relay:
             return  # set_value forwards to the car with the car's numbering
         if up.startswith("+BCS:"):
             return  # codec negotiation is off; never pass this on
+        if up.startswith("+CLIP:") and '"' in line:
+            num = line.split('"')[1]
+            if num != self.caller:
+                self.caller = num
+                self.write_call_info()
+        if self.own_pending and (up in ("OK", "ERROR") or up.startswith("+CME ERROR")):
+            self.own_pending -= 1
+            return  # the answer to our own ATA / AT+CHUP (the app's buttons)
         # Responses to our own SLC commands stay here.
         if not self.phone_slc:
             if up in ("OK", "ERROR") or up.startswith("+CME ERROR"):
@@ -703,6 +761,7 @@ class Relay:
             return
         self.values[name] = value
         self.track_call_state()
+        self.write_call_info()
         if self.car and self.car_slc and name in self.car_names:
             self.to_car(f"+CIEV: {self.car_names.index(name) + 1},{value}")
 
@@ -993,6 +1052,7 @@ def main():
         return True
 
     GLib.timeout_add(200, relay.mic_poll)   # react quickly: the SMO is listening
+    GLib.timeout_add(300, relay.call_cmd_poll)   # the app's Answer / Decline
     GLib.timeout_add_seconds(10, tick)
     GLib.timeout_add_seconds(3, lambda: (tick(), False)[1])
     GLib.MainLoop().run()
