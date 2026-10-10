@@ -174,6 +174,8 @@ class Messages:
         # Listing the inbox creates an object per message too: those are
         # old messages, not new ones (no "New text" for them).
         self.quiet_until = 0.0
+        self.retry_at = self.connected_at = 0.0
+        self.backoff = 15
         os.makedirs(CACHE, exist_ok=True)
         bus.add_signal_receiver(self.added, signal_name="InterfacesAdded",
                                 dbus_interface="org.freedesktop.DBus.ObjectManager",
@@ -217,14 +219,29 @@ class Messages:
 
     def tick(self):
         try:
+            now = time.monotonic()
             if self.session and not self.alive():
                 log("Message session closed")
                 self.session = None
-            if not self.session and self.phone_connected():
+                self.closed()
+            if not self.session and now >= self.retry_at and self.phone_connected():
+                self.connected_at = now
                 self.connect()
+                if not self.session:
+                    self.closed()
         except Exception as e:      # never stop the timer
             log(f"Messages: {e}")
         return True
+
+    def closed(self):
+        """Reconnecting is a burst of Bluetooth traffic (and an inbox
+        listing) that can make the car's music stutter: if the phone keeps
+        closing the session, wait longer each time (up to 10 minutes)."""
+        lasted = time.monotonic() - self.connected_at
+        self.backoff = 30 if lasted > 600 else min(self.backoff * 2, 600)
+        self.retry_at = time.monotonic() + self.backoff
+        if self.backoff > 30:
+            log(f"Messages: next try in {self.backoff} s")
 
     def alive(self):
         try:
@@ -350,6 +367,7 @@ class Messages:
         if self.session and str(path) == self.session:
             log("Message session closed")
             self.session = None
+            self.closed()
 
     def fetch(self, path, handle):
         self.fetching.add(handle)
