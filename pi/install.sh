@@ -102,7 +102,7 @@ systemctl daemon-reload
 # The built-in Bluetooth stays available so the setup page can use it for
 # either side; this routes its call audio over HCI (harmless if unused).
 systemctl enable sco-route-hci >/dev/null
-systemctl enable auxlink-reconnect hfp-relay auxlink-media auxlink-pairing auxlink-web auxlink-cover auxlink-usb-gadget bt-dongle-off avahi-daemon >/dev/null
+systemctl enable auxlink-reconnect hfp-relay auxlink-media auxlink-pairing auxlink-web auxlink-cover auxlink-usb-gadget auxlink-map bt-dongle-off avahi-daemon >/dev/null
 echo "ok"
 
 step "Bluetooth: power on at boot, no USB power-saving on the dongles"

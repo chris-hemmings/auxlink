@@ -1,0 +1,12 @@
+[Unit]
+Description=AuxLink: text messages for the car (when turned on in Settings)
+After=bluetooth.service
+Wants=bluetooth.service
+
+[Service]
+ExecStart=/usr/local/bin/auxlink-map.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

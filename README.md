@@ -317,10 +317,12 @@ yet it opens on **Devices**; a dot marks a tab that needs attention.
    [Other cars](#other-cars). The defaults are fine.
 9. Use **Check audio** / **Check and fix** on the **Status** tab any time the
    music is not coming through.
-10. **Text messages** (Settings tab, test, off by default): the Pi reads new
-    texts from your phone over Bluetooth (the phone asks once to allow
-    message access for AuxLink-phone) and lists them in Recent events. They
-    don't show in the car yet; that is the next step.
+10. **Text messages in the car** (Settings tab, test, off by default): the Pi
+    reads your phone's texts over Bluetooth (the phone asks once to allow
+    message access for AuxLink-phone), offers them to the car like a phone
+    does, and tells the car about each new one, so it pops up and can be
+    read aloud. Replying from the car isn't supported yet. If the car then
+    hangs on "Connecting..." and resets its Bluetooth, turn it off again.
 11. **Development** tab (optional): services, logs, and a terminal on the Pi
     inside the setup page, the same as SSH, with one-tap buttons for the main
     logs. Turn on **Development terminal** in the Settings tab (it needs your own Pi login
@@ -589,7 +591,7 @@ awake (Tesla: **Controls → Electrical → Keep Accessory Power On**), or tap
 | No album art | With the image it is built in; on a manual install run `build-bluetoothd-cover.sh` (2.2). Test with `sudo cover-test.sh` on the Pi, then turn the car's Bluetooth off and on once. |
 | No contacts / recent calls in the car | With a manual install, build the contacts server (2.2). Allow contacts and call history on the phone, then on the setup page restart the services. |
 | Car doesn't reconnect | It reconnects by itself when it wakes. After a fresh start of the Pi it may already have given up: see "Pi powered by the car" in [Other cars](#other-cars). Otherwise open **Recent events / Logs** on the setup page. |
-| Car pairs, then shows "Connecting..." for a minute and restarts its Bluetooth | Update the Pi (1.0.44+): older versions offered the car an empty text-messages service that some cars wait on. Meanwhile, turn off **Sync Messages** for AuxLink in the car. |
+| Car pairs, then shows "Connecting..." for a minute and restarts its Bluetooth | Update the Pi (1.0.44+): older versions offered the car an empty text-messages service that some cars wait on. If **Text messages in the car** is on (Settings), turn it off. |
 | Music shows as playing but is silent (e.g. the car connected after the music started) | Pause and play again in the car within a few seconds, or the app's **Fix sound**, or **Check and fix**. |
 | USB-C source: the music device lost its connection to the Pi | **Check and fix**, or pause and play again in the car within a few seconds: both re-plug the USB-C connection in software when it's broken (never a working one). If it reports "stuck", reboot the Pi. |
 | The app asks for USB access at every plug-in | Allow the app's **Microphone** permission, re-plug the XIAO and tick **Always**. |

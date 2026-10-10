@@ -69,7 +69,7 @@ sync
 echo "Programs and services copied"
 
 systemctl daemon-reload
-systemctl enable auxlink-cover auxlink-usb-gadget >/dev/null 2>&1 || true
+systemctl enable auxlink-cover auxlink-usb-gadget auxlink-map >/dev/null 2>&1 || true
 # USB-C source in use: leave its gadget up (taking it down cuts the music
 # device off). Otherwise restart, which removes a gadget left from before.
 if grep -q '^MUSIC_SOURCE=usbc' /etc/auxlink.conf; then
@@ -77,7 +77,7 @@ if grep -q '^MUSIC_SOURCE=usbc' /etc/auxlink.conf; then
 else
   systemctl restart auxlink-usb-gadget
 fi
-systemctl restart auxlink-pairing auxlink-reconnect hfp-relay auxlink-media auxlink-web auxlink-cover
+systemctl restart auxlink-pairing auxlink-reconnect hfp-relay auxlink-media auxlink-web auxlink-cover auxlink-map
 # Contacts server: contacts and recent calls only, no messages server (a car
 # that opened the empty one hung on "Connecting..." and reset its Bluetooth).
 OBEX_DROPIN="$H/.config/systemd/user/obex.service.d/dummy-phonebook.conf"
