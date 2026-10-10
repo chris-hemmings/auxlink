@@ -180,7 +180,8 @@ class Messages:
             listing = mas.ListMessages("inbox", dbus.Dictionary(
                 {"MaxCount": dbus.UInt16(20), "SubjectLength": dbus.Byte(255)}, signature="sv"))
             new = 0
-            for path, props in listing:
+            items = listing.items() if hasattr(listing, "items") else listing
+            for path, props in items:
                 handle = str(path).rsplit("message", 1)[-1]
                 if self.known(handle):
                     continue
@@ -216,7 +217,8 @@ class Messages:
             return
         if time.monotonic() < self.quiet_until:
             return                  # from the inbox listing: not a new text
-        if folder and not folder.rstrip("/").endswith("inbox"):
+        log(f"Message event: {path.rsplit('/', 1)[-1]} in '{folder}'")
+        if folder and not folder.lower().rstrip("/").endswith("inbox"):
             return
         GLib.timeout_add(500, self.fetch, path, handle)
 
