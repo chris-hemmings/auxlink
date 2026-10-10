@@ -157,3 +157,58 @@ class CallBar(private val ctx: Context, private val onCmd: (String) -> Unit) {
         @Volatile var lastProblem = ""
     }
 }
+
+/** A new text, floating over other apps for 10 seconds (tap to close). */
+class TextPopup(private val ctx: Context) {
+    private val wm = ctx.getSystemService(WindowManager::class.java)
+    private val dp = ctx.resources.displayMetrics.density
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
+    private var root: View? = null
+    private val close = Runnable { hide() }
+
+    /** False if it couldn't be shown (then use a notification). */
+    fun show(from: String, body: String): Boolean {
+        if (!Settings.canDrawOverlays(ctx)) return false
+        return try {
+            hide()
+            val pad = (12 * dp).toInt()
+            val box = LinearLayout(ctx).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(pad * 2, pad, pad * 2, pad)
+                background = GradientDrawable().apply {
+                    setColor(0xEE202124.toInt()); cornerRadius = 16 * dp
+                }
+                addView(TextView(ctx).apply {
+                    text = from; setTextColor(Color.WHITE); textSize = 18f
+                })
+                addView(TextView(ctx).apply {
+                    text = body; setTextColor(Color.WHITE); textSize = 16f; maxLines = 4; alpha = 0.9f
+                })
+                setOnClickListener { hide() }
+            }
+            val p = WindowManager.LayoutParams(
+                (420 * dp).toInt().coerceAtMost(ctx.resources.displayMetrics.widthPixels - (16 * dp).toInt()),
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                y = (140 * dp).toInt()   // below the call bar, if there is one
+            }
+            wm.addView(box, p)
+            root = box
+            main.postDelayed(close, 10000)
+            true
+        } catch (e: Exception) {
+            hide()
+            false
+        }
+    }
+
+    fun hide() {
+        main.removeCallbacks(close)
+        root?.let { v -> try { wm.removeView(v) } catch (_: Exception) {} }
+        root = null
+    }
+}

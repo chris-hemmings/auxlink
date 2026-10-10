@@ -194,6 +194,12 @@ class NowPlayingService : NotificationListenerService() {
         val decline = PendingIntent.getBroadcast(this, 2, Intent(ACTION_DECLINE).setPackage(packageName), flags)
         val who = name.ifEmpty { number.ifEmpty { if (state == "incoming") "Unknown caller" else "" } }
         callBar.show(state, who, callSince)
+        if (CallBar.lastProblem.isEmpty()) {
+            // The floating bar is up: no notification as well (it would
+            // drop down over the bar).
+            nm.cancel(NOTIF_CALL)
+            return
+        }
         if (state != "incoming") {
             // During the call: a quiet notification (no pop-up) with Hang up.
             val n = Notification.Builder(this, "call_ongoing")
@@ -227,7 +233,11 @@ class NowPlayingService : NotificationListenerService() {
 
     private var textId = 100
 
+    private val textPopup by lazy { TextPopup(this) }
+
     private fun showText(from: String, body: String) {
+        // Floating window when allowed; a notification only if not.
+        if (textPopup.show(from.ifEmpty { "Text message" }, body)) return
         val n = Notification.Builder(this, "texts_popup")
             .setSmallIcon(android.R.drawable.sym_action_email)
             .setContentTitle(from.ifEmpty { "Text message" })
