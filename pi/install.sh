@@ -79,8 +79,11 @@ install -D -m 644 "$HERE/lib/auxconf.py" /usr/local/lib/auxlink/auxconf.py
 install -D -m 644 "$HERE/share/index.html" /usr/local/share/auxlink/index.html
 install -D -m 644 "$HERE/share/cover-test.jpg" /usr/local/share/auxlink/cover-test.jpg
 # The XIAO firmware this release came with (setup page → XIAO firmware).
-install -D -m 644 "$HERE/share/auxlink-xiao.uf2" /usr/local/share/auxlink/auxlink-xiao.uf2
-install -D -m 644 "$HERE/share/auxlink-xiao.version" /usr/local/share/auxlink/auxlink-xiao.version
+# Optional: never let a missing firmware file stop the install.
+if [ -f "$HERE/share/auxlink-xiao.uf2" ]; then
+  install -D -m 644 "$HERE/share/auxlink-xiao.uf2" /usr/local/share/auxlink/auxlink-xiao.uf2
+  install -D -m 644 "$HERE/share/auxlink-xiao.version" /usr/local/share/auxlink/auxlink-xiao.version
+fi
 rm -f /etc/udev/rules.d/99-auxlink-xiao.rules /etc/systemd/system/auxlink-xiao-flash@.service   # 1.0.40 flashed by itself
 install -m 755 "$HERE"/bin/* /usr/local/bin/
 install -d -o "$U" -g "$U" "$H/.local/bin"

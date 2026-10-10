@@ -5,3 +5,5 @@ firmware/rp2040/target/
 *.img.xz
 *.uf2
 auxlink-pi-update-*.zip
+# The XIAO firmware the Pi carries (setup page: "Flash built-in firmware").
+!pi/share/auxlink-xiao.uf2

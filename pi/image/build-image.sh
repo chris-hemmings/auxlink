@@ -61,6 +61,9 @@ find "$MNT/opt/auxlink" -name __pycache__ -prune -exec rm -rf {} +
 chmod +x "$MNT"/opt/auxlink/*.sh "$MNT"/opt/auxlink/bin/* "$MNT"/opt/auxlink/user-bin/* \
   "$MNT"/opt/auxlink/extras/* "$MNT"/opt/auxlink/image/*.sh
 
+echo "== Checking every file the install scripts use is there"
+bash "$PI_DIR/image/check-files.sh" "$MNT/opt/auxlink"
+
 echo "== Installing inside the image"
 chroot "$MNT" env AUXLINK_VERSION="$VERSION" /bin/bash /opt/auxlink/image/customize.sh
 
