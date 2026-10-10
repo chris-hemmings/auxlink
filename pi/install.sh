@@ -78,7 +78,7 @@ install -D -m 644 "$HERE/lib/common.sh" /usr/local/lib/auxlink/common.sh
 install -D -m 644 "$HERE/lib/auxconf.py" /usr/local/lib/auxlink/auxconf.py
 install -D -m 644 "$HERE/share/index.html" /usr/local/share/auxlink/index.html
 install -D -m 644 "$HERE/share/cover-test.jpg" /usr/local/share/auxlink/cover-test.jpg
-printf 'd /run/auxlink 0755 root root -\nf /run/auxlink/events.log 0666 root root -\n' > /etc/tmpfiles.d/auxlink.conf
+printf 'd /run/auxlink 0755 root root -\nf /run/auxlink/events.log 0666 root root -\nd /run/auxlink/outbox 1777 root root -\n' > /etc/tmpfiles.d/auxlink.conf
 systemd-tmpfiles --create /etc/tmpfiles.d/auxlink.conf 2>/dev/null || true
 chmod 666 /run/auxlink/events.log 2>/dev/null || true   # user services add to Recent events
 install -d /usr/local/share/auxlink/xterm   # the setup page's development terminal

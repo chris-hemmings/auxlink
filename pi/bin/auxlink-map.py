@@ -61,6 +61,7 @@ H_BODY, H_EOB, H_WHO, H_CONNID, H_APP = 0x48, 0x49, 0x4A, 0xCB, 0x4C
 AP_MAXLISTCOUNT, AP_STARTOFFSET, AP_FILTER_READ = 0x01, 0x02, 0x06
 AP_PARAMMASK, AP_SUBJECTLEN, AP_NEWMESSAGE, AP_NOTIFSTATUS = 0x10, 0x13, 0x0D, 0x0E
 AP_MASINSTANCE, AP_LISTINGSIZE, AP_STATUSIND, AP_STATUSVAL, AP_MSETIME = 0x0F, 0x12, 0x17, 0x18, 0x19
+AP_CHARSET = 0x14
 
 
 def log(msg):
@@ -294,8 +295,11 @@ class Mns:
             self.sock = None
 
     def new_message(self, handle):
+        return self.send_event("NewMessage", handle, "TELECOM/MSG/INBOX")
+
+    def send_event(self, kind, handle, folder):
         body = ('<MAP-event-report version="1.0">\n'
-                f'<event type="NewMessage" handle="{handle}" folder="TELECOM/MSG/INBOX" msg_type="SMS_GSM"/>\n'
+                f'<event type="{kind}" handle="{handle}" folder="{folder}" msg_type="SMS_GSM"/>\n'
                 '</MAP-event-report>\n').encode()
         with self.lock:
             for attempt in (1, 2):
@@ -320,6 +324,83 @@ class Mns:
 
 MNS = Mns()
 NOTIFY = {"on": False}
+
+# Replies from the car go to the phone through auxlink-messages (it holds
+# the Bluetooth session to the phone, on the audio user's session bus):
+#   <id>.bmsg + <id>.json written here, <id>.done ("ok" / "error: ...") there.
+OUTBOX = "/run/auxlink/outbox"
+
+
+def bmsg_summary(body):
+    """(recipient number, text) of a pushed bMessage, for the log."""
+    text = body.decode("utf-8", "replace")
+    number, lines, in_env, in_msg = "", [], False, False
+    for line in text.replace("\r", "").split("\n"):
+        u = line.upper()
+        if u == "BEGIN:BENV":
+            in_env = True
+        elif in_env and u.startswith("TEL") and ":" in line and not number:
+            number = line.split(":", 1)[1].strip()
+        elif u == "BEGIN:MSG":
+            in_msg = True
+        elif u == "END:MSG":
+            in_msg = False
+        elif in_msg:
+            lines.append(line)
+    return number, " ".join(lines).strip()
+
+
+def queue_reply(body, charset):
+    os.makedirs(OUTBOX, exist_ok=True)
+    rid = "%X" % (0x2000000000000 + int(time.time() * 1000) % 0xFFFFFFFFFFFF)
+    number, text = bmsg_summary(body)
+    with open(os.path.join(OUTBOX, rid + ".bmsg"), "wb") as f:
+        f.write(body)
+    with open(os.path.join(OUTBOX, rid + ".json.tmp"), "w") as f:
+        json.dump({"charset": charset, "to": number, "text": text}, f)
+    os.replace(os.path.join(OUTBOX, rid + ".json.tmp"), os.path.join(OUTBOX, rid + ".json"))
+    log(f"Car replied to {number or '?'}: {text[:60]} (sending through the phone)")
+    return rid
+
+
+def watch_outbox():
+    """Report each reply's result to the car and the setup page."""
+    while True:
+        time.sleep(1)
+        try:
+            names = os.listdir(OUTBOX)
+        except OSError:
+            continue
+        now = time.time()
+        for n in names:
+            rid, ext = os.path.splitext(n)
+            p = os.path.join(OUTBOX, n)
+            if ext == ".json":
+                try:
+                    if now - os.stat(p).st_mtime > 120 and not os.path.exists(os.path.join(OUTBOX, rid + ".done")):
+                        open(os.path.join(OUTBOX, rid + ".done"), "w").write("error: the phone's messages weren't reachable")
+                except OSError:
+                    pass
+                continue
+            if ext != ".done":
+                continue
+            result, meta = "error", {}
+            try:
+                result = open(p).read().strip() or "error"
+                meta = json.load(open(os.path.join(OUTBOX, rid + ".json")))
+            except (OSError, ValueError):
+                pass
+            ok = result == "ok"
+            who = meta.get("to") or "?"
+            event(f"Reply to {who}: {'sent' if ok else 'NOT sent (' + result + ')'}")
+            if NOTIFY["on"]:
+                MNS.send_event("SendingSuccess" if ok else "SendingFailure", rid,
+                               "TELECOM/MSG/SENT" if ok else "TELECOM/MSG/OUTBOX")
+            for ext2 in (".bmsg", ".json", ".done"):
+                try:
+                    os.remove(os.path.join(OUTBOX, rid + ext2))
+                except OSError:
+                    pass
 
 
 def watch_store():
@@ -504,8 +585,16 @@ class Session(threading.Thread):
             self.send(OK)
             return buf
         if typ == "x-bt/message":
-            log("Car tried to send a text: not supported yet")
-            self.send(NOT_IMPLEMENTED)
+            body = h.get(H_BODY, b"") + h.get(H_EOB, b"")
+            folder = (h.get(H_NAME) or "").lower().strip("/")
+            target = f"{'/'.join(self.path)}/{folder}".strip("/") if folder else "/".join(self.path)
+            if not target.endswith("outbox"):
+                log(f"Car tried to put a message in '{target}': only the outbox sends")
+                self.send(FORBIDDEN)
+                return buf
+            charset = params.get(AP_CHARSET, b"\x01")[:1]
+            handle = queue_reply(body, "utf8" if charset == b"\x01" else "native")
+            self.send(OK, hdr(H_NAME, handle))
             return buf
         log(f"Car sent unsupported '{typ}'")
         self.send(NOT_IMPLEMENTED)
@@ -565,6 +654,9 @@ def main():
         }, signature="sv"))
     log("Messages service for the car registered")
     threading.Thread(target=watch_store, daemon=True).start()
+    os.makedirs(OUTBOX, exist_ok=True)
+    os.chmod(OUTBOX, 0o1777)        # auxlink-messages (the audio user) writes results here
+    threading.Thread(target=watch_outbox, daemon=True).start()
     GLib.MainLoop().run()
 
 

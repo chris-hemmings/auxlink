@@ -42,6 +42,7 @@ OBEX = "org.bluez.obex"
 STORE = os.path.expanduser("~/.local/share/auxlink/messages.json")
 CACHE = os.path.expanduser("~/.cache/auxlink")
 EVENTS = "/run/auxlink/events.log"
+OUTBOX = "/run/auxlink/outbox"      # replies from the car (auxlink-map) to send
 KEEP = 50
 
 
@@ -248,6 +249,58 @@ class Messages:
             return
         GLib.timeout_add(500, self.fetch, path, handle)
 
+    # ---------- replies from the car ----------
+    def outbox(self):
+        """Send each reply auxlink-map queued, through the phone."""
+        try:
+            names = sorted(os.listdir(OUTBOX))
+        except OSError:
+            return True
+        for n in names:
+            if not n.endswith(".json"):
+                continue
+            rid = n[:-5]
+            done = os.path.join(OUTBOX, rid + ".done")
+            if os.path.exists(done):
+                continue
+            result = self.send_reply(rid)
+            try:
+                with open(done + ".tmp", "w") as f:
+                    f.write(result)
+                os.replace(done + ".tmp", done)
+            except OSError as e:
+                log(f"Cannot report reply {rid}: {e}")
+        return True
+
+    def send_reply(self, rid):
+        try:
+            meta = json.load(open(os.path.join(OUTBOX, rid + ".json")))
+        except (OSError, ValueError):
+            meta = {}
+        if not self.session:
+            return "error: the phone isn't connected"
+        try:
+            mas = dbus.Interface(self.bus.get_object(OBEX, self.session), "org.bluez.obex.MessageAccess1")
+            mas.SetFolder("/telecom/msg")
+            transfer, _ = mas.PushMessage(os.path.join(OUTBOX, rid + ".bmsg"), "outbox", dbus.Dictionary(
+                {"Charset": meta.get("charset", "utf8")}, signature="sv"))
+            st = "active"
+            for _ in range(120):
+                try:
+                    st = dbus.Interface(self.bus.get_object(OBEX, transfer),
+                                        "org.freedesktop.DBus.Properties").Get("org.bluez.obex.Transfer1", "Status")
+                except dbus.DBusException:
+                    st = "complete"     # the transfer object goes once it's done
+                if st in ("complete", "error"):
+                    break
+                time.sleep(0.25)
+            if st != "complete":
+                return f"error: the phone didn't take it ({st})"
+            log(f"Reply to {meta.get('to') or '?'} handed to the phone: {(meta.get('text') or '')[:60]}")
+            return "ok"
+        except dbus.DBusException as e:
+            return f"error: {e.get_dbus_message()}"
+
     def removed(self, path, ifaces):
         if self.session and str(path) == self.session:
             log("Message session closed")
@@ -325,6 +378,7 @@ def main():
     m = Messages(dbus.SessionBus())
     m.tick()
     GLib.timeout_add_seconds(30, m.tick)
+    GLib.timeout_add_seconds(1, m.outbox)
     GLib.MainLoop().run()
 
 
