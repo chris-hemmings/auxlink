@@ -58,6 +58,32 @@ def event(msg):
         pass
 
 
+def mime_text(body):
+    """MMS/RCS messages arrive as an e-mail style document (Date:, From:,
+    Content-Type..., often multipart): keep only the readable text."""
+    import email
+    from email import policy
+    head = body.lstrip()[:400].lower()
+    if not any(h in head for h in ("content-type:", "date:", "mime-version:", "subject:")):
+        return body
+    try:
+        msg = email.message_from_bytes(body.lstrip().encode("utf-8"), policy=policy.default)
+        parts = []
+        for part in msg.walk():
+            if part.get_content_type() == "text/plain" and not part.is_attachment():
+                parts.append(part.get_content().strip())
+        if not parts and msg.get_content_type().startswith("text/") and not msg.is_multipart():
+            parts.append(msg.get_content().strip())
+        text = "\n".join(p for p in parts if p)
+        if not text:
+            subject = str(msg.get("Subject", "") or "").strip()
+            kinds = {p.get_content_maintype() for p in msg.walk() if not p.is_multipart()}
+            text = subject or ("[picture]" if "image" in kinds else "[attachment]")
+        return text
+    except Exception:
+        return body
+
+
 def parse_bmessage(text):
     """bMessage (MAP's message format) -> (sender name, number, body)."""
     name = number = ""
@@ -90,7 +116,7 @@ def parse_bmessage(text):
             continue
         if in_msg:
             body.append(line)
-    return name, number, "\n".join(body).strip()
+    return name, number, mime_text("\n".join(body).strip())
 
 
 class Messages:
