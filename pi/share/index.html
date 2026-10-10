@@ -91,6 +91,7 @@ label.f{display:grid;gap:4px;margin:8px 0}label.f span{color:var(--dim);font-siz
     <div class="sw"><span>Pi reconnects the car itself (off: wait for the car to connect)</span><input type="checkbox" id="CAR_CALLS"></div>
     <div class="sw"><span>Turn the SMO's volume to 100% when it connects (wired)</span><input type="checkbox" id="SMO_VOLUME_MAX"></div>
     <div class="sw"><span>Try higher-quality music (SBC-XQ) if the car offers it</span><input type="checkbox" id="SBC_XQ"></div>
+    <div class="sw"><span>Development terminal (a shell on the Pi in this page, like SSH)</span><input type="checkbox" id="DEV_TERMINAL"></div>
     <div class="grid2">
       <label class="f"><span>Resume music after a call (seconds, 3 or more)</span><input id="CALL_RESUME_DELAY"></label>
       <label class="f"><span>Bluetooth name (car side)</span><input id="CAR_NAME"></label>
@@ -130,6 +131,21 @@ label.f{display:grid;gap:4px;margin:8px 0}label.f span{color:var(--dim);font-siz
     </div>
     <div class="btns"><button onclick="wifiAdd()">Save network</button><button class="ghost" onclick="wifiScan()">Scan nearby</button></div>
   </section>
+
+  <section class="card"><details id="devCard"><summary style="cursor:pointer"><h2 style="display:inline">Development</h2></summary>
+    <div class="k" style="font-size:13px;margin-top:8px">A terminal on the Pi, the same as SSH: it logs in as the Pi user (sudo asks for that password). Turn it on under Settings; it needs your own Pi login password, and a page password is recommended. It closes after 15 minutes idle.</div>
+    <div id="termState" style="margin:8px 0;font-weight:600"></div>
+    <div class="btns"><button id="termOpen" onclick="termOpen()">Open terminal</button><button class="ghost" onclick="termClose()">Close</button></div>
+    <div class="btns" id="termQuick">
+      <button class="ghost" onclick="termRun('journalctl -u auxlink-media -f')">Media log</button>
+      <button class="ghost" onclick="termRun('journalctl --user -u auxlink-audio -f')">Audio log</button>
+      <button class="ghost" onclick="termRun('journalctl -u hfp-relay -f')">Calls log</button>
+      <button class="ghost" onclick="termRun('journalctl -u auxlink-pairing -u auxlink-reconnect -f')">Pairing log</button>
+      <button class="ghost" onclick="termRun('journalctl --user -u obex -f')">Contacts log</button>
+      <button class="ghost" onclick="termCtrlC()">Ctrl+C</button>
+    </div>
+    <div id="term" style="margin-top:10px;height:420px;background:#000;border-radius:8px;display:none"></div>
+  </details></section>
 
   <section class="card"><h2>XIAO firmware</h2>
     <div class="k" style="font-size:13px">Update the XIAO on its own: unplug its USB-C from the music device, hold its <b>B</b> button and plug it into a USB port on the Pi (the wires to the Pi can stay). Then flash the firmware file from the releases page, or the one that came with this AuxLink. Afterwards plug it back into the music device (Android asks once: tick Always).</div>
@@ -183,9 +199,41 @@ function wifiRemove(n){if(confirm('Remove '+n+'?'))post('wifi/remove',{name:n},'
 function wifiConnect(n){if(confirm('Switch off the setup Wi-Fi and join '+n+' now? This page will disconnect; reopen it at http://auxlink.local on that network.'))post('wifi/connect',{name:n},'Switching…')}
 function esc(t){return String(t).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function saveAdapters(){post('adapters',{car:$('selCar').value,phone:$('selPhone').value},'Adapters saved')}
-function saveSettings(){const b={};for(const k of ['PHONE_ENABLED','PAUSE_FOR_CALLS','CONTACTS_SYNC','AUTO_PAIRABLE','CAR_CALLS','SBC_XQ','SMO_VOLUME_MAX'])b[k]=$(k).checked?'1':'0';b.CAR_MIC_MODE=$('CAR_MIC_MODE').value;
+function saveSettings(){const b={};for(const k of ['PHONE_ENABLED','PAUSE_FOR_CALLS','CONTACTS_SYNC','AUTO_PAIRABLE','CAR_CALLS','SBC_XQ','SMO_VOLUME_MAX','DEV_TERMINAL'])b[k]=$(k).checked?'1':'0';b.CAR_MIC_MODE=$('CAR_MIC_MODE').value;
   for(const k of ['CALL_RESUME_DELAY','CAR_NAME','PHONE_NAME','SETUP_WIFI_MINUTES','SETUP_WIFI_SSID','SETUP_WIFI_PASS','SETUP_BUTTON_GPIO'])b[k]=$(k).value.trim();
   if($('WEB_PASSWORD').value)b.WEB_PASSWORD=$('WEB_PASSWORD').value;post('config',b,'Settings saved; services restarting')}
+// ---- Development terminal (xterm.js, loaded on first use) ----
+let T=null,TF=null,TID=null,TPOS=0,TBUSY=false;
+function loadAsset(tag,attrs){return new Promise((ok,bad)=>{const e=document.createElement(tag);Object.assign(e,attrs);e.onload=ok;e.onerror=bad;document.head.appendChild(e)})}
+async function termLib(){if(window.Terminal)return;
+  await loadAsset('link',{rel:'stylesheet',href:'/xterm/xterm.css'});
+  await loadAsset('script',{src:'/xterm/xterm.js'});await loadAsset('script',{src:'/xterm/addon-fit.js'})}
+const b64e=s=>btoa(String.fromCharCode(...new TextEncoder().encode(s)));
+function b64d(s){const b=atob(s),u=new Uint8Array(b.length);for(let i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return u}
+function termSend(s){if(TID)api('term/write',{id:TID,data:b64e(s)}).catch(e=>toast(e.message))}
+function termRun(cmd){if(!TID)return toast('Open the terminal first');termSend('\x03');setTimeout(()=>termSend(cmd+'\r'),150)}
+function termCtrlC(){termSend('\x03')}
+async function termOpen(){
+  try{await termLib()}catch(e){return toast('Terminal files missing: update the Pi')}
+  $('term').style.display='block';
+  if(!T){T=new Terminal({cursorBlink:true,fontSize:13,convertEol:false,scrollback:5000});TF=new FitAddon.FitAddon();T.loadAddon(TF);T.open($('term'));
+    T.onData(d=>termSend(d));window.addEventListener('resize',()=>termFit())}
+  TF.fit();T.clear();
+  try{const r=await api('term/open',{cols:T.cols,rows:T.rows});TID=r.id;TPOS=0;T.focus();termPoll()}
+  catch(e){T.writeln('\r\n'+e.message);TID=null}}
+function termFit(){if(!T||!TF)return;TF.fit();if(TID)api('term/resize',{id:TID,cols:T.cols,rows:T.rows}).catch(()=>{})}
+async function termPoll(){if(TBUSY)return;TBUSY=true;const id=TID;
+  while(TID===id){try{const r=await api('term/read',{id,pos:TPOS});if(TID!==id)break;
+      if(r.data)T.write(b64d(r.data));TPOS=r.pos;
+      if(!r.alive){T.writeln('\r\n[session ended]');TID=null;break}}
+    catch(e){T.writeln('\r\n['+e.message+']');TID=null;break}}
+  TBUSY=false}
+async function termClose(){if(TID){const id=TID;TID=null;await api('term/close',{id}).catch(()=>{})}if(T)T.writeln('\r\n[closed]')}
+function renderTerm(){const c=S.conf||{},l=S.login||{};
+  const on=c.DEV_TERMINAL==='1',ok=on&&!l.default_password;
+  $('termState').textContent=!on?'Off: turn on "Development terminal" in Settings'
+    :l.default_password?'Change the Pi login password first (Pi login card)':(TID?'Connected as '+(l.user||'the Pi user'):'Ready');
+  $('termOpen').disabled=!ok}
 async function xiaoFlash(useFile){let body=new Uint8Array(0),name;
   if(useFile){const f=$('uf2File').files[0];if(!f)return toast('Choose the .uf2 file first');body=f;name=f.name}
   else name='the built-in firmware ('+(S.xiao&&S.xiao.builtin||'?')+')';
@@ -210,7 +258,7 @@ function renderXiao(){const x=S.xiao||{};
     :'No XIAO on the Pi\'s USB ports';
   $('xiaoFlashFile').disabled=$('xiaoFlashBuiltin').disabled=x.mode!=='update';
   $('xiaoFlashBuiltin').textContent='Flash built-in firmware'+(x.builtin?' ('+x.builtin+')':'')}
-function render(){const c=S.conf;renderXiao();
+function render(){const c=S.conf;renderXiao();renderTerm();
   $('sub').textContent=(S.setup_wifi?'Setup Wi-Fi on · ':'')+(c.CAR?'car '+c.CAR:'no car paired yet');
   dev('carState',S.car);dev('phoneState',S.phone);$('carAddr').textContent=c.CAR||'–';$('phoneAddr').textContent=c.PHONE||'–';
   dev('sourceState',S.source);$('sourceAddr').textContent=c.SOURCE||'–';
@@ -231,7 +279,7 @@ function render(){const c=S.conf;renderXiao();
     let usbN=0;const label=a=>(a.bus==='USB'?'USB dongle '+(++usbN)+' · '+a.address:'Built-in Bluetooth · '+a.address)+(a.powered?'':' (off)');
     const opts=S.adapters.map(a=>'<option value="'+a.address+'">'+label(a)+'</option>').join('');
     s.innerHTML=(sel==='selPhone'?'<option value="">none (no phone)</option>':'')+opts;s.value=c[key]||''}
-  if(!settingsLoaded){for(const k of ['PHONE_ENABLED','PAUSE_FOR_CALLS','CONTACTS_SYNC','AUTO_PAIRABLE','CAR_CALLS','SBC_XQ','SMO_VOLUME_MAX'])$(k).checked=c[k]==='1';$('CAR_MIC_MODE').value=c.CAR_MIC_MODE||'call';
+  if(!settingsLoaded){for(const k of ['PHONE_ENABLED','PAUSE_FOR_CALLS','CONTACTS_SYNC','AUTO_PAIRABLE','CAR_CALLS','SBC_XQ','SMO_VOLUME_MAX','DEV_TERMINAL'])$(k).checked=c[k]==='1';$('CAR_MIC_MODE').value=c.CAR_MIC_MODE||'call';
     for(const k of ['CALL_RESUME_DELAY','CAR_NAME','PHONE_NAME','SETUP_WIFI_MINUTES','SETUP_WIFI_SSID','SETUP_WIFI_PASS','SETUP_BUTTON_GPIO'])$(k).value=c[k]||'';settingsLoaded=true}
   $('wifiList').innerHTML=(S.home_wifi||[]).map(n=>'<div class="row"><span><span class="dot '+(n.active?'ok':'')+'"></span>'+esc(n.ssid)+(n.active?' · connected':'')+'</span><span class="btns" style="margin:0">'+
     (S.setup_wifi?'<button class="ghost" data-n="'+esc(n.name)+'" onclick="wifiConnect(this.dataset.n)">Join now</button>':'')+

@@ -42,7 +42,7 @@ EDITABLE = {
     "SETUP_WIFI_MINUTES": r"\d{1,3}", "WEB_PASSWORD": r"[^\s'\"]{0,63}",
     "SETUP_BUTTON_GPIO": r"\d{0,2}", "SOURCE_NAME": r"[\w .\-]{1,30}",
     # Car behaviour (defaults tuned on a Tesla; other cars may want others)
-    "CAR_CALLS": r"[01]", "CAR_MIC_MODE": r"call|vr", "SBC_XQ": r"[01]", "SMO_VOLUME_MAX": r"[01]",
+    "CAR_CALLS": r"[01]", "CAR_MIC_MODE": r"call|vr", "SBC_XQ": r"[01]", "SMO_VOLUME_MAX": r"[01]", "DEV_TERMINAL": r"[01]",
 }
 ROLE_KEYS = {"car": ("CAR", "CAR_ADAPTER"), "phone": ("PHONE", "PHONE_ADAPTER"),
              "source": ("SOURCE", "SOURCE_ADAPTER")}
@@ -441,6 +441,162 @@ def act_xiao_flash(data):
     return {"ok": True, "output": out}
 
 
+# ---------- Development terminal ----------
+# A login shell for the page (Settings → Development terminal), like SSH:
+# the Pi login user, not root, so sudo asks for the password. Off by default,
+# refused while the default Pi password is still set, closed after 15 min idle.
+XTERM_DIR = "/usr/local/share/auxlink/xterm"
+TERM_IDLE = 15 * 60
+TERMS = {}                      # id -> session
+TERMS_LOCK = threading.Lock()
+
+
+class TermSession:
+    MAX = 256 * 1024            # output kept for the page to catch up on
+
+    def __init__(self, user):
+        import pty
+        self.pid, self.fd = pty.fork()
+        if self.pid == 0:       # child: the user's login shell
+            os.environ["TERM"] = "xterm-256color"
+            try:
+                os.execvp("runuser", ["runuser", "-l", user])
+            finally:
+                os._exit(127)
+        self.buf = bytearray()
+        self.start = 0          # stream offset of buf[0]
+        self.cond = threading.Condition()
+        self.alive = True
+        self.used = time.monotonic()
+        threading.Thread(target=self.pump, daemon=True).start()
+
+    def pump(self):
+        while True:
+            try:
+                data = os.read(self.fd, 4096)
+            except OSError:
+                data = b""
+            with self.cond:
+                if not data:
+                    self.alive = False
+                    self.cond.notify_all()
+                    break
+                self.buf += data
+                if len(self.buf) > self.MAX:
+                    cut = len(self.buf) - self.MAX
+                    del self.buf[:cut]
+                    self.start += cut
+                self.cond.notify_all()
+        try:
+            os.waitpid(self.pid, 0)
+        except OSError:
+            pass
+
+    def read(self, pos, wait=20):
+        """Output from stream offset pos, waiting up to wait s for some."""
+        self.used = time.monotonic()
+        with self.cond:
+            end = self.start + len(self.buf)
+            if pos >= end and self.alive:
+                self.cond.wait(wait)
+                end = self.start + len(self.buf)
+            pos = max(pos, self.start)
+            return bytes(self.buf[pos - self.start:]), end, self.alive
+
+    def write(self, data):
+        self.used = time.monotonic()
+        os.write(self.fd, data)
+
+    def resize(self, cols, rows):
+        import fcntl
+        import struct
+        import termios
+        fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+
+    def close(self):
+        import signal
+        try:
+            os.killpg(os.getpgid(self.pid), signal.SIGHUP)
+        except OSError:
+            pass
+        try:
+            os.close(self.fd)
+        except OSError:
+            pass
+
+
+def term_allowed():
+    c = auxconf.load()
+    if c.get("DEV_TERMINAL", "0") != "1":
+        raise ValueError("the development terminal is off (Settings → Development terminal)")
+    if os.path.exists(DEFAULT_PW_FLAG):
+        raise ValueError("change the Pi login password first (Pi login card)")
+    return c.get("AUDIO_USER", "chris")
+
+
+def term_reaper():
+    while True:
+        time.sleep(30)
+        now = time.monotonic()
+        with TERMS_LOCK:
+            for tid, t in list(TERMS.items()):
+                if not t.alive or now - t.used > TERM_IDLE:
+                    t.close()
+                    del TERMS[tid]
+                    if t.alive:
+                        auxconf.event("Development terminal closed (idle 15 min)")
+
+
+def term_get(body):
+    t = TERMS.get(str(body.get("id", "")))
+    if not t:
+        raise ValueError("terminal session ended: open a new one")
+    return t
+
+
+def act_term_open(body):
+    user = term_allowed()
+    with TERMS_LOCK:
+        for tid, t in list(TERMS.items()):    # one at a time
+            t.close()
+            del TERMS[tid]
+        tid = base64.urlsafe_b64encode(os.urandom(12)).decode()
+        t = TermSession(user)
+        TERMS[tid] = t
+    try:
+        t.resize(int(body.get("cols", 80)), int(body.get("rows", 24)))
+    except (OSError, ValueError):
+        pass
+    auxconf.event(f"Development terminal opened (as {user})")
+    return {"ok": True, "id": tid}
+
+
+def act_term_write(body):
+    term_allowed()
+    term_get(body).write(base64.b64decode(body.get("data", "")))
+    return {"ok": True}
+
+
+def act_term_resize(body):
+    term_get(body).resize(int(body["cols"]), int(body["rows"]))
+    return {"ok": True}
+
+
+def act_term_close(body):
+    with TERMS_LOCK:
+        t = TERMS.pop(str(body.get("id", "")), None)
+    if t:
+        t.close()
+        auxconf.event("Development terminal closed")
+    return {"ok": True}
+
+
+def act_term_read(body):
+    term_allowed()
+    data, end, alive = term_get(body).read(int(body.get("pos", 0)))
+    return {"data": base64.b64encode(data).decode(), "pos": end, "alive": alive}
+
+
 UPDATE_DIR = "/var/lib/auxlink/update"
 UPDATE_LOG = "/var/lib/auxlink/update.log"
 MAX_UPDATE = 50 * 1024 * 1024
@@ -638,6 +794,8 @@ def act_wifi_connect(body):
 ACTIONS = {"pair": act_pair, "pair/cancel": act_pair_cancel, "forget": act_forget,
            "source": act_source,
            "config": act_config, "adapters": act_adapters, "check": act_check,
+           "term/open": act_term_open, "term/write": act_term_write, "term/read": act_term_read,
+           "term/resize": act_term_resize, "term/close": act_term_close,
            "restart": act_restart, "wifi/off": act_wifi_off,
            "wifi/add": act_wifi_add, "wifi/remove": act_wifi_remove,
            "wifi/scan": act_wifi_scan, "wifi/connect": act_wifi_connect,
@@ -699,6 +857,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         if not self.authorised():
             return
+        if self.path.startswith("/xterm/"):
+            name = os.path.basename(self.path.split("?")[0])
+            types = {".js": "application/javascript", ".css": "text/css"}
+            ext = os.path.splitext(name)[1]
+            if ext in types:
+                try:
+                    return self.reply(200, open(os.path.join(XTERM_DIR, name), "rb").read(), types[ext])
+                except OSError:
+                    return self.reply(404, b"missing", "text/plain")
         if self.path in ("/", "/index.html") or not self.path.startswith("/api/"):
             try:
                 return self.reply(200, open(INDEX, "rb").read(), "text/html; charset=utf-8")
@@ -894,6 +1061,7 @@ def main():
     auto_assign()
     threading.Thread(target=ap_loop, daemon=True).start()
     threading.Thread(target=button_loop, daemon=True).start()
+    threading.Thread(target=term_reaper, daemon=True).start()
     srv = ThreadingHTTPServer(("0.0.0.0", 80), Handler)
     print("Setup page on port 80", flush=True)
     srv.serve_forever()

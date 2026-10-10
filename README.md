@@ -311,6 +311,12 @@ Then pair them again as below.
    [Other cars](#other-cars). The defaults are fine.
 9. Use **Check audio** / **Check and fix** on the Music card any time the
    music is not coming through.
+10. **Development** (optional): a terminal on the Pi inside the setup page,
+    the same as SSH, with one-tap buttons for the main logs. Turn on
+    **Development terminal** under Settings (it needs your own Pi login
+    password; set a page password too, since anyone on the setup Wi-Fi can
+    open the page). It logs in as the Pi user, so `sudo` asks for that
+    password, and it closes after 15 minutes idle.
 
 ---
 

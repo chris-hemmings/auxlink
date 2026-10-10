@@ -27,6 +27,8 @@ install -D -m 644 "$HERE/lib/common.sh" /usr/local/lib/auxlink/common.sh
 install -D -m 644 "$HERE/lib/auxconf.py" /usr/local/lib/auxlink/auxconf.py
 install -D -m 644 "$HERE/share/index.html" /usr/local/share/auxlink/index.html
 install -D -m 644 "$HERE/share/cover-test.jpg" /usr/local/share/auxlink/cover-test.jpg
+install -d /usr/local/share/auxlink/xterm   # the setup page's development terminal
+install -m 644 "$HERE"/share/xterm/* /usr/local/share/auxlink/xterm/
 # The XIAO firmware this release came with (setup page → XIAO firmware).
 # Optional: never let a missing firmware file stop the install.
 if [ -f "$HERE/share/auxlink-xiao.uf2" ]; then
