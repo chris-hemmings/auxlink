@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.provider.Settings
 import android.widget.Button
 import android.widget.LinearLayout
@@ -38,6 +39,17 @@ class MainActivity : Activity() {
             }
         }
         note = TextView(this).apply { textSize = 16f }
+        val battery = Button(this).apply {
+            text = "Let AuxLink run in the background"
+            setOnClickListener {
+                try {
+                    startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                        Uri.parse("package:$packageName")))
+                } catch (e: Exception) {
+                    startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                }
+            }
+        }
         val allowUsb = Button(this).apply {
             text = "Allow USB"
             setOnClickListener { UsbLink(this@MainActivity).askPermission() }
@@ -68,6 +80,7 @@ class MainActivity : Activity() {
             setPadding(pad, pad, pad, pad)
             addView(status)
             addView(grant)
+            addView(battery)
             addView(allowUsb)
             addView(fix)
             addView(setup)
@@ -81,6 +94,10 @@ class MainActivity : Activity() {
         if (Build.VERSION.SDK_INT >= 31 && !BtLink(this).permitted())
             want += Manifest.permission.BLUETOOTH_CONNECT
         if (!micAllowed()) want += Manifest.permission.RECORD_AUDIO
+        // The permanent "AuxLink connected" notification (Android 13+ asks).
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
+            want += Manifest.permission.POST_NOTIFICATIONS
         if (want.isNotEmpty()) requestPermissions(want.toTypedArray(), 1)
     }
 
@@ -127,6 +144,9 @@ class MainActivity : Activity() {
     override fun onResume() { super.onResume(); main.post(refresh) }
     override fun onPause() { super.onPause(); main.removeCallbacks(refresh) }
 
+    private fun unrestricted() =
+        getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)
+
     private fun micAllowed() =
         checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
 
@@ -141,6 +161,8 @@ class MainActivity : Activity() {
         status.text = buildString {
             appendLine("Notification access: " + if (hasAccess()) "granted" else "NOT granted - tap below")
             appendLine("XIAO plugged in: " + if (xiao) "yes" else "no")
+            appendLine("Background running: " + if (unrestricted()) "allowed" else
+                "battery saving may stop it - tap Let AuxLink run in the background")
             if (!micAllowed())
                 appendLine("Microphone: NOT allowed - reopen the app and allow it (only so USB can be set to Always; nothing is recorded)")
             if (xiao && !UsbLink(this@MainActivity).permitted())

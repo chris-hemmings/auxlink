@@ -435,8 +435,11 @@ signed with the same key.
    - Notification access: **granted**
    - XIAO plugged in: **yes**
    - Data link open: **yes - USB** (or **yes - Bluetooth** for the Bluetooth source)
-4. Recommended: **Settings → Apps → AuxLink → Battery → Unrestricted**,
-   so that Android never stops it in the background.
+4. Tap **Let AuxLink run in the background** and allow it (the status line
+   "Background running" then says **allowed**), so battery saving never stops
+   it. Allow notifications too: the app keeps a quiet "AuxLink connected"
+   notification, which keeps Android (and head units' app killers) from
+   closing it.
 5. Play something. The car shows the track and, after a second or two, the
    album art. Each time the SMO connects, the Pi turns its media volume up to
    100% (Android starts USB audio low); use the car's volume. Turn this off

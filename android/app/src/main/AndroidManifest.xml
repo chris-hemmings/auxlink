@@ -12,6 +12,15 @@
          about audio capture and drops its "Always" tick box - so it asked
          at every plug-in. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Staying alive: a permanent "AuxLink connected" notification (a
+         foreground service of the connected-device kind; CHANGE_NETWORK_STATE
+         is its required companion permission, granted automatically), and
+         the prompt that turns battery optimisation off for the app. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application
         android:label="AuxLink"
@@ -50,6 +59,7 @@
         <service
             android:name=".NowPlayingService"
             android:exported="true"
+            android:foregroundServiceType="connectedDevice"
             android:label="AuxLink"
             android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
             <intent-filter>

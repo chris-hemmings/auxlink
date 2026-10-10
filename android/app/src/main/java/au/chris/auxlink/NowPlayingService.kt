@@ -1,10 +1,15 @@
 package au.chris.auxlink
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.hardware.usb.UsbManager
 import android.media.MediaMetadata
@@ -102,8 +107,36 @@ class NowPlayingService : NotificationListenerService() {
         }
     }
 
+    /** Keep running: a permanent low-key notification makes this a
+     *  foreground service, which Android (and head units' app killers) leave
+     *  alone. If Android refuses (e.g. started in the background on a
+     *  device that forbids it), the app still works as before. */
+    private fun goForeground() {
+        try {
+            val nm = getSystemService(NotificationManager::class.java)
+            nm.createNotificationChannel(NotificationChannel(
+                "running", "AuxLink running", NotificationManager.IMPORTANCE_MIN
+            ).apply { setShowBadge(false) })
+            val open = PendingIntent.getActivity(
+                this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+            val n = Notification.Builder(this, "running")
+                .setSmallIcon(android.R.drawable.ic_media_play)
+                .setContentTitle("AuxLink connected")
+                .setContentText("Sending what's playing to the car")
+                .setContentIntent(open)
+                .setOngoing(true)
+                .build()
+            if (Build.VERSION.SDK_INT >= 29)
+                startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+            else startForeground(1, n)
+        } catch (e: Exception) {
+            Log.w(TAG, "could not keep a running notification: ${e.message}")
+        }
+    }
+
     override fun onListenerConnected() {
         instance = this
+        goForeground()
         link = UsbLink(this)
         bt = BtLink(this)
         val f = IntentFilter().apply {
@@ -123,6 +156,7 @@ class NowPlayingService : NotificationListenerService() {
 
     override fun onListenerDisconnected() {
         instance = null
+        try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (_: Exception) {}
         main.removeCallbacks(heartbeat)
         sessions?.removeOnActiveSessionsChangedListener(sessionsChanged)
         controller?.unregisterCallback(callback)
