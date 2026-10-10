@@ -21,10 +21,11 @@ music device:
    Car    <------------------------------>  Pi 4  <------------------------------>  your phone
                                              ^
                                              |  music in: one of
-                                             |   - Wired: XIAO RP2040 (USB sound card for the
-                                             |     Android device) -> I2S + serial to the Pi
-                                             |   - Bluetooth: the Android device pairs with the Pi
-                                             |   - USB-C: the Pi itself is a USB sound card
+                                             |   - USB-C (recommended): the Pi itself is a USB
+                                             |     sound card, one cable from the Android device
+                                             |   - Wired (backup): XIAO RP2040 (USB sound card for
+                                             |     the Android device) -> I2S + serial to the Pi
+                                             |   - Bluetooth (last resort): the device pairs with the Pi
                                        Android music device
                                        (+ "AuxLink" app)
 ```
@@ -39,7 +40,7 @@ as three separate kinds of release:
 | **AuxLink Pi image** | `auxlink-pi-X.img.xz` | The whole Pi: Raspberry Pi OS Lite with AuxLink installed. One file, flashed with Raspberry Pi Imager. |
 | | `auxlink-pi-update-X.zip` | Updates a running Pi from its setup page. |
 | **AuxLink app** | `auxlink-v1.0.N.apk` | The Android app (now playing, album art, Fix sound and Setup buttons). Install with Obtainium. |
-| **AuxLink XIAO firmware** | `auxlink-xiao-X.uf2` | Firmware for the Seeed XIAO RP2040 (wired source only). |
+| **AuxLink XIAO firmware** | `auxlink-xiao-X.uf2` | Firmware for the Seeed XIAO RP2040 (wired backup source only). |
 
 ### Source
 
@@ -58,12 +59,18 @@ as three separate kinds of release:
 |---|---|
 | **Raspberry Pi 4** (2 GB or more) | Built and tested on a Pi 4. |
 | **microSD card**, 16 GB or more | A good brand (Samsung/SanDisk). |
-| **Power for the Pi in the car** | 5 V / 3 A. A good USB-C car charger or a 12 V to 5 V 3 A converter. Weak supplies cause Bluetooth drop-outs. For the USB-C music source, power the Pi through its GPIO pins or a splitter for reliable use (see 5.3). |
+| **Power for the Pi in the car** | 5 V / 3 A. A good USB-C car charger or a 12 V to 5 V 3 A converter. Weak supplies cause Bluetooth drop-outs. For the USB-C music source, power the Pi through its GPIO pins or a splitter for reliable use (see 5.1). |
 | **2 × USB Bluetooth dongles** (recommended) | **TP-Link UB500** (Realtek RTL8761BU) is what this was built and tested on. Two identical ones are fine. One is for the car, one for your phone. See [Bluetooth dongles](#bluetooth-dongles). |
 | **An Android music device** | Android 8.0 or newer. For the wired source it needs **USB host (OTG)**, which any head unit with a USB port has. |
 | **A car with Bluetooth** | Any car with Bluetooth hands-free calling and Bluetooth music. Track info and the car's buttons need AVRCP, which almost every car has. Album art needs a car that shows cover art for phones (AVRCP 1.6). Built and tested on a Tesla; see [Other cars](#other-cars). |
 
-### Needed for the wired music source (recommended)
+### Needed for the USB-C music source (recommended)
+| Item | Notes |
+|---|---|
+| **USB-C data cable** | From the Android device's USB port to the **Pi's USB-C port**. Nothing else to buy or wire. |
+| **Separate power for the Pi** (strongly advised) | 5 V into the GPIO pins, or a USB-C power/data splitter (section 5.1). The music device alone can't reliably power the Pi. |
+
+### Needed for the wired music source (backup)
 | Item | Notes |
 |---|---|
 | **Seeed Studio XIAO RP2040** | The small board that the Android device sees as a USB sound card. |
@@ -163,7 +170,7 @@ sudo reboot
 
 ---
 
-## 3. Wire the XIAO RP2040 (wired source only)
+## 3. Wire the XIAO RP2040 (wired backup source only; skip for USB-C)
 
 ### 3.1 Flash the firmware
 1. Download the latest **`auxlink-xiao-X.uf2`** from the
@@ -304,7 +311,7 @@ yet it opens on **Devices**; a dot marks a tab that needs attention.
    phone's Bluetooth settings, add **AuxLink-phone** and confirm the code.
    Allow **contacts and call history** access when the phone asks. That is
    what fills the car's contacts and recent calls.
-6. **Music source** (Devices tab): choose how music gets into the Pi (see section 5), then
+6. **Music source** (Devices tab): choose how music gets into the Pi (see section 5; USB-C is recommended), then
    tap **Save music source**.
    - **Bluetooth:** also tap **Pair a music source** and pair the device with
      **AuxLink-music**.
@@ -338,7 +345,40 @@ yet it opens on **Devices**; a dot marks a tab that needs attention.
 Pick one on the setup page's **Devices** tab (**Music source**). Calls and the car
 connection are not affected when you switch.
 
-### 5.1 Wired: XIAO RP2040 (I2S) (recommended)
+### 5.1 USB-C (Pi as a USB sound card) (recommended)
+The Android device plugs straight into the **Pi's USB-C port**, and the Pi
+shows up as a USB sound card (plus a data link and media keys).
+- **Tested and working well in the car:** one cable, no XIAO and no wiring,
+  with clean audio, track info, album art and the car's buttons. This is the
+  recommended source.
+- **Power warning: it may not work reliably powered by the music device.**
+  Power the Pi externally if you can: 5 V into GPIO **pin 2 or 4**
+  plus **GND (pin 6)**, from a solid 5 V / 3 A supply, or through a **USB-C
+  power/data splitter**. Its USB-C port is now a data port. Powered by the
+  music device alone it may run, but expect drop-outs or restarts (a USB
+  host gives 0.5-1.5 A; the Pi needs up to 3 A).
+- **Keep the music device's 5 V off the Pi:** the Pi's USB-C 5 V and its
+  GPIO 5 V are the same wire, and the device (as USB host) puts 5 V on the
+  cable. Use a splitter whose device side is data-only, or a USB
+  "power blocker" (data-only) adapter between the device and the Pi.
+- After saving, **reboot once**; the page says when this is needed. Saving
+  adds `dtoverlay=dwc2,dr_mode=peripheral` to `/boot/firmware/config.txt`
+  (and the Pi adds it at boot if it's ever missing, then asks for one more
+  reboot). Pi updates leave the USB-C connection up, so the music device
+  stays connected.
+- **Track info and album art:** from the AuxLink app (v1.0.5 or
+  newer), over the same cable.
+- **Car buttons:** reach the device as USB media keys.
+- **Voice search:** the Pi's USB sound card has a mic too, carrying the
+  **car's cabin mic**, the same as the XIAO's.
+- **App link after a reboot:** as with the XIAO, if the app hasn't got its
+  USB link 15 s after the device connects, the Pi briefly re-plugs its USB-C
+  side so Android hands it over (up to three tries). Android asks once for
+  this device too: tick **Always**.
+
+### 5.2 Wired: XIAO RP2040 (I2S) (backup)
+Proven and reliable, and a good fallback if USB-C doesn't suit your setup
+(for example, you can't power the Pi separately).
 - **Uses:** the XIAO wired as in section 3.
 - **Sound:** the Android device plays into the XIAO, which passes it to the
   Pi over I2S, and the Pi sends it to the car.
@@ -349,7 +389,9 @@ connection are not affected when you switch.
   the car shows a call while it listens, and its hang-up button ends it (see
   [Other cars](#other-cars)).
 
-### 5.2 Bluetooth (phone or player)
+### 5.3 Bluetooth (phone or player) (last resort)
+Works with no cables, but it is the least reliable: it shares the Pi's
+Bluetooth radios with the car and phone links, so expect occasional skips.
 No XIAO and no wiring.
 1. Choose **Bluetooth**, then pick the **adapter** for it. It can't be the
    car's adapter; it can share the phone's, or use the built-in one.
@@ -388,35 +430,6 @@ No XIAO and no wiring.
     sends audio to USB ahead of Bluetooth;
   - check that **Media audio** is on for AuxLink-music in the device's
     Bluetooth settings.
-
-### 5.3 USB-C (Pi as a USB sound card)
-The Android device plugs straight into the **Pi's USB-C port**, and the Pi
-shows up as a USB sound card (plus a data link and media keys).
-- **Not yet tested on real hardware;** the wired XIAO is the proven source.
-- **Power warning: it may not work reliably powered by the music device.**
-  Power the Pi externally if you can: 5 V into GPIO **pin 2 or 4**
-  plus **GND (pin 6)**, from a solid 5 V / 3 A supply, or through a **USB-C
-  power/data splitter**. Its USB-C port is now a data port. Powered by the
-  music device alone it may run, but expect drop-outs or restarts (a USB
-  host gives 0.5-1.5 A; the Pi needs up to 3 A).
-- **Keep the music device's 5 V off the Pi:** the Pi's USB-C 5 V and its
-  GPIO 5 V are the same wire, and the device (as USB host) puts 5 V on the
-  cable. Use a splitter whose device side is data-only, or a USB
-  "power blocker" (data-only) adapter between the device and the Pi.
-- After saving, **reboot once**; the page says when this is needed. Saving
-  adds `dtoverlay=dwc2,dr_mode=peripheral` to `/boot/firmware/config.txt`
-  (and the Pi adds it at boot if it's ever missing, then asks for one more
-  reboot). Pi updates leave the USB-C connection up, so the music device
-  stays connected.
-- **Track info and album art:** from the AuxLink app (v1.0.5 or
-  newer), over the same cable.
-- **Car buttons:** reach the device as USB media keys.
-- **Voice search:** the Pi's USB sound card has a mic too, carrying the
-  **car's cabin mic**, the same as the XIAO's.
-- **App link after a reboot:** as with the XIAO, if the app hasn't got its
-  USB link 15 s after the device connects, the Pi briefly re-plugs its USB-C
-  side so Android hands it over (up to three tries). Android asks once for
-  this device too: tick **Always**.
 
 ---
 
@@ -534,7 +547,7 @@ notifications; each kind can be turned off in Android's settings for the app.
   sound card. Almost all Android 8+ devices can.
 - The **Google app / Assistant** (or the head unit's own voice search) uses
   the USB mic automatically when the XIAO or the Pi's USB-C is plugged in. For
-  the Bluetooth source it needs a Bluetooth-headset-aware voice app (see 5.2).
+  the Bluetooth source it needs a Bluetooth-headset-aware voice app (see 5.3).
 
 ---
 

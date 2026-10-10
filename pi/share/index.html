@@ -56,9 +56,9 @@ section[data-tab].off{display:none}
   <section class="card" data-tab="devices"><h2>Music source</h2>
     <div class="k" style="font-size:13px">What plays into the car. Calls and the car connection are not affected by switching.</div>
     <label class="f"><span>Source</span><select id="selSource" onchange="sourceForm()">
-      <option value="wired">Wired: XIAO RP2040 (I&sup2;S)</option>
-      <option value="bluetooth">Bluetooth (phone or player)</option>
-      <option value="usbc">USB-C (Pi as a USB sound card)</option>
+      <option value="usbc">USB-C: Pi as a USB sound card (recommended)</option>
+      <option value="wired">Wired: XIAO RP2040 (I&sup2;S) (backup)</option>
+      <option value="bluetooth">Bluetooth: phone or player (last resort)</option>
     </select></label>
     <div id="srcBt" class="hide">
       <label class="f"><span>Bluetooth adapter for the music source</span><select id="selSrcAd"></select></label>
