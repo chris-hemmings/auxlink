@@ -99,6 +99,9 @@ class Messages:
         self.session = None
         self.messages = self.load()
         self.fetching = set()
+        # Listing the inbox creates an object per message too: those are
+        # old messages, not new ones (no "New text" for them).
+        self.quiet_until = 0.0
         os.makedirs(CACHE, exist_ok=True)
         bus.add_signal_receiver(self.added, signal_name="InterfacesAdded",
                                 dbus_interface="org.freedesktop.DBus.ObjectManager",
@@ -170,6 +173,7 @@ class Messages:
             self.session = None
             return
         log(f"Connected to the phone's messages ({self.session})")
+        self.quiet_until = time.monotonic() + 30
         try:
             mas = dbus.Interface(self.bus.get_object(OBEX, self.session), "org.bluez.obex.MessageAccess1")
             mas.SetFolder("/telecom/msg")
@@ -193,6 +197,8 @@ class Messages:
             log(f"Inbox: {len(listing)} recent messages ({new} new to the Pi)")
         except dbus.DBusException as e:
             log(f"Could not list the inbox: {e.get_dbus_message()}")
+        # Objects from the listing arrive as signals after this returns.
+        self.quiet_until = time.monotonic() + 3
 
     # ---------- new messages ----------
     def added(self, path, ifaces):
@@ -208,6 +214,8 @@ class Messages:
         # come with a subject. Fetch the ones that are new and incoming.
         if self.known(handle) or handle in self.fetching:
             return
+        if time.monotonic() < self.quiet_until:
+            return                  # from the inbox listing: not a new text
         if folder and not folder.rstrip("/").endswith("inbox"):
             return
         GLib.timeout_add(500, self.fetch, path, handle)
