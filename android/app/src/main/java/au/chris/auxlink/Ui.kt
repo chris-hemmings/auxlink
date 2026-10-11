@@ -27,6 +27,9 @@ class Ui(val ctx: Context) {
 
     fun px(v: Int) = (v * dp).toInt()
 
+    /** A tablet-sized screen: lay screens out side by side instead of stacked. */
+    val wide = ctx.resources.configuration.screenWidthDp >= 840
+
     fun round(color: Int, radiusDp: Float) = GradientDrawable().apply {
         setColor(color); cornerRadius = radiusDp * dp
     }

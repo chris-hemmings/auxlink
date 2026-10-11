@@ -113,13 +113,26 @@ class MainActivity : Activity() {
             setPadding(px(20), px(20), px(20), px(28))
         }
         col.addView(header())
-        col.addView(connectionCard())
-        col.addView(piCard())
-        col.addView(btCard())
-        col.addView(flowCard())
-        col.addView(setupCard())
-        col.addView(toolsCard())
-        col.addView(detailsCard())
+        if (resources.configuration.screenWidthDp >= 840) {
+            // Tablet: two columns of cards.
+            val left = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            val right = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            left.addView(connectionCard()); left.addView(piCard()); left.addView(btCard()); left.addView(setupCard())
+            right.addView(flowCard()); right.addView(toolsCard()); right.addView(detailsCard())
+            col.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                addView(left, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = px(8) })
+                addView(right, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = px(8) })
+            })
+        } else {
+            col.addView(connectionCard())
+            col.addView(piCard())
+            col.addView(btCard())
+            col.addView(flowCard())
+            col.addView(setupCard())
+            col.addView(toolsCard())
+            col.addView(detailsCard())
+        }
         col.addView(TextView(this).apply {
             text = "Phone Link v" + appVersion()
             setTextColor(text2); textSize = 12f; gravity = Gravity.CENTER

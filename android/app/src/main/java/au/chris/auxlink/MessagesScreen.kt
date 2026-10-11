@@ -41,6 +41,7 @@ class MessagesScreen(private val ctx: Context, private val ui: Ui) {
     private var convos: List<Convo> = emptyList()
     private var openNumber = ""      // the conversation shown ("" = the list)
     private var openName = ""
+    private var chatEmpty: View? = null     // tablet: shown on the right until a conversation is picked
     private val onData = { refresh() }
 
     init {
@@ -145,7 +146,25 @@ class MessagesScreen(private val ctx: Context, private val ui: Ui) {
                 })
             }, ui.matchWrap())
         }
-        view = FrameLayout(ctx).apply { addView(listPane); addView(chatPane) }
+        if (ui.wide) {
+            // Tablet: conversations on the left, the open one on the right.
+            chatEmpty = ui.empty("Pick a conversation", "Or tap New message to start one.")
+            val right = FrameLayout(ctx).apply {
+                addView(chatPane); addView(chatEmpty)
+                background = ui.round(ui.cardBg, 0f)
+            }
+            view = FrameLayout(ctx).apply {
+                addView(LinearLayout(ctx).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    addView(listPane, LinearLayout.LayoutParams(ui.px(400), ViewGroup.LayoutParams.MATCH_PARENT))
+                    addView(View(ctx).apply { setBackgroundColor(ui.line) },
+                        LinearLayout.LayoutParams(ui.px(1), ViewGroup.LayoutParams.MATCH_PARENT))
+                    addView(right, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+                })
+            }
+        } else {
+            view = FrameLayout(ctx).apply { addView(listPane); addView(chatPane) }
+        }
         ui.gone(chatPane, true)
         PhoneData.listen(onData)
         refresh()
@@ -167,13 +186,16 @@ class MessagesScreen(private val ctx: Context, private val ui: Ui) {
     fun open(number: String, name: String) {
         openNumber = number
         openName = name.ifEmpty { PhoneData.nameFor(number) }
-        ui.gone(listPane, true); ui.gone(chatPane, false)
+        if (!ui.wide) ui.gone(listPane, true)
+        ui.gone(chatPane, false)
+        chatEmpty?.let { ui.gone(it, true) }
         refresh()
     }
 
     private fun close() {
         openNumber = ""
         ui.gone(chatPane, true); ui.gone(listPane, false)
+        chatEmpty?.let { ui.gone(it, false) }
         refresh()
     }
 

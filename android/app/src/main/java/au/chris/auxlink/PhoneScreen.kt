@@ -106,17 +106,34 @@ class PhoneScreen(private val ctx: Context, private val ui: Ui,
         keypadPane = keypad()
 
         val content = FrameLayout(ctx).apply {
-            addView(favPane); addView(contactsPane); addView(recentsPane); addView(keypadPane)
+            addView(favPane); addView(contactsPane); addView(recentsPane)
+            if (!ui.wide) addView(keypadPane)
         }
-        val (bar, select) = ui.segments(listOf("Favourites", "Contacts", "Recents", "Keypad")) { show(it) }
+        val tabs = if (ui.wide) listOf("Favourites", "Contacts", "Recents")
+                   else listOf("Favourites", "Contacts", "Recents", "Keypad")
+        val (bar, select) = ui.segments(tabs) { show(it) }
         select(0)
-        view = LinearLayout(ctx).apply {
+        val lists = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(ui.px(16), ui.px(16), ui.px(16), 0)
             addView(ui.text("Phone", 26f, ui.text1, true), ui.matchWrap(bottom = 12))
             addView(bar, ui.matchWrap(bottom = 12))
             addView(content, ui.fill())
         }
+        view = if (ui.wide) {
+            // Tablet: the lists on the left, the keypad always on the right.
+            LinearLayout(ctx).apply {
+                orientation = LinearLayout.HORIZONTAL
+                addView(lists, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+                addView(View(ctx).apply { setBackgroundColor(ui.line) },
+                    LinearLayout.LayoutParams(ui.px(1), ViewGroup.LayoutParams.MATCH_PARENT))
+                addView(FrameLayout(ctx).apply {
+                    setPadding(ui.px(16), ui.px(16), ui.px(16), ui.px(16))
+                    addView(keypadPane, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT, android.view.Gravity.CENTER))
+                }, LinearLayout.LayoutParams(ui.px(420), ViewGroup.LayoutParams.MATCH_PARENT))
+            }
+        } else lists
         show(0)
         PhoneData.listen(onData)
         refresh()
@@ -131,7 +148,8 @@ class PhoneScreen(private val ctx: Context, private val ui: Ui,
     fun close() = PhoneData.unlisten(onData)
 
     private fun show(i: Int) {
-        ui.gone(favPane, i != 0); ui.gone(contactsPane, i != 1); ui.gone(recentsPane, i != 2); ui.gone(keypadPane, i != 3)
+        ui.gone(favPane, i != 0); ui.gone(contactsPane, i != 1); ui.gone(recentsPane, i != 2)
+        if (!ui.wide) ui.gone(keypadPane, i != 3)
     }
 
     private fun refresh() {
