@@ -86,9 +86,9 @@ object PhoneData {
                 messagesEnabled = last.optBoolean("enabled", true)
                 messagesLoaded = true
                 // The Pi now has our sent texts on record: stop showing local copies.
-                val known = messages.filter { !it.incoming }.map { it.number + "\u0000" + it.text }.toSet()
+                val known = messages.filter { !it.incoming }.map { key(it.number) + "\u0000" + it.text.trim() }.toSet()
                 sending.entries.removeAll { (_, m) ->
-                    m.status == "sent" && (m.number + "\u0000" + m.text) in known
+                    m.status == "sent" && (key(m.number) + "\u0000" + m.text.trim()) in known
                 }
             }
         }

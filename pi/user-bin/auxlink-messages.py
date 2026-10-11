@@ -43,7 +43,12 @@ STORE = os.path.expanduser("~/.local/share/auxlink/messages.json")
 CACHE = os.path.expanduser("~/.cache/auxlink")
 EVENTS = "/run/auxlink/events.log"
 OUTBOX = "/run/auxlink/outbox"      # replies from the car (auxlink-map) to send
-KEEP = 50
+KEEP = 200            # received texts kept (the car and Phone Link read these)
+# Texts you sent (the phone's Sent folder), for Phone Link's conversations
+# only: kept apart so the car's message list stays received texts.
+SENT_STORE = os.path.expanduser("~/.local/share/auxlink/messages-sent.json")
+KEEP_SENT = 200
+LIST_COUNT = 50       # texts asked of the phone from each folder when it connects
 
 
 def log(msg):
@@ -204,6 +209,52 @@ class Messages:
     def known(self, handle):
         return any(m.get("handle") == handle for m in self.messages)
 
+    def list_folder(self, mas, folder, count):
+        """The latest messages in a phone folder, as listed (no fetching)."""
+        listing = mas.ListMessages(folder, dbus.Dictionary(
+            {"MaxCount": dbus.UInt16(count), "SubjectLength": dbus.Byte(255)}, signature="sv"))
+        items = listing.items() if hasattr(listing, "items") else listing
+        out = []
+        for path, props in items:
+            out.append((str(path).rsplit("message", 1)[-1], props))
+        return out
+
+    def sync_sent(self, mas=None):
+        """Your sent texts (from the phone, the car or Phone Link) for
+        Phone Link's conversations. Replaces the stored list each time."""
+        if not self.session:
+            return False
+        try:
+            if mas is None:
+                mas = dbus.Interface(self.bus.get_object(OBEX, self.session), "org.bluez.obex.MessageAccess1")
+                mas.SetFolder("/telecom/msg")
+            self.quiet_until = time.monotonic() + 30
+            try:
+                old = {m["handle"]: m for m in json.load(open(SENT_STORE))}
+            except (OSError, ValueError, KeyError, TypeError):
+                old = {}
+            for handle, props in self.list_folder(mas, "sent", LIST_COUNT):
+                old[handle] = {
+                    "handle": handle, "folder": "sent",
+                    "time": str(props.get("Timestamp", "")),
+                    "recipient": str(props.get("Recipient", "")),
+                    "number": str(props.get("RecipientAddress", "")),
+                    "text": str(props.get("Subject", "")),
+                }
+            sent = sorted(old.values(), key=lambda m: m.get("time", ""), reverse=True)[:KEEP_SENT]
+            self.sent_handles = {m["handle"] for m in sent}
+            os.makedirs(os.path.dirname(SENT_STORE), exist_ok=True)
+            with open(SENT_STORE + ".tmp", "w") as f:
+                json.dump(sent, f, ensure_ascii=False, indent=1)
+            os.replace(SENT_STORE + ".tmp", SENT_STORE)
+        except dbus.DBusException as e:
+            log(f"Could not list sent texts: {e.get_dbus_message()}")
+        finally:
+            self.quiet_until = time.monotonic() + 3
+        self.sent_pending = False
+        self.sent_synced = time.monotonic()
+        return False
+
     # ---------- session ----------
     def phone_connected(self):
         try:
@@ -266,12 +317,9 @@ class Messages:
         try:
             mas = dbus.Interface(self.bus.get_object(OBEX, self.session), "org.bluez.obex.MessageAccess1")
             mas.SetFolder("/telecom/msg")
-            listing = mas.ListMessages("inbox", dbus.Dictionary(
-                {"MaxCount": dbus.UInt16(20), "SubjectLength": dbus.Byte(255)}, signature="sv"))
+            listing = self.list_folder(mas, "inbox", LIST_COUNT)
             new = 0
-            items = listing.items() if hasattr(listing, "items") else listing
-            for path, props in items:
-                handle = str(path).rsplit("message", 1)[-1]
+            for handle, props in listing:
                 if self.known(handle):
                     continue
                 self.messages.append({
@@ -285,6 +333,7 @@ class Messages:
                 new += 1
             self.save()
             log(f"Inbox: {len(listing)} recent messages ({new} new to the Pi)")
+            self.sync_sent(mas)
         except dbus.DBusException as e:
             log(f"Could not list the inbox: {e.get_dbus_message()}")
         # Objects from the listing arrive as signals after this returns.
@@ -307,6 +356,17 @@ class Messages:
         if time.monotonic() < self.quiet_until:
             return                  # from the inbox listing: not a new text
         log(f"Message event: {path.rsplit('/', 1)[-1]} in '{folder}'")
+        if folder.lower().rstrip("/").endswith("sent"):
+            # You sent a text (phone, car or Phone Link): refresh the sent list
+            # - only for one it doesn't have yet, and at most every 30 s (each
+            # listing makes objects of its own, which must not loop).
+            if handle in getattr(self, "sent_handles", set()):
+                return
+            if not getattr(self, "sent_pending", False):
+                self.sent_pending = True
+                wait = 30 - (time.monotonic() - getattr(self, "sent_synced", 0))
+                GLib.timeout_add(int(max(2, wait) * 1000), self.sync_sent)
+            return
         if folder and not folder.lower().rstrip("/").endswith("inbox"):
             return
         GLib.timeout_add(500, self.fetch, path, handle)

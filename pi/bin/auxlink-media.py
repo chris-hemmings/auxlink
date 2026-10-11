@@ -1627,10 +1627,24 @@ class PhoneLink:
                 return time.mktime(time.strptime(m.get("time", "")[:15], "%Y%m%dT%H%M%S"))
             except ValueError:
                 return 0
+        try:      # your sent texts from the phone's Sent folder (auxlink-messages)
+            phone_sent = json.load(open(self.store.replace("messages.json", "messages-sent.json")))
+        except (OSError, ValueError):
+            phone_sent = []
+
+        def key(num, text):
+            d = re.sub(r"\D", "", num or "")
+            return (d[-9:], (text or "").strip())
         items = [{"in": 1, "who": m.get("sender") or "", "num": m.get("number") or "",
                   "text": m.get("text") or "", "at": m.get("time") or "", "ts": ts(m)} for m in inbox]
+        items += [{"in": 0, "num": m.get("number") or "", "text": m.get("text") or "",
+                   "at": m.get("time") or "", "ts": ts(m)} for m in phone_sent]
+        on_phone = {key(m.get("number"), m.get("text")) for m in phone_sent}
+        # Sent from Phone Link: shown until the phone's Sent folder has them
+        # (and always when they failed, with why).
         items += [{"in": 0, "num": m.get("to") or "", "text": m.get("text") or "",
-                   "at": m.get("time") or "", "ts": ts(m), "st": m.get("status") or ""} for m in sent]
+                   "at": m.get("time") or "", "ts": ts(m), "st": m.get("status") or ""} for m in sent
+                  if m.get("status") != "sent" or key(m.get("to"), m.get("text")) not in on_phone]
         self.send_list("messages", items, {"enabled": CONF.get("MESSAGES", "0") == "1"})
 
     def send_list(self, kind, items, extra=None):
