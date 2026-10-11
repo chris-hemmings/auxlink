@@ -681,16 +681,20 @@ def main():
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
     bus = dbus.SystemBus()
     Profile(bus, PROFILE_PATH)
+
+    def register():
+        dbus.Interface(bus.get_object("org.bluez", "/org/bluez"), "org.bluez.ProfileManager1").RegisterProfile(
+            PROFILE_PATH, MAS_UUID16, dbus.Dictionary({
+                "Name": "AuxLink messages",
+                "Role": "server",
+                "RequireAuthentication": dbus.Boolean(True),
+                "RequireAuthorization": dbus.Boolean(False),
+            }, signature="sv"))
+
     # bluetoothd may still be starting at boot: keep trying for a while.
     for attempt in range(60):
         try:
-            dbus.Interface(bus.get_object("org.bluez", "/org/bluez"), "org.bluez.ProfileManager1").RegisterProfile(
-                PROFILE_PATH, MAS_UUID16, dbus.Dictionary({
-                    "Name": "AuxLink messages",
-                    "Role": "server",
-                    "RequireAuthentication": dbus.Boolean(True),
-                    "RequireAuthorization": dbus.Boolean(False),
-                }, signature="sv"))
+            register()
             break
         except dbus.DBusException as e:
             if attempt == 59:
@@ -699,6 +703,28 @@ def main():
             time.sleep(0.5)
     ready()
     log("Messages service for the car registered")
+
+    # When bluetoothd restarts (an update rebuilding it, a crash) every
+    # registration goes with it, and a car that then connects finds no
+    # messages service and switches "Sync Messages" off. Register again
+    # the moment it is back.
+    def bluez_owner(name, old, new):
+        if name != "org.bluez" or not new:
+            return
+        log("Bluetooth restarted: registering the messages service again")
+        for _ in range(20):
+            try:
+                register()
+                log("Messages service for the car registered")
+                return
+            except dbus.DBusException as e:
+                if "AlreadyExists" in (e.get_dbus_name() or ""):
+                    return
+                time.sleep(0.25)
+        log("Could not register the messages service again; restarting")
+        os._exit(1)      # systemd starts us afresh
+    bus.add_signal_receiver(bluez_owner, signal_name="NameOwnerChanged",
+                            dbus_interface="org.freedesktop.DBus", arg0="org.bluez")
     try:   # tells us whether the boot race was lost
         om = dbus.Interface(bus.get_object("org.bluez", "/"), "org.freedesktop.DBus.ObjectManager")
         for path, ifaces in om.GetManagedObjects().items():
