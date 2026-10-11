@@ -619,7 +619,7 @@ class Player(dbus.service.Object):
         Playing well after it (and nothing asked to play since), use the
         play/pause toggle once."""
         seen_at, seen = self.app_seen
-        if seq == self.key_seq and seen == "Playing" and seen_at > pressed + 1.5:
+        if seq == self.key_seq and seen == "Playing" and seen_at > pressed + 1.0:
             log("The music device ignored Pause; sending play/pause instead")
             smo_key(b"P", "pause (toggle)")
         return False
@@ -680,9 +680,14 @@ class Player(dbus.service.Object):
         # car asked. The XIAO only has the toggle.
         self.key_seq += 1
         if MUSIC_SOURCE == "usbc":
-            smo_key(b">" if want_playing else b"|", why)
+            if not want_playing and self.app_seen[1] == "Playing":
+                # The SMO's player ignores a plain Pause (it only takes the
+                # toggle), and the app says it's playing: the toggle pauses.
+                smo_key(b"P", why)
+            else:
+                smo_key(b">" if want_playing else b"|", why)
             if not want_playing:
-                GLib.timeout_add(6000, self.check_paused, time.monotonic(), self.key_seq)
+                GLib.timeout_add(3000, self.check_paused, time.monotonic(), self.key_seq)
         else:
             smo_key(b"P", why)
         if not want_playing:
