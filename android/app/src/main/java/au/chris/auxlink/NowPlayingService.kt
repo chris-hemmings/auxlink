@@ -45,6 +45,8 @@ class NowPlayingService : NotificationListenerService() {
     companion object {
         private const val TAG = "SmoNowPlaying"
         @Volatile var lastSent: String = "(nothing yet)"
+        /** The latest track info, sent or not (for the app screen). */
+        @Volatile var nowPlaying: String = ""
         @Volatile var linkOpen: Boolean = false
         @Volatile var linkKind: String = ""
         const val ACTION_ANSWER = "au.chris.auxlink.ANSWER"
@@ -384,6 +386,7 @@ class NowPlayingService : NotificationListenerService() {
             put("ctl", 1)   // the Pi may send play/pause/next as {"media": ...}
         }
         val line = json.toString()
+        nowPlaying = line
         val art = artFor(md)
         // Skip exact repeats, but always let the heartbeat through (it clears lastLine).
         if (line != lastLine) {

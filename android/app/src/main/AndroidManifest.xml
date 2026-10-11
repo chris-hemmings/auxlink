@@ -26,11 +26,13 @@
 
     <application
         android:label="AuxLink"
-        android:icon="@android:drawable/ic_media_play"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
         android:allowBackup="false">
 
         <activity
             android:name=".MainActivity"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
             android:exported="true"
             android:launchMode="singleTask">
             <intent-filter>
