@@ -185,7 +185,7 @@ class NowPlayingService : NotificationListenerService() {
                     j.has("media") -> media(j.optString("media"))
                     j.has("call") -> showCall(j.optString("call"), j.optString("name"), j.optString("number"))
                     j.has("text") -> j.optJSONObject("text")?.let {
-                        showText(it.optString("from"), it.optString("body"))
+                        showText(it.optString("from"), it.optString("body"), it.optString("number"))
                     }
                 }
             } catch (e: Exception) {
@@ -273,10 +273,23 @@ class NowPlayingService : NotificationListenerService() {
 
     private val textPopup by lazy { TextPopup(this) }
 
-    private fun showText(from: String, body: String) {
-        // Floating window when allowed; a notification only if not.
-        if (textPopup.show(from.ifEmpty { "Text message" }, body)) return
+    /** Opens this conversation in the app's Messages tab. */
+    private fun chatIntent(number: String, name: String) =
+        Intent(this, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            .putExtra(MainActivity.EXTRA_CHAT_NUMBER, number)
+            .putExtra(MainActivity.EXTRA_CHAT_NAME, name)
+
+    private fun showText(from: String, body: String, number: String) {
+        // Floating window when allowed; a notification only if not. Tapping
+        // either opens the conversation.
+        if (textPopup.show(from.ifEmpty { "Text message" }, body) {
+                try { startActivity(chatIntent(number, from)) } catch (e: Exception) {}
+            }) return
+        val tap = PendingIntent.getActivity(this, textId, chatIntent(number, from),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val n = Notification.Builder(this, "texts_popup")
+            .setContentIntent(tap)
             .setSmallIcon(android.R.drawable.sym_action_email)
             .setContentTitle(from.ifEmpty { "Text message" })
             .setContentText(body)

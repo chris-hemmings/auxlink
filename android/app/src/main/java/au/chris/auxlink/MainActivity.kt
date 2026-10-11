@@ -35,6 +35,11 @@ import java.net.Socket
  * a dark style that suits a car screen.
  */
 class MainActivity : Activity() {
+    companion object {
+        /** Open a conversation on the Messages tab (from a text pop-up or notification). */
+        const val EXTRA_CHAT_NUMBER = "chat_number"
+        const val EXTRA_CHAT_NAME = "chat_name"
+    }
     private val main = Handler(Looper.getMainLooper())
     private val refresh = object : Runnable {
         override fun run() { update(); main.postDelayed(this, 1000) }
@@ -143,6 +148,7 @@ class MainActivity : Activity() {
         // Back where you left off; the status screen until setup is done.
         val saved = try { getPreferences(MODE_PRIVATE).getInt("tab", 2) } catch (e: Exception) { 2 }
         showTab(if (hasAccess()) saved else 2)
+        openChatFrom(intent)
 
         // First run: ask for what Android lets an app ask for directly.
         val want = mutableListOf<String>()
@@ -152,6 +158,27 @@ class MainActivity : Activity() {
         if (Build.VERSION.SDK_INT >= 33 && !notificationsAllowed())
             want += Manifest.permission.POST_NOTIFICATIONS
         if (want.isNotEmpty()) requestPermissions(want.toTypedArray(), 1)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        openChatFrom(intent)
+    }
+
+    /** A tapped text: its conversation, found by number (or by name). */
+    private fun openChatFrom(i: Intent?) {
+        if (i == null || !i.hasExtra(EXTRA_CHAT_NUMBER)) return
+        var number = i.getStringExtra(EXTRA_CHAT_NUMBER).orEmpty()
+        val name = i.getStringExtra(EXTRA_CHAT_NAME).orEmpty()
+        i.removeExtra(EXTRA_CHAT_NUMBER)
+        if (number.isEmpty() && name.isNotEmpty()) {
+            number = PhoneData.messages.lastOrNull { it.who == name }?.number
+                ?: PhoneData.contacts.firstOrNull { it.name == name }?.numbers?.firstOrNull()?.second ?: ""
+        }
+        if (number.isEmpty()) { showTab(1); return }
+        showTab(1)
+        msgs.open(number, name)
     }
 
     private fun showTab(i: Int) {

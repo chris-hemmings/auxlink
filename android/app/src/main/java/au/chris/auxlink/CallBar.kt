@@ -158,7 +158,7 @@ class CallBar(private val ctx: Context, private val onCmd: (String) -> Unit) {
     }
 }
 
-/** A new text, floating over other apps for 10 seconds (tap to close). */
+/** A new text, floating over other apps for 10 seconds (tap to open it). */
 class TextPopup(private val ctx: Context) {
     private val wm = ctx.getSystemService(WindowManager::class.java)
     private val dp = ctx.resources.displayMetrics.density
@@ -167,7 +167,7 @@ class TextPopup(private val ctx: Context) {
     private val close = Runnable { hide() }
 
     /** False if it couldn't be shown (then use a notification). */
-    fun show(from: String, body: String): Boolean {
+    fun show(from: String, body: String, onTap: () -> Unit = {}): Boolean {
         if (!Settings.canDrawOverlays(ctx)) return false
         return try {
             hide()
@@ -184,7 +184,7 @@ class TextPopup(private val ctx: Context) {
                 addView(TextView(ctx).apply {
                     text = body; setTextColor(Color.WHITE); textSize = 16f; maxLines = 4; alpha = 0.9f
                 })
-                setOnClickListener { hide() }
+                setOnClickListener { hide(); onTap() }
             }
             val p = WindowManager.LayoutParams(
                 (420 * dp).toInt().coerceAtMost(ctx.resources.displayMetrics.widthPixels - (16 * dp).toInt()),
