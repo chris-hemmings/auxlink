@@ -28,6 +28,9 @@ class PhoneScreen(private val ctx: Context, private val ui: Ui,
                   private val openChat: (number: String, name: String) -> Unit) {
     val view: LinearLayout
     private val contactsPane: LinearLayout
+    private val favPane: android.widget.FrameLayout
+    private val favList: ListView
+    private val favEmpty: LinearLayout
     private val recentsPane: FrameLayout
     private val keypadPane: LinearLayout
     private val search: EditText
@@ -67,6 +70,19 @@ class PhoneScreen(private val ctx: Context, private val ui: Ui,
             addView(contactList, ui.fill())
         }
 
+        // --- Favourites (the phone's starred contacts) ---
+        favList = list()
+        favList.adapter = object : BaseAdapter() {
+            override fun getCount() = PhoneData.favourites.size
+            override fun getItem(i: Int) = PhoneData.favourites[i]
+            override fun getItemId(i: Int) = i.toLong()
+            override fun getView(i: Int, convert: View?, parent: ViewGroup?) = contactRow(PhoneData.favourites[i])
+        }
+        favList.setOnItemClickListener { _, _, i, _ -> choose(PhoneData.favourites[i]) }
+        favEmpty = ui.empty("No favourites yet",
+            "Star contacts on your phone: they show here, and in the car, after the next sync.")
+        favPane = android.widget.FrameLayout(ctx).apply { addView(favList); addView(favEmpty) }
+
         // --- Recents ---
         recentList = list()
         recentList.adapter = object : BaseAdapter() {
@@ -90,9 +106,9 @@ class PhoneScreen(private val ctx: Context, private val ui: Ui,
         keypadPane = keypad()
 
         val content = FrameLayout(ctx).apply {
-            addView(contactsPane); addView(recentsPane); addView(keypadPane)
+            addView(favPane); addView(contactsPane); addView(recentsPane); addView(keypadPane)
         }
-        val (bar, select) = ui.segments(listOf("Contacts", "Recents", "Keypad")) { show(it) }
+        val (bar, select) = ui.segments(listOf("Favourites", "Contacts", "Recents", "Keypad")) { show(it) }
         select(0)
         view = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
@@ -115,13 +131,15 @@ class PhoneScreen(private val ctx: Context, private val ui: Ui,
     fun close() = PhoneData.unlisten(onData)
 
     private fun show(i: Int) {
-        ui.gone(contactsPane, i != 0); ui.gone(recentsPane, i != 1); ui.gone(keypadPane, i != 2)
+        ui.gone(favPane, i != 0); ui.gone(contactsPane, i != 1); ui.gone(recentsPane, i != 2); ui.gone(keypadPane, i != 3)
     }
 
     private fun refresh() {
         filter()
         (recentList.adapter as BaseAdapter).notifyDataSetChanged()
         ui.gone(recentEmpty, PhoneData.recents.isNotEmpty())
+        (favList.adapter as BaseAdapter).notifyDataSetChanged()
+        ui.gone(favEmpty, PhoneData.favourites.isNotEmpty())
     }
 
     private fun filter() {

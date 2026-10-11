@@ -1,0 +1,22 @@
+diff --git a/src/profile.c b/src/profile.c
+index ad20436..856d85b 100644
+--- a/src/profile.c
++++ b/src/profile.c
+@@ -462,7 +462,7 @@
+ 			<text value=\"%s\" />				\
+ 		</attribute>						\
+ 		<attribute id=\"0x0314\">				\
+-			<uint8 value=\"0x01\"/>				\
++			<uint8 value=\"0x09\"/>				\
+ 		</attribute>						\
+ 		<attribute id=\"0x0317\">				\
+ 			<uint32 value=\"0x00000003\"/>			\
+@@ -2142,7 +2142,7 @@ static struct default_settings {
+ 		.mode		= BT_IO_MODE_ERTM,
+ 		.authorize	= true,
+ 		.get_record	= get_pse_record,
+-		.version	= 0x0101,
++		.version	= 0x0102,
+ 	}, {
+ 		.uuid		= OBEX_PCE_UUID,
+ 		.name		= "Phone Book Access Client",

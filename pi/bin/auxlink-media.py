@@ -1369,6 +1369,7 @@ class PhoneLink:
         try:
             if info.get("req") == "phone":
                 self.send_list("contacts", self.contacts())
+                self.send_list("favourites", self.contacts("fav.vcf"))
                 self.send_list("recents", self.recents())
             elif info.get("req") == "messages":
                 self.send_messages()
@@ -1511,9 +1512,9 @@ class PhoneLink:
                 return " ".join(p for p in v.split(";")[1::-1] if p).strip()
         return ""
 
-    def contacts(self):
+    def contacts(self, book="pb.vcf"):
         out = []
-        for card in self.vcards(os.path.join(self.book, "pb.vcf")):
+        for card in self.vcards(os.path.join(self.book, book)):
             name = self.card_name(card)
             tels = []
             for k, v in card:

@@ -19,6 +19,7 @@ object PhoneData {
     )
 
     var contacts: List<Contact> = emptyList(); private set
+    var favourites: List<Contact> = emptyList(); private set
     var recents: List<Recent> = emptyList(); private set
     var messages: List<Message> = emptyList(); private set
     var messagesEnabled = true; private set
@@ -37,7 +38,7 @@ object PhoneData {
 
     /** A line from the Pi. Returns true if it was one of ours. */
     fun onLine(j: JSONObject): Boolean {
-        val kind = listOf("contacts", "recents", "messages").firstOrNull { j.has(it) }
+        val kind = listOf("contacts", "favourites", "recents", "messages").firstOrNull { j.has(it) }
         if (kind != null) {
             val part = j.optInt("part", 0)
             val total = j.optInt("parts", 1)
@@ -69,14 +70,8 @@ object PhoneData {
 
     private fun take(kind: String, a: JSONArray, last: JSONObject) {
         when (kind) {
-            "contacts" -> {
-                contacts = (0 until a.length()).mapNotNull { a.optJSONObject(it) }.map { c ->
-                    val t = c.optJSONArray("t") ?: JSONArray()
-                    Contact(c.optString("n"), (0 until t.length()).mapNotNull { t.optJSONArray(it) }
-                        .map { it.optString(0) to it.optString(1) })
-                }
-                contactsLoaded = true
-            }
+            "contacts" -> { contacts = contactList(a); contactsLoaded = true }
+            "favourites" -> favourites = contactList(a)
             "recents" -> recents = (0 until a.length()).mapNotNull { a.optJSONObject(it) }.map {
                 Recent(it.optString("n"), it.optString("num"), it.optString("k"), it.optString("at"))
             }
@@ -94,6 +89,12 @@ object PhoneData {
                 }
             }
         }
+    }
+
+    private fun contactList(a: JSONArray) = (0 until a.length()).mapNotNull { a.optJSONObject(it) }.map { c ->
+        val t = c.optJSONArray("t") ?: JSONArray()
+        Contact(c.optString("n"), (0 until t.length()).mapNotNull { t.optJSONArray(it) }
+            .map { it.optString(0) to it.optString(1) })
     }
 
     /** Last 9 digits: the same number written +61 4.. or 04.. matches. */

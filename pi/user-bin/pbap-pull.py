@@ -10,6 +10,7 @@ car can later be served the same data:
   ~/phonebook/telecom/och.vcf   outgoing calls
   ~/phonebook/telecom/mch.vcf   missed calls
   ~/phonebook/telecom/cch.vcf   combined history
+  ~/phonebook/telecom/fav.vcf   favourite contacts
 
 Each book is also split into one card per file (telecom/pb/0.vcf, 1.vcf, ...)
 because BlueZ's dummy PBAP backend lists folders by reading those files.
@@ -40,7 +41,7 @@ CONF = load_conf()
 PHONE = CONF.get("PHONE", "").upper()
 PHONE_ADAPTER = CONF.get("PHONE_ADAPTER", "").upper()
 OUT = os.path.expanduser("~/phonebook/telecom")
-BOOKS = ["pb", "ich", "och", "mch", "cch"]
+BOOKS = ["pb", "ich", "och", "mch", "cch", "fav"]   # fav: the phone's favourite (starred) contacts
 # Fields kept in the per-card files, and asked of the phone.
 KEEP = ("VERSION", "FN", "N", "TEL", "X-IRMC-CALL-DATETIME")
 # obexd-dummy re-serialises each card into a 1024-byte buffer; stay well
@@ -143,6 +144,9 @@ def main():
         PHONE, dbus.Dictionary({"Target": "PBAP", "Source": PHONE_ADAPTER}, signature="sv"))
     pbap = dbus.Interface(bus.get_object("org.bluez.obex", session), "org.bluez.obex.PhonebookAccess1")
     os.makedirs(OUT, exist_ok=True)
+    # The car may ask for favourites even if this phone shares none: an
+    # empty folder answers "no favourites" instead of an error.
+    os.makedirs(os.path.join(OUT, "fav"), exist_ok=True)
     try:
         for book in BOOKS:
             try:

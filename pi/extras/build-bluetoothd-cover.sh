@@ -2,7 +2,9 @@
 # Build bluetoothd with album-art support for the car (AVRCP 1.6 cover art)
 # and switch the Bluetooth service to it. Same BlueZ version as installed,
 # plus extras/bluez-cover-art.patch (advertise cover art on PSM 0x1025, pass
-# the player's image handle to the car). auxlink-cover serves the images.
+# the player's image handle to the car; auxlink-cover serves the images) and
+# extras/bluez-pbap-favourites.patch (tell the car the phonebook has
+# favourites: PBAP 1.2, repositories local + favourites).
 # Takes ~15-20 min on a Pi 4 and needs internet once.
 #   sudo extras/build-bluetoothd-cover.sh          build + switch to it
 #   sudo extras/build-bluetoothd-cover.sh --undo   back to the stock bluetoothd
@@ -35,6 +37,8 @@ rm -rf bluez-$VER-tb && mkdir bluez-$VER-tb && tar xf bluez-$VER.tar.xz -C bluez
 cd bluez-$VER-tb
 echo "== Applying the cover-art patch"
 patch -p1 < "$HERE/bluez-cover-art.patch"
+echo "== Applying the phonebook-favourites patch"
+patch -p1 < "$HERE/bluez-pbap-favourites.patch"
 
 # Same paths as Debian's build: pairings in /var/lib/bluetooth, config in
 # /etc/bluetooth. Getting these wrong would lose every pairing.
