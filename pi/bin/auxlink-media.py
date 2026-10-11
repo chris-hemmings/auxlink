@@ -459,6 +459,8 @@ class Player(dbus.service.Object):
         # Start from Paused: after a restart the car must not show Playing
         # until the source says so or sound actually arrives.
         self.app_state = "Paused"
+        self.app_seen = (0.0, "")   # (monotonic time, state) of the app's latest report
+        self.key_seq = 0            # play/pause keys sent so far
         self.present = False
         self.ignore_sound_until = 0.0  # after the car pauses: the tail of the sound doesn't count
         self.art_id = None            # artwork id last received from the SMO app
@@ -612,6 +614,16 @@ class Player(dbus.service.Object):
             return ""
 
     # ---------- SMO state (JSON lines from the app) ----------
+    def check_paused(self, pressed, seq):
+        """USB-C: some players ignore a plain Pause. If the app still reports
+        Playing well after it (and nothing asked to play since), use the
+        play/pause toggle once."""
+        seen_at, seen = self.app_seen
+        if seq == self.key_seq and seen == "Playing" and seen_at > pressed + 1.5:
+            log("The music device ignored Pause; sending play/pause instead")
+            smo_key(b"P", "pause (toggle)")
+        return False
+
     def smo_update(self, info):
         new = (str(info.get("title") or ""), str(info.get("artist") or ""),
                str(info.get("album") or ""), int(info.get("dur") or 0) * 1000)
@@ -621,6 +633,8 @@ class Player(dbus.service.Object):
             self.position_us = int(info.get("pos") or 0) * 1000
         state = info.get("state")
         status_changed = False
+        if state in ("Playing", "Paused", "Stopped"):
+            self.app_seen = (time.monotonic(), state)
         if state in ("Playing", "Paused", "Stopped") and time.monotonic() >= self.ignore_smo_until:
             self.app_state = state
             want = self.effective_state()
@@ -657,13 +671,18 @@ class Player(dbus.service.Object):
             self.publish()
             log(f"Source {why}: waiting for the car's stream before playing")
             return True
-        if self.status == want:
+        if self.status == want and MUSIC_SOURCE != "usbc":
             self.publish()   # make sure the car agrees (it mutes while it thinks we're paused)
             return False
         # USB-C (the Pi's own media keys): a plain Play or Pause, so a source
-        # already in that state stays there. The XIAO only has the toggle.
+        # already in that state stays there - and so it is always sent: if
+        # this side's idea of the state is wrong, the key still does what the
+        # car asked. The XIAO only has the toggle.
+        self.key_seq += 1
         if MUSIC_SOURCE == "usbc":
             smo_key(b">" if want_playing else b"|", why)
+            if not want_playing:
+                GLib.timeout_add(6000, self.check_paused, time.monotonic(), self.key_seq)
         else:
             smo_key(b"P", why)
         if not want_playing:
