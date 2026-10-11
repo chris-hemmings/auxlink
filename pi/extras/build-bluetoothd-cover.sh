@@ -26,6 +26,8 @@ fi
 IMAGE=0; [ "$1" = --image ] && IMAGE=1
 VER=$(dpkg-query -W -f='${Version}' bluez | sed 's/-.*//')   # e.g. 5.82
 echo "Building bluetoothd from BlueZ $VER with cover art"
+# The image clears apt's package lists to save space: fetch them first.
+apt-get update -qq || true
 apt-get install -y build-essential pkg-config wget xz-utils \
   libglib2.0-dev libdbus-1-dev libical-dev libreadline-dev libudev-dev
 

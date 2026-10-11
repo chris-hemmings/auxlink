@@ -153,6 +153,8 @@ section[data-tab].off{display:none}
       <button class="ghost" onclick="termRun('journalctl -u auxlink-pairing -u auxlink-reconnect -f')">Pairing log</button>
       <button class="ghost" onclick="termRun('journalctl --user -u obex -f')">Contacts log</button>
       <button class="ghost" onclick="termCtrlC()">Ctrl+C</button>
+      <button onclick="termCopyLast()">Copy last output</button>
+      <button class="ghost" onclick="termCopyAll()">Copy all</button>
     </div>
     <div id="term" style="margin-top:10px;height:420px;background:#000;border-radius:8px;display:none"></div>
     <div class="btns" style="flex-wrap:nowrap"><input id="termPaste" placeholder="Paste or type a command here (phones), then Send" autocomplete="off" autocapitalize="off" spellcheck="false" onkeydown="if(event.key==='Enter'){event.preventDefault();termPasteSend()}"><button onclick="termPasteSend()">Send</button></div>
@@ -227,9 +229,25 @@ function termRun(cmd){if(!TID)return toast('Open the terminal first');termSend('
 function termCtrlC(){termSend('\x03')}
 function termPasteSend(){const i=$('termPaste');if(!TID)return toast('Open the terminal first');
   if(i.value)termSend(i.value.replace(/\r?\n/g,'\r')+'\r');i.value='';if(T)T.focus()}
+// The terminal's text as lines (wrapped lines joined back together).
+function termLines(){const b=T.buffer.active,out=[];
+  for(let i=0;i<b.length;i++){const l=b.getLine(i);if(!l)continue;const t=l.translateToString(true);
+    if(l.isWrapped&&out.length)out[out.length-1]+=t;else out.push(t)}
+  while(out.length&&!out[out.length-1].trim())out.pop();return out}
+// The last command and what it printed: from the prompt it was typed at up to
+// the next prompt (or to the end, for something still running like a log).
+function termCopyLast(){if(!T)return toast('Open the terminal first');
+  const L=termLines(),P=/^\S+@\S+:.*[$#]( |$)/,ps=[];L.forEach((l,i)=>{if(P.test(l))ps.push(i)});
+  if(!ps.length)return termCopy(L.join('\n'));
+  const last=ps[ps.length-1],typed=L[last].replace(P,'').trim();
+  const [a,b]=(!typed&&ps.length>1)?[ps[ps.length-2],last]:[last,L.length];
+  const text=L.slice(a,b).join('\n').replace(/\s+$/,'');
+  if(!text)return toast('Nothing to copy yet');termCopy(text)}
+function termCopyAll(){if(!T)return toast('Open the terminal first');termCopy(termLines().join('\n'))}
 function termCopy(t){// http:// pages can't use the clipboard API: copy through a hidden text box
   const a=document.createElement('textarea');a.value=t;a.style.position='fixed';a.style.opacity='0';document.body.appendChild(a);
-  a.select();try{document.execCommand('copy');toast('Copied')}catch(e){}a.remove();if(T)T.focus()}
+  a.select();let ok=false;try{ok=document.execCommand('copy')}catch(e){}a.remove();
+  toast(ok?'Copied: paste it anywhere':'This browser blocked copying: long-press in the terminal to select instead');if(T)T.focus()}
 async function termOpen(){
   try{await termLib()}catch(e){return toast('Terminal files missing: update the Pi')}
   $('term').style.display='block';
