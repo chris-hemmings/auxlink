@@ -66,6 +66,14 @@ class NowPlayingService : NotificationListenerService() {
         }
     }
 
+    /** A request for the Pi from the Phone / Messages screens (any JSON). */
+    fun request(obj: JSONObject, done: (Boolean) -> Unit = {}) {
+        io.execute {
+            val ok = sendLine(obj.toString())
+            main.post { done(ok) }
+        }
+    }
+
     private val main = Handler(Looper.getMainLooper())
     private lateinit var link: UsbLink
     private lateinit var bt: BtLink
@@ -163,6 +171,9 @@ class NowPlayingService : NotificationListenerService() {
     /** A line from the Pi: {"call": state, "number", "name"} or {"text": {...}}. */
     private fun onPiLine(line: String) {
         val j = try { JSONObject(line) } catch (e: Exception) { return }
+        if (PhoneData.onLine(j)) return     // contacts, recents, texts for the Phone/Messages screens
+        // A new text: the Messages screen's list is out of date.
+        if (j.has("text")) request(JSONObject().put("req", "messages"))
         main.post {
             try {
                 channels()

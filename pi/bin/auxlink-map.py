@@ -416,6 +416,8 @@ def watch_outbox():
                 meta = json.load(open(os.path.join(OUTBOX, rid + ".json")))
             except (OSError, ValueError):
                 pass
+            if meta.get("from") == "app":
+                continue    # sent from the AuxLink app: auxlink-media reports it (not the car's)
             ok = result == "ok"
             who = meta.get("to") or "?"
             event(f"Reply to {who}: {'sent' if ok else 'NOT sent (' + result + ')'}")

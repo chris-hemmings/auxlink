@@ -437,6 +437,14 @@ No XIAO and no wiring.
 
 ## 6. The Android music device and the AuxLink app
 
+**Phone and Messages (USB-C source):** the app has Phone and Messages tabs
+that use your phone through the Pi, so the music device needs no SIM.
+- **Phone:** your phone's contacts (searchable), recent calls and a keypad.
+  Calls are made by your phone; the sound goes through the car as usual.
+- **Messages:** your texts as conversations, with replies (typed or one-tap
+  quick replies) sent by your phone. Needs "Text messages in the car" on in
+  the Settings tab.
+
 The app reads what is playing on the device and sends it to the Pi, which
 shows it in the car:
 - title, artist, album, length, position, play/pause state;

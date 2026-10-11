@@ -65,6 +65,13 @@ class MainActivity : Activity() {
     private lateinit var details: TextView
     private val steps = mutableListOf<Step>()
 
+    // Tabs: Phone, Messages, and this status screen ("AuxLink")
+    private lateinit var phone: PhoneScreen
+    private lateinit var msgs: MessagesScreen
+    private lateinit var pages: List<View>
+    private lateinit var tabViews: List<TextView>
+    private var tab = 2
+
     /** One line of the setup checklist. */
     private inner class Step(
         val title: String,
@@ -100,11 +107,39 @@ class MainActivity : Activity() {
             setTextColor(text2); textSize = 12f; gravity = Gravity.CENTER
             setPadding(0, px(12), 0, 0)
         })
-        setContentView(ScrollView(this).apply {
+        val status = ScrollView(this).apply {
             setBackgroundColor(bg)
             isFillViewport = true
             addView(col)
+        }
+        val ui = Ui(this)
+        phone = PhoneScreen(this, ui) { number, name -> showTab(1); msgs.open(number, name) }
+        msgs = MessagesScreen(this, ui)
+        pages = listOf(phone.view, msgs.view, status)
+        val content = android.widget.FrameLayout(this).apply { pages.forEach { addView(it) } }
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setBackgroundColor(cardBg)
+            setPadding(0, px(6), 0, px(6))
+        }
+        tabViews = listOf("✆" to "Phone", "✉" to "Messages", "♪" to "AuxLink").mapIndexed { i, (icon, name) ->
+            TextView(this).apply {
+                text = icon + "\n" + name; textSize = 13f; gravity = Gravity.CENTER
+                setPadding(0, px(6), 0, px(6))
+                setOnClickListener { showTab(i) }
+                bar.addView(this, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            }
+        }
+        setContentView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(bg)
+            addView(content, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+            addView(bar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT))
         })
+        // Back where you left off; the status screen until setup is done.
+        val saved = try { getPreferences(MODE_PRIVATE).getInt("tab", 2) } catch (e: Exception) { 2 }
+        showTab(if (hasAccess()) saved else 2)
 
         // First run: ask for what Android lets an app ask for directly.
         val want = mutableListOf<String>()
@@ -116,7 +151,26 @@ class MainActivity : Activity() {
         if (want.isNotEmpty()) requestPermissions(want.toTypedArray(), 1)
     }
 
-    override fun onResume() { super.onResume(); main.post(refresh) }
+    private fun showTab(i: Int) {
+        tab = i
+        pages.forEachIndexed { k, v -> v.visibility = if (k == i) View.VISIBLE else View.GONE }
+        tabViews.forEachIndexed { k, t -> t.setTextColor(if (k == i) accent else text2) }
+        try { getPreferences(MODE_PRIVATE).edit().putInt("tab", i).apply() } catch (e: Exception) {}
+        when (i) { 0 -> phone.onShow(); 1 -> msgs.onShow() }
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        if (tab == 1 && msgs.back()) return
+        @Suppress("DEPRECATION") super.onBackPressed()
+    }
+
+    override fun onDestroy() {
+        phone.close(); msgs.destroy()
+        super.onDestroy()
+    }
+
+    override fun onResume() { super.onResume(); main.post(refresh); if (::pages.isInitialized) showTab(tab) }
     override fun onPause() { super.onPause(); main.removeCallbacks(refresh) }
 
     // ------------------------------------------------------------ sections

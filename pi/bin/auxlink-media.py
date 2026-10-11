@@ -1343,6 +1343,249 @@ class Notify:
             app_send({"text": {"from": sender, "number": m.get("number", ""), "body": m.get("text", "")}})
 
 
+class PhoneLink:
+    """The app's Phone and Messages screens (USB-C), using the phone through
+    this Pi: contacts and recent calls (synced from the phone by pbap-sync),
+    texts (auxlink-messages), dialing (hfp-relay) and sending texts (queued
+    in the outbox auxlink-messages sends from, like the car's replies)."""
+    OUTBOX = "/run/auxlink/outbox"
+    SENT = "/var/lib/auxlink/app-sent.json"
+    CHUNK = 6000          # bytes of items per line (the serial link and its buffer)
+
+    def __init__(self):
+        try:
+            home = pwd.getpwnam(AUDIO_USER).pw_dir
+        except KeyError:
+            home = "/nonexistent"
+        self.book = os.path.join(home, "phonebook/telecom")
+        self.store = os.path.join(home, ".local/share/auxlink/messages.json")
+        self.queue = []          # lines waiting to go to the app, paced
+        self.pending = {}        # outbox id -> app's id for each text being sent
+        GLib.timeout_add(100, self.pump)
+        GLib.timeout_add(1000, self.check_sent)
+
+    # ---- requests from the app ----
+    def handle(self, info):
+        try:
+            if info.get("req") == "phone":
+                self.send_list("contacts", self.contacts())
+                self.send_list("recents", self.recents())
+            elif info.get("req") == "messages":
+                self.send_messages()
+            elif "dial" in info:
+                self.dial(str(info["dial"]))
+            elif "sms" in info:
+                self.sms(info["sms"])
+        except Exception as e:      # never break the app link
+            log(f"Phone screen request failed: {e}")
+
+    def dial(self, number):
+        number = re.sub(r"[^0-9+*#]", "", number)
+        if not number:
+            return
+        log(f"App: call {number}")
+        try:
+            os.makedirs(os.path.dirname(CALL_CMD_FILE), exist_ok=True)
+            with open(CALL_CMD_FILE, "w") as f:
+                f.write("dial " + number)
+        except OSError as e:
+            log(f"Cannot write {CALL_CMD_FILE}: {e}")
+
+    def sms(self, m):
+        to = re.sub(r"[^0-9+*#]", "", str(m.get("to") or ""))
+        text = str(m.get("text") or "").strip()
+        app_id = str(m.get("id") or "")
+        if not to or not text:
+            app_send({"sms_result": {"id": app_id, "ok": False, "error": "no number or text"}})
+            return
+        if CONF.get("MESSAGES", "0") != "1":
+            app_send({"sms_result": {"id": app_id, "ok": False,
+                                     "error": "Text messages are off in the Pi's settings"}})
+            return
+        rid = "A%X" % int(time.time() * 1000)
+        body = self.bmessage(to, text)
+        try:
+            os.makedirs(self.OUTBOX, exist_ok=True)
+            with open(os.path.join(self.OUTBOX, rid + ".bmsg"), "wb") as f:
+                f.write(body)
+            with open(os.path.join(self.OUTBOX, rid + ".json.tmp"), "w") as f:
+                json.dump({"charset": "utf8", "to": to, "text": text, "from": "app"}, f)
+            os.replace(os.path.join(self.OUTBOX, rid + ".json.tmp"), os.path.join(self.OUTBOX, rid + ".json"))
+        except OSError as e:
+            app_send({"sms_result": {"id": app_id, "ok": False, "error": str(e)}})
+            return
+        self.pending[rid] = app_id
+        self.remember({"id": app_id, "to": to, "text": text,
+                       "time": time.strftime("%Y%m%dT%H%M%S"), "status": "sending"})
+        log(f"App: text to {to}: {text[:60]}")
+
+    @staticmethod
+    def bmessage(to, text):
+        """An outgoing text in MAP's bMessage format (the phone sends it)."""
+        msg = "BEGIN:MSG\r\n" + text.replace("\r\n", "\n").replace("\n", "\r\n") + "\r\nEND:MSG\r\n"
+        return ("BEGIN:BMSG\r\nVERSION:1.0\r\nSTATUS:READ\r\nTYPE:SMS_GSM\r\n"
+                "FOLDER:TELECOM/MSG/OUTBOX\r\n"
+                "BEGIN:VCARD\r\nVERSION:2.1\r\nN:\r\nTEL:\r\nEND:VCARD\r\n"
+                "BEGIN:BENV\r\n"
+                f"BEGIN:VCARD\r\nVERSION:2.1\r\nN:\r\nTEL:{to}\r\nEND:VCARD\r\n"
+                "BEGIN:BBODY\r\nCHARSET:UTF-8\r\n"
+                f"LENGTH:{len(msg.encode())}\r\n{msg}"
+                "END:BBODY\r\nEND:BENV\r\nEND:BMSG\r\n").encode()
+
+    def check_sent(self):
+        """Result of each text the app sent (auxlink-messages writes .done)."""
+        for rid, app_id in list(self.pending.items()):
+            done = os.path.join(self.OUTBOX, rid + ".done")
+            try:
+                result = open(done).read().strip() or "error"
+            except OSError:
+                continue
+            ok = result == "ok"
+            err = "" if ok else result.replace("error: ", "", 1)
+            app_send({"sms_result": {"id": app_id, "ok": ok, "error": err}})
+            self.remember({"id": app_id, "status": "sent" if ok else "failed", "error": err})
+            log(f"App text {'sent' if ok else 'NOT sent: ' + err}")
+            for ext in (".bmsg", ".json", ".done"):
+                try:
+                    os.remove(os.path.join(self.OUTBOX, rid + ext))
+                except OSError:
+                    pass
+            del self.pending[rid]
+        return True
+
+    def remember(self, item):
+        """Texts sent from the app, so conversations show both sides."""
+        try:
+            sent = json.load(open(self.SENT))
+        except (OSError, ValueError):
+            sent = []
+        for old in sent:
+            if old.get("id") == item["id"]:
+                old.update(item)
+                break
+        else:
+            sent.append(item)
+        sent = sent[-100:]
+        try:
+            os.makedirs(os.path.dirname(self.SENT), exist_ok=True)
+            with open(self.SENT + ".tmp", "w") as f:
+                json.dump(sent, f, ensure_ascii=False)
+            os.replace(self.SENT + ".tmp", self.SENT)
+        except OSError as e:
+            log(f"Cannot save sent texts: {e}")
+
+    # ---- data for the app ----
+    @staticmethod
+    def vcards(path):
+        """vCards from a PBAP file as lists of (name;params, value) lines."""
+        try:
+            raw = open(path, encoding="utf-8", errors="replace").read()
+        except OSError:
+            return []
+        raw = re.sub(r"\r?\n[ \t]", "", raw)                 # unfold
+        raw = re.sub(r"=\r?\n", "", raw)                      # quoted-printable soft breaks
+        cards, cur = [], None
+        for line in raw.splitlines():
+            u = line.upper()
+            if u.startswith("BEGIN:VCARD"):
+                cur = []
+            elif u.startswith("END:VCARD"):
+                if cur is not None:
+                    cards.append(cur)
+                cur = None
+            elif cur is not None and ":" in line and not u.startswith("PHOTO"):
+                k, v = line.split(":", 1)
+                if "QUOTED-PRINTABLE" in k.upper():
+                    import quopri
+                    v = quopri.decodestring(v.encode()).decode("utf-8", "replace")
+                cur.append((k, v.strip()))
+        return cards
+
+    @staticmethod
+    def card_name(card):
+        for k, v in card:
+            if k.upper().split(";")[0] == "FN" and v:
+                return v
+        for k, v in card:
+            if k.upper().split(";")[0] == "N" and v.strip(";"):
+                return " ".join(p for p in v.split(";")[1::-1] if p).strip()
+        return ""
+
+    def contacts(self):
+        out = []
+        for card in self.vcards(os.path.join(self.book, "pb.vcf")):
+            name = self.card_name(card)
+            tels = []
+            for k, v in card:
+                ku = k.upper()
+                if ku.split(";")[0] == "TEL" and v:
+                    kind = ("mobile" if "CELL" in ku else "home" if "HOME" in ku
+                            else "work" if "WORK" in ku else "")
+                    if [kind, v] not in tels:
+                        tels.append([kind, v])
+            if tels and name:
+                out.append({"n": name, "t": tels})
+        out.sort(key=lambda c: c["n"].lower())
+        return out
+
+    def recents(self):
+        out = []
+        for card in self.vcards(os.path.join(self.book, "cch.vcf")):
+            num = kind = when = ""
+            for k, v in card:
+                ku = k.upper()
+                if ku.split(";")[0] == "TEL" and not num:
+                    num = v
+                elif ku.startswith("X-IRMC-CALL-DATETIME"):
+                    when = v
+                    kind = ("missed" if "MISSED" in ku else "in" if "RECEIVED" in ku
+                            else "out" if "DIALED" in ku else "")
+            if num or self.card_name(card):
+                out.append({"n": self.card_name(card), "num": num, "k": kind, "at": when})
+        return out[:60]
+
+    def send_messages(self):
+        try:
+            inbox = json.load(open(self.store))
+        except (OSError, ValueError):
+            inbox = []
+        try:
+            sent = json.load(open(self.SENT))
+        except (OSError, ValueError):
+            sent = []
+        items = [{"in": 1, "who": m.get("sender") or "", "num": m.get("number") or "",
+                  "text": m.get("text") or "", "at": m.get("time") or ""} for m in inbox]
+        items += [{"in": 0, "num": m.get("to") or "", "text": m.get("text") or "",
+                   "at": m.get("time") or "", "st": m.get("status") or ""} for m in sent]
+        self.send_list("messages", items, {"enabled": CONF.get("MESSAGES", "0") == "1"})
+
+    def send_list(self, kind, items, extra=None):
+        """Big lists go as several lines ({kind: [...], part, parts})."""
+        chunks, cur, size = [], [], 0
+        for it in items:
+            n = len(json.dumps(it, ensure_ascii=False).encode())
+            if cur and size + n > self.CHUNK:
+                chunks.append(cur)
+                cur, size = [], 0
+            cur.append(it)
+            size += n
+        chunks.append(cur)
+        for i, c in enumerate(chunks):
+            line = {kind: c, "part": i, "parts": len(chunks)}
+            if extra:
+                line.update(extra)
+            self.queue.append(line)
+
+    def pump(self):
+        # Pace big lists so the serial buffer (which drops past 64 KB) keeps up.
+        while self.queue and len(OUT) < 16384:
+            app_send(self.queue.pop(0))
+        return True
+
+
+PHONE = {"link": None}
+
+
 def app_command(player, cmd):
     """A button in the AuxLink app (over USB via the XIAO, or Bluetooth)."""
     if cmd == "ping":
@@ -1547,7 +1790,9 @@ def main():
                 VOLUME["last_line"] = now
                 if info.get("ctl"):
                     APP_CTL["seen"] = now
-                if "cmd" in info:
+                if PHONE["link"] and ("req" in info or "dial" in info or "sms" in info):
+                    PHONE["link"].handle(info)
+                elif "cmd" in info:
                     app_command(player, str(info["cmd"]))
                 elif "art" in info:
                     player.smo_art(info)
@@ -1655,6 +1900,8 @@ def main():
     player.cover_check()
     GLib.timeout_add(1000, player.cover_check)
     GLib.timeout_add(500, Notify().tick)
+    if MUSIC_SOURCE == "usbc":
+        PHONE["link"] = PhoneLink()
     GLib.MainLoop().run()
 
 

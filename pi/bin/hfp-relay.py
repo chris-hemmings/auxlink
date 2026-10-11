@@ -456,6 +456,14 @@ class Relay:
             log(f"App asked to {cmd} the call, but the phone isn't connected")
             return True
         at = {"answer": "ATA", "decline": "AT+CHUP", "hangup": "AT+CHUP"}.get(cmd)
+        if cmd.startswith("dial "):
+            # Calling from the app's Phone screen: the phone dials, exactly
+            # as when the car calls a contact (ATD<number>;).
+            number = cmd[5:].strip()
+            if not re.fullmatch(r"\+?[0-9*#]{2,30}", number):
+                log(f"App asked to dial {number!r}: not a phone number")
+                return True
+            at = f"ATD{number};"
         if at:
             log(f"App: {cmd} the call -> phone {at}")
             self.own_pending += 1
