@@ -210,7 +210,23 @@ class NowPlayingService : NotificationListenerService() {
      *  Bluetooth (no media-key guessing). */
     private fun media(cmd: String) {
         if (controller == null) pickController()
-        val c = controller ?: return
+        val c = controller
+        if (c == null) {
+            // No music app has a session yet (e.g. just after the device
+            // started): a media key goes to the last music app, and starts it.
+            val code = when (cmd) {
+                "play" -> android.view.KeyEvent.KEYCODE_MEDIA_PLAY
+                "pause" -> android.view.KeyEvent.KEYCODE_MEDIA_PAUSE
+                "playpause" -> android.view.KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE
+                "next" -> android.view.KeyEvent.KEYCODE_MEDIA_NEXT
+                "previous" -> android.view.KeyEvent.KEYCODE_MEDIA_PREVIOUS
+                else -> return
+            }
+            val am = getSystemService(android.media.AudioManager::class.java)
+            am.dispatchMediaKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, code))
+            am.dispatchMediaKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_UP, code))
+            return
+        }
         val t = c.transportControls
         val playing = c.playbackState?.state.let {
             it == PlaybackState.STATE_PLAYING || it == PlaybackState.STATE_BUFFERING

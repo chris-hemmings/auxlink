@@ -668,6 +668,17 @@ class Player(dbus.service.Object):
             return ""
 
     # ---------- SMO state (JSON lines from the app) ----------
+    def check_played(self, pressed, seq):
+        """After a boot the music app may have no active session, so the
+        app's "play" reaches nothing. If nothing is playing 3 s later (and
+        nothing else was pressed since), press the USB Play key: Android
+        sends that to the last music app even when it isn't running."""
+        seen_at, seen = self.app_seen
+        if seq == self.key_seq and not self.present and not (seen == "Playing" and seen_at > pressed):
+            log("The music app didn't start from the app's play; pressing the Play key instead")
+            hid_key(b">")
+        return False
+
     def check_paused(self, pressed, seq):
         """USB-C: some players ignore a plain Pause. If the app still reports
         Playing well after it (and nothing asked to play since), use the
@@ -737,6 +748,8 @@ class Player(dbus.service.Object):
             if time.time() - APP_CTL["seen"] < 15:
                 # The app plays/pauses the player itself: exactly what was asked.
                 smo_key(b">" if want_playing else b"|", why)
+                if want_playing:
+                    GLib.timeout_add(3000, self.check_played, time.monotonic(), self.key_seq)
             elif not want_playing and self.app_seen[1] == "Playing":
                 # The SMO's player ignores a plain Pause (it only takes the
                 # toggle), and the app says it's playing: the toggle pauses.
