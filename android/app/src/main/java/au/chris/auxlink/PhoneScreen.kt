@@ -150,7 +150,7 @@ class PhoneScreen(private val ctx: Context, private val ui: Ui,
                 (qd.length >= 3 && c.numbers.any { it.second.filter { ch -> ch.isDigit() }.contains(qd) })
         }
         (contactList.adapter as BaseAdapter).notifyDataSetChanged()
-        val linked = NowPlayingService.linkOpen
+        val linked = NowPlayingService.connected()
         val (t, b) = when {
             filtered.isNotEmpty() -> "" to ""
             !linked -> "Not connected to the Pi" to "Plug this device into the Pi to see your phone's contacts."
@@ -168,7 +168,7 @@ class PhoneScreen(private val ctx: Context, private val ui: Ui,
 
     private fun call(number: String, name: String) {
         val svc = NowPlayingService.instance
-        if (svc == null || !NowPlayingService.linkOpen) {
+        if (svc == null || !NowPlayingService.connected()) {
             Toast.makeText(ctx, "Not connected to the Pi", Toast.LENGTH_SHORT).show(); return
         }
         svc.request(JSONObject().put("dial", number))

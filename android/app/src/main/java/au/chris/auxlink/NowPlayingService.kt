@@ -52,6 +52,11 @@ class NowPlayingService : NotificationListenerService() {
         @Volatile var piStatusAt = 0L
         @Volatile var linkOpen: Boolean = false
         @Volatile var linkKind: String = ""
+        /** Last successful send to / line from the Pi (ms). */
+        @Volatile var lastTraffic = 0L
+        /** Connected = the link is open, or it carried something in the last
+         *  15 s (a link that blips between sends still counts). */
+        fun connected() = linkOpen || System.currentTimeMillis() - lastTraffic < 15000
         const val ACTION_ANSWER = "au.chris.auxlink.ANSWER"
         const val ACTION_DECLINE = "au.chris.auxlink.DECLINE"
         const val NOTIF_CALL = 2
@@ -179,6 +184,7 @@ class NowPlayingService : NotificationListenerService() {
     /** A line from the Pi: {"call": state, "number", "name"} or {"text": {...}}. */
     private fun onPiLine(line: String) {
         val j = try { JSONObject(line) } catch (e: Exception) { return }
+        lastTraffic = System.currentTimeMillis()
         if (j.has("pi")) { piStatus = j.optJSONObject("pi"); piStatusAt = System.currentTimeMillis(); return }
         if (PhoneData.onLine(j)) return     // contacts, recents, texts for the Phone/Messages screens
         // A new text: the Messages screen's list is out of date.
@@ -375,8 +381,9 @@ class NowPlayingService : NotificationListenerService() {
         } else {
             bt.send(line).also { if (it) linkKind = "Bluetooth (${bt.deviceName})" }
         }
+        if (ok) lastTraffic = System.currentTimeMillis()
         linkOpen = link.isOpen() || bt.isOpen()
-        if (!linkOpen) linkKind = ""
+        if (!connected()) linkKind = ""
         return ok
     }
 

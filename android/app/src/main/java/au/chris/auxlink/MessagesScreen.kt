@@ -196,7 +196,7 @@ class MessagesScreen(private val ctx: Context, private val ui: Ui) {
             !PhoneData.messagesEnabled -> "Text messages are off" to
                 "Turn on \"Text messages in the car\" on the Pi's setup page (Settings tab)."
             convos.isNotEmpty() -> "" to ""
-            !NowPlayingService.linkOpen -> "Not connected to the Pi" to
+            !NowPlayingService.connected() -> "Not connected to the Pi" to
                 "Plug this device into the Pi to see your phone's texts."
             !PhoneData.messagesLoaded -> "Loading texts…" to "Getting them from your phone through the Pi."
             else -> "No texts yet" to "New texts to your phone show up here. Tap New message to send one."
@@ -228,7 +228,7 @@ class MessagesScreen(private val ctx: Context, private val ui: Ui) {
         val t = text.trim()
         if (t.isEmpty() || openNumber.isEmpty()) return
         val svc = NowPlayingService.instance
-        if (svc == null || !NowPlayingService.linkOpen) {
+        if (svc == null || !NowPlayingService.connected()) {
             Toast.makeText(ctx, "Not connected to the Pi", Toast.LENGTH_SHORT).show(); return
         }
         if (!PhoneData.messagesEnabled) {

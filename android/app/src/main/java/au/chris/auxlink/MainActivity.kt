@@ -457,7 +457,7 @@ class MainActivity : Activity() {
     // ------------------------------------------------------------ updating
 
     private fun update() {
-        val linked = NowPlayingService.linkOpen
+        val linked = NowPlayingService.connected()
         val running = NowPlayingService.instance != null
         val usb = UsbLink(this).kind()      // the Pi's USB-C, the XIAO, or nothing
 
