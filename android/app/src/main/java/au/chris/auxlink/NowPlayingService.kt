@@ -165,6 +165,7 @@ class NowPlayingService : NotificationListenerService() {
             try {
                 channels()
                 when {
+                    j.has("media") -> media(j.optString("media"))
                     j.has("call") -> showCall(j.optString("call"), j.optString("name"), j.optString("number"))
                     j.has("text") -> j.optJSONObject("text")?.let {
                         showText(it.optString("from"), it.optString("body"))
@@ -173,6 +174,26 @@ class NowPlayingService : NotificationListenerService() {
             } catch (e: Exception) {
                 Log.w(TAG, "notification failed: ${e.message}")
             }
+        }
+    }
+
+    /** The car's play/pause/next/previous, relayed by the Pi: straight to
+     *  the player's own controls, the way a phone handles them over
+     *  Bluetooth (no media-key guessing). */
+    private fun media(cmd: String) {
+        if (controller == null) pickController()
+        val c = controller ?: return
+        val t = c.transportControls
+        val playing = c.playbackState?.state.let {
+            it == PlaybackState.STATE_PLAYING || it == PlaybackState.STATE_BUFFERING
+        }
+        when (cmd) {
+            "play" -> t.play()
+            "pause" -> t.pause()
+            "playpause" -> if (playing) t.pause() else t.play()
+            "next" -> t.skipToNext()
+            "previous" -> t.skipToPrevious()
+            "stop" -> t.stop()
         }
     }
 
@@ -360,6 +381,7 @@ class NowPlayingService : NotificationListenerService() {
             put("dur", md?.getLong(MediaMetadata.METADATA_KEY_DURATION) ?: 0L)
             put("pos", currentPosition(ps))
             put("state", state)
+            put("ctl", 1)   // the Pi may send play/pause/next as {"media": ...}
         }
         val line = json.toString()
         val art = artFor(md)

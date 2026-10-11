@@ -423,7 +423,19 @@ def hid_key(cmd):
     GLib.timeout_add(30, write, b"\0\0")
 
 
+# USB-C: the AuxLink app (v1.0.24+) says "ctl" in its lines when it can
+# control the player itself. Then the car's commands go to it as they are
+# (play, pause, next...), like a phone's Bluetooth does; keys are the fallback.
+APP_CTL = {"seen": 0.0}
+APP_MEDIA = {b">": "play", b"|": "pause", b"P": "playpause", b"N": "next", b"B": "previous", b"S": "stop"}
+
+
 def smo_key(cmd, why):
+    if (MUSIC_SOURCE == "usbc" and cmd in APP_MEDIA and FD is not None
+            and time.time() - APP_CTL["seen"] < 15):
+        app_send({"media": APP_MEDIA[cmd]})
+        log(f"Source {why} -> app: {APP_MEDIA[cmd]}")
+        return
     if MUSIC_SOURCE == "usbc":
         hid_key(cmd)
     elif MUSIC_SOURCE == "bluetooth":
@@ -680,7 +692,10 @@ class Player(dbus.service.Object):
         # car asked. The XIAO only has the toggle.
         self.key_seq += 1
         if MUSIC_SOURCE == "usbc":
-            if not want_playing and self.app_seen[1] == "Playing":
+            if time.time() - APP_CTL["seen"] < 15:
+                # The app plays/pauses the player itself: exactly what was asked.
+                smo_key(b">" if want_playing else b"|", why)
+            elif not want_playing and self.app_seen[1] == "Playing":
                 # The SMO's player ignores a plain Pause (it only takes the
                 # toggle), and the app says it's playing: the toggle pauses.
                 smo_key(b"P", why)
@@ -1530,6 +1545,8 @@ def main():
                 if now - VOLUME["last_line"] > 20:
                     smo_volume_max("the SMO connected")
                 VOLUME["last_line"] = now
+                if info.get("ctl"):
+                    APP_CTL["seen"] = now
                 if "cmd" in info:
                     app_command(player, str(info["cmd"]))
                 elif "art" in info:

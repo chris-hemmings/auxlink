@@ -368,7 +368,9 @@ shows up as a USB sound card (plus a data link and media keys).
   stays connected.
 - **Track info and album art:** from the AuxLink app (v1.0.5 or
   newer), over the same cable.
-- **Car buttons:** reach the device as USB media keys.
+- **Car buttons:** play, pause, next and previous go to the AuxLink app
+  (v1.0.24 or newer), which tells the player directly, as a phone does with
+  the car over Bluetooth. Without the app they are sent as USB media keys.
 - **Voice search:** the Pi's USB sound card has a mic too, carrying the
   **car's cabin mic**, the same as the XIAO's.
 - **App link after a reboot:** as with the XIAO, if the app hasn't got its
