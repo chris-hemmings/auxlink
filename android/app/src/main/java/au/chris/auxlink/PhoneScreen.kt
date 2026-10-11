@@ -7,6 +7,7 @@ import android.graphics.Typeface
 import android.text.Editable
 import android.text.TextWatcher
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.BaseAdapter
@@ -67,7 +68,7 @@ class PhoneScreen(private val ctx: Context, private val ui: Ui,
             orientation = LinearLayout.VERTICAL
             addView(search, ui.matchWrap(bottom = 8))
             addView(contactEmpty, ui.matchWrap())
-            addView(contactList, ui.fill())
+            addView(withIndex(contactList), ui.fill())
         }
 
         // --- Favourites (the phone's starred contacts) ---
@@ -180,6 +181,59 @@ class PhoneScreen(private val ctx: Context, private val ui: Ui,
         (contactEmpty.getChildAt(0) as TextView).text = t
         (contactEmpty.getChildAt(1) as TextView).text = b
         ui.gone(contactEmpty, t.isEmpty())
+    }
+
+    // ------------------------------------------------------------ A-Z index
+
+    /** The contacts list with an A-Z bar on its right: tap a letter, or press
+     *  and slide along the bar, to jump there (a big letter shows where). */
+    @android.annotation.SuppressLint("ClickableViewAccessibility")
+    private fun withIndex(list: ListView): View {
+        val letters = listOf("#") + ('A'..'Z').map { it.toString() }
+        val bubble = TextView(ctx).apply {
+            textSize = 40f; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER; background = ui.round(ui.accent, 20f)
+            visibility = View.GONE
+        }
+        val bar = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(ui.px(4), ui.px(4), ui.px(4), ui.px(4))
+            for (l in letters) addView(ui.text(l, 11f, ui.accent, true).apply { gravity = Gravity.CENTER },
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        }
+        fun jump(y: Float) {
+            val i = ((y / bar.height.coerceAtLeast(1)) * letters.size).toInt().coerceIn(0, letters.size - 1)
+            val letter = letters[i]
+            // The first contact at or after this letter ("#": names not starting with a letter).
+            val pos = if (letter == "#") 0 else filtered.indexOfFirst {
+                val c = it.name.trim().firstOrNull()?.uppercaseChar() ?: ' '
+                c.isLetter() && c.toString() >= letter
+            }.let { if (it < 0) filtered.size - 1 else it }
+            if (pos >= 0) list.setSelection(pos)
+            bubble.text = letter
+            bubble.visibility = View.VISIBLE
+        }
+        bar.setOnTouchListener { _, e ->
+            when (e.action) {
+                MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
+                    bar.background = ui.round(ui.cardBg, 14f)
+                    jump(e.y)
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    bar.background = null
+                    bubble.postDelayed({ bubble.visibility = View.GONE }, 400)
+                }
+            }
+            true
+        }
+        return FrameLayout(ctx).apply {
+            addView(LinearLayout(ctx).apply {
+                orientation = LinearLayout.HORIZONTAL
+                addView(list, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+                addView(bar, LinearLayout.LayoutParams(ui.px(32), ViewGroup.LayoutParams.MATCH_PARENT))
+            })
+            addView(bubble, FrameLayout.LayoutParams(ui.px(84), ui.px(84), Gravity.CENTER))
+        }
     }
 
     // ------------------------------------------------------------ actions
