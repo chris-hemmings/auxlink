@@ -53,6 +53,19 @@ class Ui(val ctx: Context) {
         setOnClickListener { click() }
     }
 
+    /** A round button with a centred icon (vector drawable). */
+    fun iconButton(icon: Int, color: Int, sizeDp: Int = 44, click: () -> Unit) =
+        android.widget.ImageView(ctx).apply {
+            setImageResource(icon)
+            scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+            val pad = (sizeDp * 0.24f * dp).toInt()
+            setPadding(pad, pad, pad, pad)
+            background = oval(color)
+            isFocusable = false
+            setOnClickListener { click() }
+            layoutParams = LinearLayout.LayoutParams(px(sizeDp), px(sizeDp)).apply { marginStart = px(10) }
+        }
+
     /** A round initial for a contact. */
     fun avatar(name: String, sizeDp: Int = 44): TextView {
         val palette = intArrayOf(0xFF2563EB.toInt(), 0xFF7C3AED.toInt(), 0xFFDB2777.toInt(),

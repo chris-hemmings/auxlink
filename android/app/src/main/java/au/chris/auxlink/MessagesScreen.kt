@@ -80,15 +80,10 @@ class MessagesScreen(private val ctx: Context, private val ui: Ui) {
             setPadding(ui.px(4), 0, ui.px(16), ui.px(4))
             setOnClickListener { close() }
         }
-        val callBtn = TextView(ctx).apply {
-            text = "✆"; textSize = 20f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
-            background = ui.oval(ui.good)
-            layoutParams = LinearLayout.LayoutParams(ui.px(42), ui.px(42))
-            setOnClickListener {
-                NowPlayingService.instance?.request(JSONObject().put("dial", openNumber))
-                Toast.makeText(ctx, "Calling " + openName.ifEmpty { openNumber } + " on your phone…",
-                    Toast.LENGTH_SHORT).show()
-            }
+        val callBtn = ui.iconButton(R.drawable.ic_call, ui.good) {
+            NowPlayingService.instance?.request(JSONObject().put("dial", openNumber))
+            Toast.makeText(ctx, "Calling " + openName.ifEmpty { openNumber } + " on your phone…",
+                Toast.LENGTH_SHORT).show()
         }
         val top = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL

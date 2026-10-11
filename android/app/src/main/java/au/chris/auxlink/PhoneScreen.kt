@@ -62,7 +62,7 @@ class PhoneScreen(private val ctx: Context, private val ui: Ui,
             override fun getItemId(i: Int) = i.toLong()
             override fun getView(i: Int, convert: View?, parent: ViewGroup?) = contactRow(filtered[i])
         }
-        contactList.setOnItemClickListener { _, _, i, _ -> choose(filtered[i]) }
+        contactList.setOnItemLongClickListener { _, _, i, _ -> choose(filtered[i]); true }
         contactEmpty = ui.empty("", "")
         contactsPane = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
@@ -79,7 +79,7 @@ class PhoneScreen(private val ctx: Context, private val ui: Ui,
             override fun getItemId(i: Int) = i.toLong()
             override fun getView(i: Int, convert: View?, parent: ViewGroup?) = contactRow(PhoneData.favourites[i])
         }
-        favList.setOnItemClickListener { _, _, i, _ -> choose(PhoneData.favourites[i]) }
+        favList.setOnItemLongClickListener { _, _, i, _ -> choose(PhoneData.favourites[i]); true }
         favEmpty = ui.empty("No favourites yet",
             "Star contacts on your phone: they show here, and in the car, after the next sync.")
         favPane = android.widget.FrameLayout(ctx).apply { addView(favList); addView(favEmpty) }
@@ -276,13 +276,15 @@ class PhoneScreen(private val ctx: Context, private val ui: Ui,
         views.forEach { addView(it) }
     }
 
-    private fun callButton(number: String, name: String) = TextView(ctx).apply {
-        text = "✆"; textSize = 20f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
-        background = ui.oval(ui.good)
-        layoutParams = LinearLayout.LayoutParams(ui.px(42), ui.px(42)).apply { marginStart = ui.px(10) }
-        isFocusable = false
-        setOnClickListener { call(number, name) }
-    }
+    private fun callButton(number: String, name: String) =
+        ui.iconButton(R.drawable.ic_call, ui.good) { call(number, name) }
+
+    private fun textButton(number: String, name: String) =
+        ui.iconButton(R.drawable.ic_text, ui.accent) { openChat(number, name) }
+
+    /** The number to call / text first: the mobile one if there is one. */
+    private fun mainNumber(c: PhoneData.Contact) =
+        (c.numbers.firstOrNull { it.first == "mobile" } ?: c.numbers.firstOrNull())?.second
 
     private fun contactRow(c: PhoneData.Contact): View {
         val first = c.numbers.firstOrNull()
@@ -293,9 +295,12 @@ class PhoneScreen(private val ctx: Context, private val ui: Ui,
             addView(ui.text(c.name, 17f, ui.text1, lines = 1))
             addView(ui.text(sub, 13f, ui.text2, lines = 1))
         }
+        val main = mainNumber(c)
         return row(ui.avatar(c.name), texts.also {
             it.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        }).apply { if (first != null) addView(callButton(first.second, c.name)) }
+        }).apply {
+            if (main != null) { addView(textButton(main, c.name)); addView(callButton(main, c.name)) }
+        }
     }
 
     private fun recentRow(r: PhoneData.Recent): View {
@@ -344,23 +349,19 @@ class PhoneScreen(private val ctx: Context, private val ui: Ui,
                 setMargins(ui.px(10), ui.px(6), ui.px(10), ui.px(6))
             })
         }
-        val back = ui.text("⌫", 24f, ui.text2).apply {
+        val back = ui.text("⌫", 26f, ui.text2).apply {
             gravity = Gravity.CENTER
-            layoutParams = LinearLayout.LayoutParams(ui.px(64), ui.px(64))
             setOnClickListener { dialled.text = dialled.text.dropLast(1) }
             setOnLongClickListener { dialled.text = ""; true }
         }
-        val callKey = TextView(ctx).apply {
-            text = "✆"; textSize = 28f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
-            typeface = Typeface.DEFAULT_BOLD
-            background = ui.oval(ui.good)
-            layoutParams = LinearLayout.LayoutParams(ui.px(72), ui.px(72)).apply {
-                marginStart = ui.px(64); marginEnd = ui.px(0)
-            }
-            setOnClickListener {
-                val n = dialled.text.toString()
-                if (n.isNotEmpty()) call(n, PhoneData.nameFor(n))
-            }
+        val callKey = ui.iconButton(R.drawable.ic_call, ui.good, 76) {
+            val n = dialled.text.toString()
+            if (n.isNotEmpty()) call(n, PhoneData.nameFor(n))
+        }
+        // Bottom row in the keypad's three columns: (empty) | call | backspace,
+        // so the call button sits centred under 0.
+        fun cell(v: View?) = FrameLayout(ctx).apply {
+            if (v != null) addView(v, FrameLayout.LayoutParams(ui.px(76), ui.px(76), Gravity.CENTER))
         }
         return LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
@@ -370,8 +371,9 @@ class PhoneScreen(private val ctx: Context, private val ui: Ui,
             addView(LinearLayout(ctx).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(0, ui.px(10), 0, ui.px(10))
-                addView(callKey); addView(back)
+                setPadding(0, ui.px(6), 0, ui.px(10))
+                for (v in listOf(null, callKey, back))
+                    addView(cell(v), LinearLayout.LayoutParams(ui.px(96), ui.px(88)))
             })
         }
     }
