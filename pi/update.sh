@@ -110,6 +110,9 @@ if [ -x /usr/local/libexec/obexd-dummy ] && [ "$(cat "$OBEX_DROPIN" 2>/dev/null)
   chown "$U:$U" "$OBEX_DROPIN"
   OBEX_RESTART=1
 fi
+# Empty phonebooks until the first sync from the phone (pbap-pull fills
+# them), so a car that asks early gets "none yet" instead of an error.
+for b in pb ich och mch cch fav; do install -d -o "$U" -g "$U" "$H/phonebook" "$H/phonebook/telecom" "$H/phonebook/telecom/$b"; done
 asuser systemctl --user daemon-reload
 asuser systemctl --user enable auxlink-messages >/dev/null 2>&1 || true
 asuser systemctl --user restart auxlink-audio pbap-sync auxlink-messages

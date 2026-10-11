@@ -123,6 +123,9 @@ echo "ok"
 
 step "User services (music link, contacts, phonebook server)"
 install -d -o "$U" -g "$U" "$H/.config/systemd/user/default.target.wants"
+# Empty phonebooks until the first sync from the phone (pbap-pull fills
+# them), so a car that asks early gets "none yet" instead of an error.
+for b in pb ich och mch cch fav; do install -d -o "$U" -g "$U" "$H/phonebook" "$H/phonebook/telecom" "$H/phonebook/telecom/$b"; done
 install -o "$U" -g "$U" -m 644 "$HERE"/systemd/user/*.service "$H/.config/systemd/user/"
 ln -sf /usr/lib/systemd/user/obex.service "$H/.config/systemd/user/default.target.wants/obex.service"
 chown -h "$U:$U" "$H/.config/systemd/user/default.target.wants/obex.service"
