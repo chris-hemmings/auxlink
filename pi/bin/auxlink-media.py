@@ -1736,6 +1736,15 @@ def app_command(player, cmd):
     if cmd == "fix":
         log("App: fix sound - restarting the car's stream")
         player.kick_audio()
+    elif cmd == "reboot":
+        log("App: restart the Pi")
+        try:
+            with open("/run/auxlink/events.log", "a") as f:
+                f.write(time.strftime("%H:%M:%S ") + "Restarting the Pi (from the Phone Link app)\n")
+        except OSError:
+            pass
+        # A moment's delay so the app's command finishes cleanly first.
+        subprocess.Popen(["sh", "-c", "sleep 2; systemctl reboot"], start_new_session=True)
     elif cmd == "setup":
         log("App: turn on the setup Wi-Fi")
         try:

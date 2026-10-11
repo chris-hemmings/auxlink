@@ -407,6 +407,18 @@ class MainActivity : Activity() {
             send("setup", "Setup Wi-Fi is turning on (up to 30 s). Join \"AuxLink-setup\" " +
                 "(password auxlink-setup, unless you changed it), then tap Open.")
         })
+        c.addView(toolRow("Restart the Pi",
+            "Reboots the Pi: music and calls stop for about a minute while it starts again.", "Restart") {
+            android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle("Restart the Pi?")
+                .setMessage("Music and calls stop for about a minute while the Pi starts again. " +
+                    "It reconnects to the car and this device by itself.")
+                .setPositiveButton("Restart") { _, _ ->
+                    send("reboot", "The Pi is restarting. It'll be back in about a minute.")
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        })
         c.addView(toolRow("Setup page",
             "Opens the Pi's settings in the browser (on its setup Wi-Fi or your home Wi-Fi).", "Open") {
             openSetup()
