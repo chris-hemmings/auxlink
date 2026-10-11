@@ -61,6 +61,8 @@ class MainActivity : Activity() {
     private lateinit var npArtist: TextView
     private lateinit var npState: TextView
     private lateinit var setupHead: TextView
+    private lateinit var piRows: LinearLayout
+    private var ticks = 0
     private lateinit var note: TextView
     private lateinit var details: TextView
     private val steps = mutableListOf<Step>()
@@ -99,6 +101,7 @@ class MainActivity : Activity() {
         }
         col.addView(header())
         col.addView(connectionCard())
+        col.addView(piCard())
         col.addView(setupCard())
         col.addView(toolsCard())
         col.addView(detailsCard())
@@ -235,6 +238,70 @@ class MainActivity : Activity() {
         npState = TextView(this).apply { textSize = 12f; typeface = Typeface.DEFAULT_BOLD; setPadding(0, px(6), 0, 0) }
         c.addView(npTitle); c.addView(npArtist); c.addView(npState)
         return c
+    }
+
+    private fun piCard(): View {
+        val c = card()
+        c.addView(TextView(this).apply {
+            text = "The Pi"; setTextColor(text1); textSize = 18f; typeface = Typeface.DEFAULT_BOLD
+        })
+        piRows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, px(6), 0, 0) }
+        c.addView(piRows)
+        return c
+    }
+
+    /** One "label  value" line of the Pi card, with an optional coloured dot. */
+    private fun piRow(label: String, value: String, dot: Int? = null) = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(0, px(6), 0, px(6))
+        addView(TextView(this@MainActivity).apply {
+            text = label; setTextColor(text2); textSize = 14f
+        }, LinearLayout.LayoutParams(px(120), ViewGroup.LayoutParams.WRAP_CONTENT))
+        if (dot != null) addView(View(this@MainActivity).apply {
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(dot) }
+        }, LinearLayout.LayoutParams(px(10), px(10)).apply { marginEnd = px(8) })
+        addView(TextView(this@MainActivity).apply {
+            text = value; setTextColor(text1); textSize = 15f; setTextIsSelectable(true)
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+    }
+
+    private fun updatePi(linked: Boolean) {
+        // Ask every 5 s while this tab is open.
+        if (linked && tab == 2 && ticks++ % 5 == 0)
+            NowPlayingService.instance?.request(org.json.JSONObject().put("req", "pi"))
+        val st = NowPlayingService.piStatus
+        val fresh = st != null && System.currentTimeMillis() - NowPlayingService.piStatusAt < 20000
+        piRows.removeAllViews()
+        if (!linked || !fresh) {
+            piRows.addView(TextView(this).apply {
+                text = if (!linked) "Connect to the Pi to see its Wi-Fi and status."
+                       else "Asking the Pi… (needs Pi update 1.0.77 or newer)"
+                setTextColor(text2); textSize = 14f
+            })
+            return
+        }
+        st!!
+        when (st.optString("wifi")) {
+            "connected" -> {
+                val sig = if (st.isNull("signal")) "" else "  ·  signal ${st.optInt("signal")}%"
+                piRows.addView(piRow("Wi-Fi", "Connected to " + st.optString("ssid") + sig, good))
+            }
+            "setup" -> piRows.addView(piRow("Wi-Fi", "Setup Wi-Fi on (AuxLink-setup)", accent))
+            "connecting" -> piRows.addView(piRow("Wi-Fi", "Connecting…", warn))
+            "disconnected" -> piRows.addView(piRow("Wi-Fi", "Not connected", bad))
+            else -> piRows.addView(piRow("Wi-Fi", "Off", text2))
+        }
+        if (st.optString("ip").isNotEmpty()) piRows.addView(piRow("IP address", st.optString("ip")))
+        if (st.optString("eth_ip").isNotEmpty()) piRows.addView(piRow("Ethernet", st.optString("eth_ip"), good))
+        val page = st.optString("ip").ifEmpty { st.optString("eth_ip") }
+        if (page.isNotEmpty()) piRows.addView(piRow("Setup page", "http://$page"))
+        if (st.optString("version").isNotEmpty()) piRows.addView(piRow("Software", "v" + st.optString("version")))
+        val up = st.optLong("uptime")
+        if (up > 0) piRows.addView(piRow("Running for",
+            when { up < 3600 -> "${up / 60} min"; up < 86400 -> "${up / 3600} h ${up % 3600 / 60} min"
+                   else -> "${up / 86400} days" }))
+        if (st.optString("host").isNotEmpty()) piRows.addView(piRow("Name", st.optString("host")))
     }
 
     private fun setupCard(): View {
@@ -391,6 +458,8 @@ class MainActivity : Activity() {
             npState.setTextColor(if (playing) good else text2)
             npState.visibility = View.VISIBLE
         }
+
+        updatePi(linked)
 
         // Setup checklist
         var left = 0

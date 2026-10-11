@@ -1587,6 +1587,52 @@ class PhoneLink:
 PHONE = {"link": None}
 
 
+def pi_status():
+    """The Pi's network and basics, for the app's AuxLink tab."""
+    def nm(*args):
+        try:
+            return subprocess.run(["nmcli", *args], capture_output=True, text=True, timeout=3).stdout.strip()
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+    st = {"wifi": "off", "ssid": "", "signal": None, "ip": "", "setup_wifi": False, "eth_ip": ""}
+    for line in nm("-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device").splitlines():
+        parts = line.split(":")
+        if len(parts) < 4:
+            continue
+        dev, kind, state, con = parts[0], parts[1], parts[2], ":".join(parts[3:])
+        if dev == "wlan0":
+            if con == "auxlink-setup" and state == "connected":
+                st["setup_wifi"] = True
+                st["wifi"] = "setup"
+                st["ip"] = "10.42.0.1"
+            elif state == "connected":
+                st["wifi"] = "connected"
+                st["ssid"] = nm("-g", "802-11-wireless.ssid", "connection", "show", con) or con
+                st["ip"] = nm("-g", "IP4.ADDRESS", "device", "show", "wlan0").split("|")[0].split("/")[0]
+                for w in nm("-t", "-f", "ACTIVE,SIGNAL", "device", "wifi").splitlines():
+                    if w.startswith("yes:"):
+                        try:
+                            st["signal"] = int(w.split(":")[1])
+                        except ValueError:
+                            pass
+            elif state.startswith("connecting"):
+                st["wifi"] = "connecting"
+            elif state in ("disconnected", "unavailable"):
+                st["wifi"] = "disconnected" if state == "disconnected" else "off"
+        elif kind == "ethernet" and state == "connected":
+            st["eth_ip"] = nm("-g", "IP4.ADDRESS", "device", "show", dev).split("|")[0].split("/")[0]
+    try:
+        st["version"] = open("/usr/local/share/auxlink/VERSION").read().strip()
+    except OSError:
+        st["version"] = ""
+    try:
+        st["uptime"] = int(float(open("/proc/uptime").read().split()[0]))
+    except (OSError, ValueError):
+        st["uptime"] = 0
+    st["host"] = socket.gethostname()
+    return st
+
+
 def app_command(player, cmd):
     """A button in the AuxLink app (over USB via the XIAO, or Bluetooth)."""
     if cmd == "ping":
@@ -1791,7 +1837,9 @@ def main():
                 VOLUME["last_line"] = now
                 if info.get("ctl"):
                     APP_CTL["seen"] = now
-                if PHONE["link"] and ("req" in info or "dial" in info or "sms" in info):
+                if info.get("req") == "pi":
+                    app_send({"pi": pi_status()})
+                elif PHONE["link"] and ("req" in info or "dial" in info or "sms" in info):
                     PHONE["link"].handle(info)
                 elif "cmd" in info:
                     app_command(player, str(info["cmd"]))
