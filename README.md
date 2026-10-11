@@ -11,6 +11,13 @@ music device:
 - **Calls** from your real phone are relayed through the Pi to the car (the
   car's mic and speakers), with **contacts, favourites and recent calls**
   copied to the car's screen.
+- **Text messages** from your phone show in the car (read aloud, with
+  replies), like a phone connected directly.
+- **Phone Link**, the app on the music device, adds a **Phone** tab
+  (favourites, contacts, recent calls, keypad) and a **Messages** tab
+  (conversations and replies) that use your phone through the Pi, so the
+  music device needs no SIM; plus pop-ups for calls (Answer / Hang up) and
+  texts.
 - **Voice search** on the Android device can use the **car's microphone**,
   with every music source.
 - Everything is set up from a **web page** on the Pi. Nothing is hard-coded,
@@ -27,7 +34,7 @@ music device:
                                              |     the Android device) -> I2S + serial to the Pi
                                              |   - Bluetooth (last resort): the device pairs with the Pi
                                        Android music device
-                                       (+ "AuxLink" app)
+                                       (+ "Phone Link" app)
 ```
 
 ### Downloads
@@ -47,7 +54,7 @@ as three separate kinds of release:
 | Folder | What it is |
 |---|---|
 | `pi/` | Everything that runs on the Pi (installer, services, setup page), and `pi/image/`, which builds the SD-card image. See also `pi/README.md`. |
-| `android/` | The **AuxLink** Android app. |
+| `android/` | The **Phone Link** Android app (package `au.chris.auxlink`). |
 | `firmware/rp2040/` | The XIAO firmware (Rust, based on [TeslAux](https://github.com/jbschooley/TeslAux), MIT). |
 
 ---
@@ -144,15 +151,17 @@ cd auxlink/pi
 sudo ./install.sh                       # packages, services, I2S + serial setup (~5 min)
 ./extras/build-obexd-dummy.sh           # contacts/recent calls server for the car (~20 min)
 sudo ./install.sh                       # again, so it picks up the contacts server
-sudo ./extras/build-bluetoothd-cover.sh # album art in the car (~15-20 min)
+sudo ./extras/build-bluetoothd-cover.sh # album art + phonebook favourites in the car (~15-20 min)
 sudo reboot
 ```
 
 - Run `build-obexd-dummy.sh` **without** sudo. It asks for your password when
   it needs it.
 - Both builds are optional. Without the first, there are no contacts or recent
-  calls on the car's screen. Without the second, there is no album art.
-  Everything else works.
+  calls on the car's screen. Without the second, there is no album art and
+  no favourites in the car. Everything else works.
+- The image has both built in. Updates rebuild the second by themselves (in
+  the background, ~15-20 min, needs internet) whenever its patches change.
 - To undo the album-art build: `sudo ./extras/build-bluetoothd-cover.sh --undo`.
 
 ### 2.3 What gets set up
@@ -188,14 +197,14 @@ XIAO's USB-C from the Android device, hold **B** and plug it into one of the
 connected). The card shows "XIAO in update mode". Choose the new `.uf2` and
 tap **Flash this file** (or **Flash built-in firmware**, the version that
 came with the Pi's AuxLink). Plug the XIAO back into the Android device;
-Android asks once whether AuxLink should open it (tick **Always**).
+Android asks once whether Phone Link should open it (tick **Always**).
 
 This firmware makes the XIAO appear to the Android device as:
 - a **USB sound card** (48 kHz stereo speaker) whose audio goes to the Pi
   over I2S;
 - a **USB microphone** carrying the car's cabin mic, for voice search;
 - **USB media keys**, so the car's buttons control the player;
-- a **data link** that the AuxLink app uses for track info and album art.
+- a **data link** that the Phone Link app uses for track info and album art.
 
 ### 3.2 Pinout
 
@@ -242,7 +251,7 @@ SD card, on the inside row):
 - In the device's sound settings, the output should switch to the USB device
   (it shows as **AuxLink**; firmware before 1.0.1 called it "TeslAux
   Bridge"). Android does this by itself when a USB sound card is plugged in.
-- Android then asks whether **AuxLink** should open it: tick **Always** (see
+- Android then asks whether **Phone Link** should open it: tick **Always** (see
   6.3). From firmware 1.0.2, if the device boots with the XIAO already
   plugged in and the app doesn't get its link within 15 s, the XIAO briefly
   re-plugs itself so Android hands the app the link without a prompt.
@@ -289,7 +298,8 @@ Then pair them again as below.
    - The setup Wi-Fi is on whenever no car is paired, for 10 minutes after
      each boot, and for 15 minutes after holding the setup button. You can
      change the times and password on the page.
-The page has tabs: **Status** (music check, recent events), **Devices**
+The page shows the installed version next to its title. It has tabs:
+**Status** (music check, recent events), **Devices**
 (pairing, Bluetooth adapters, music source), **Settings**, **Wi-Fi**, **Pi
 login** (password, SSH), **Updates** (Pi update; XIAO firmware with the wired
 source) and **Development** (services, logs, terminal). With nothing paired
@@ -324,19 +334,28 @@ yet it opens on **Devices**; a dot marks a tab that needs attention.
    [Other cars](#other-cars). The defaults are fine.
 9. Use **Check audio** / **Check and fix** on the **Status** tab any time the
    music is not coming through.
-10. **Text messages in the car** (Settings tab, test, off by default): the Pi
+10. **Text messages in the car** (Settings tab, off by default): the Pi
     reads your phone's texts over Bluetooth (the phone asks once to allow
     message access for AuxLink-phone), offers them to the car like a phone
     does, and tells the car about each new one, so it pops up and can be
-    read aloud. Replies from the car are sent by your phone (they appear in
-    its sent messages; Recent events says "Reply to ...: sent"; the texts themselves only go to the service's log). If the car
-    then hangs on "Connecting..." and resets its Bluetooth, turn it off again.
+    read aloud. Replies from the car (and from Phone Link's Messages tab)
+    are sent by your phone; Recent events says "Reply to ...: sent".
+    - Emoji show in the car as words, e.g. "(thumbs up)", since the Tesla
+      shows real emoji as ????. Pictures show as "[picture]".
+    - Then turn on **Sync Messages** for AuxLink in the car's Bluetooth
+      settings. If the car ever switches it off again, update the Pi (1.0.81+
+      keeps the messages service up through Bluetooth restarts) and turn it
+      back on.
+    - If the car hangs on "Connecting..." and resets its Bluetooth, turn the
+      setting off again.
 11. **Development** tab (optional): services, logs, and a terminal on the Pi
     inside the setup page, the same as SSH, with one-tap buttons for the main
     logs. Turn on **Development terminal** in the Settings tab (it needs your own Pi login
     password; set a page password too, since anyone on the setup Wi-Fi can
     open the page). It logs in as the Pi user, so `sudo` asks for that
-    password, and it closes after 15 minutes idle.
+    password, and it closes after 15 minutes idle. **Copy last output** copies
+    the last command and what it printed (handy for sending a log), **Copy
+    all** the whole terminal.
 
 ---
 
@@ -366,11 +385,13 @@ shows up as a USB sound card (plus a data link and media keys).
   (and the Pi adds it at boot if it's ever missing, then asks for one more
   reboot). Pi updates leave the USB-C connection up, so the music device
   stays connected.
-- **Track info and album art:** from the AuxLink app (v1.0.5 or
-  newer), over the same cable.
-- **Car buttons:** play, pause, next and previous go to the AuxLink app
-  (v1.0.24 or newer), which tells the player directly, as a phone does with
-  the car over Bluetooth. Without the app they are sent as USB media keys.
+- **Track info and album art:** from the Phone Link app, over the same cable.
+- **Car buttons:** play, pause, next and previous go to the Phone Link app,
+  which tells the player directly, as a phone does with the car over
+  Bluetooth. Without the app they are sent as USB media keys.
+- **First play after the Pi starts:** the car often takes that first stream
+  silently, so a few seconds in, the Pi runs **Check and fix** by itself
+  (once per boot): a short gap, then sound.
 - **Voice search:** the Pi's USB sound card has a mic too, carrying the
   **car's cabin mic**, the same as the XIAO's.
 - **App link after a reboot:** as with the XIAO, if the app hasn't got its
@@ -384,7 +405,7 @@ Proven and reliable, and a good fallback if USB-C doesn't suit your setup
 - **Uses:** the XIAO wired as in section 3.
 - **Sound:** the Android device plays into the XIAO, which passes it to the
   Pi over I2S, and the Pi sends it to the car.
-- **Track info and album art:** from the **AuxLink** app (section 6),
+- **Track info and album art:** from the **Phone Link** app (section 6),
   over the XIAO's data link.
 - **Car buttons:** reach the device as USB media keys.
 - **Voice search:** the device's mic input is the **car's cabin mic**. By default
@@ -408,7 +429,7 @@ No XIAO and no wiring.
   (AVRCP cover art, Android 12+ players that publish artwork), so no app is
   needed. It shows from the second track after connecting. Not every device
   keeps offering it (one stopped sending picture numbers after a voice
-  search and never resumed). For dependable art install the AuxLink app
+  search and never resumed). For dependable art install the Phone Link app
   (section 6) and allow it **Nearby devices / Bluetooth**: it then sends the
   art to the Pi over Bluetooth instead, and takes over whenever it is
   connected.
@@ -435,17 +456,29 @@ No XIAO and no wiring.
 
 ---
 
-## 6. The Android music device and the AuxLink app
+## 6. The Android music device and the Phone Link app
 
-**Phone and Messages (USB-C source):** the app has Phone and Messages tabs
-that use your phone through the Pi, so the music device needs no SIM.
-- **Phone:** your phone's contacts (searchable), recent calls and a keypad.
-  Calls are made by your phone; the sound goes through the car as usual.
-- **Messages:** your texts as conversations, with replies (typed or one-tap
-  quick replies) sent by your phone. Needs "Text messages in the car" on in
-  the Settings tab.
+**Phone Link** (formerly "AuxLink app") runs on the music device. It has
+three tabs:
 
-The app reads what is playing on the device and sends it to the Pi, which
+- **Phone:** **Favourites** (your phone's starred contacts), **Contacts**
+  (searchable), **Recents** (missed calls in red) and a **Keypad**. Tap a
+  contact to call or text any of its numbers. Calls are made by your phone
+  through the Pi; the sound goes through the car as usual.
+- **Messages:** your phone's texts as conversations, newest first, with
+  bubbles, times in the device's time zone, and replies (typed, or one-tap
+  quick replies such as "On my way" and "Driving, I'll call you soon") sent
+  by your phone. Each sent text shows "Sending…", then its time, or why it
+  wasn't sent. Needs **Text messages in the car** on (Pi Settings tab).
+- **Status:** the connection to the Pi, what's playing, **The Pi** (Wi-Fi
+  network and signal, IP address, setup page address, software version,
+  uptime), a setup checklist that says why each permission is needed, and
+  **Tools** (below).
+
+Phone and Messages work with the **USB-C** source (and need the Pi update
+from the same time; the Pi's version shows on the Status tab).
+
+It also reads what is playing on the device and sends it to the Pi, which
 shows it in the car:
 - title, artist, album, length, position, play/pause state;
 - album art, from any player that publishes artwork (Spotify, YouTube Music,
@@ -469,86 +502,82 @@ straight from GitHub releases.
      **Filter release titles by regular expression** to `AuxLink app`. The
      same Releases page also has the Pi image and XIAO firmware, and this
      makes Obtainium look only at the app's releases.
+   - An entry added before the repository was renamed (`teslabridge`) may
+     stop seeing updates: edit its URL to the one above.
 3. Tap **Install**. Allow Obtainium to install apps when Android asks
    ("Install unknown apps").
-4. New app releases appear in Obtainium as updates. You can turn on
-   background update checks in Obtainium's settings.
+4. New app releases appear in Obtainium as updates (pull down to check now).
+   You can turn on background update checks in Obtainium's settings.
 
 ### 6.2 Or install by hand
 Download the latest `auxlink-v1.0.N.apk` (an "AuxLink app" release) from the
 [Releases page](https://github.com/chris-hemmings/auxlink/releases) on
 the device and open it. To update, install the newer APK over the top; it is
-signed with the same key.
+signed with the same key, and permissions and settings are kept.
 
 ### 6.3 Set the app up (once)
-1. Open **AuxLink** and tap **Open notification access settings**.
-   Turn on **AuxLink**. This is how Android lets it see what is
-   playing; it does not read your notifications' content.
+Open **Phone Link**: the **Status** tab's **Setup** list shows what's left
+to do, with an **Allow** button for each and a line saying why.
+
+1. **Notification access** (required): tap **Open** and turn on **Phone
+   Link**. This is how Android lets it see what is playing; it does not read
+   your notifications' content.
    - If the switch is **greyed out** ("restricted setting"), go to
-     **Settings → Apps → AuxLink → ⋮ (top right) → Allow restricted
+     **Settings → Apps → Phone Link → ⋮ (top right) → Allow restricted
      settings**, then try again. Android 13+ does this for apps installed
      outside the Play Store.
-   Allow **Nearby devices / Bluetooth** if the app asks: that's only used for
-   the Bluetooth music source. Allow **Microphone** too: nothing is recorded,
-   but without it Android's USB prompt (the XIAO is also a USB sound card)
+2. **Run in the background:** so battery saving never closes it.
+3. **Microphone:** nothing is recorded, but without it Android's USB prompt
    has no **Always** option and comes back at every plug-in.
-2. Plug in the XIAO (or connect the device to the Pi's USB-C). Android asks
-   **"Open AuxLink (USB) when this device is connected?"** Tick
+4. **Notifications** (Android 13+) and **Call and text pop-ups** ("Display
+   over other apps"): for the call and text pop-ups below.
+5. Connect the device to the Pi's USB-C (or plug in the XIAO). Android asks
+   **"Open Phone Link (USB) when this device is connected?"** Tick
    **Always** and tap **OK**.
-   - This is the USB permission. Nothing visible opens on later plug-ins,
-     and the app never asks again by itself. If you missed **Always**, the
-     app screen shows "USB access: NOT allowed": tap **Allow USB**, or
-     re-plug the XIAO and tick **Always**.
-   - No **Always** tick box, only a warning about recording audio? Allow the
-     app's **Microphone** permission (step 1) and re-plug.
-   - After the device restarts with the XIAO still plugged in, Android
-     doesn't count that as a plug-in. The XIAO (firmware 1.0.2+) and the
-     Pi's USB-C mode notice the app has no link and re-plug themselves once,
-     about 15 s in, so nothing needs tapping.
-3. Go back to the app. Its status should show:
-   - Notification access: **granted**
-   - XIAO plugged in: **yes**
-   - Data link open: **yes - USB** (or **yes - Bluetooth** for the Bluetooth source)
-4. Tap **Let AuxLink run in the background** and allow it (the status line
-   "Background running" then says **allowed**), so battery saving never stops
-   it. Allow notifications too: the app keeps a quiet "AuxLink connected"
-   notification, which keeps Android (and head units' app killers) from
-   closing it.
-5. Play something. The car shows the track and, after a second or two, the
-   album art. Each time the SMO connects, the Pi turns its media volume up to
-   100% (Android starts USB audio low); use the car's volume. Turn this off
-   on the setup page (Settings) if you prefer.
+   - Nothing visible opens on later plug-ins. If you missed **Always**, the
+     **USB access** line has an **Allow** button.
+   - After the device restarts still plugged in, Android doesn't count that
+     as a plug-in. The Pi's USB-C mode (and the XIAO, firmware 1.0.2+)
+     notices the app has no link and re-plugs itself once, about 15 s in, so
+     nothing needs tapping.
+6. **Nearby devices (Bluetooth)** is optional: only for the Bluetooth music
+   source.
 
-The app runs in the background by itself. You don't need to keep it open.
-If the car ever shows an old track, play/pause once; the app re-checks every
-5 seconds which player is playing.
+The top of the Status tab then says **Connected to the Pi**. Play something:
+the car shows the track and, after a second or two, the album art. Each time
+the device connects, the Pi turns its media volume up to 100% (Android starts
+USB audio low); use the car's volume (Settings on the Pi's page to turn off).
 
-The app's screen shows what it needs (notification access, microphone,
-background running, USB access, the data link) and what it last sent. Its
-buttons:
-- **Open notification access settings**, **Let AuxLink run in the
-  background** and **Allow USB**: the one-time permissions above.
-- **Fix sound** (needs the data link): the car shows music playing but it's
-  silent. The Pi restarts the music stream to the car, like **Check and
-  fix**. Pausing and pressing play again in the car within a few seconds does
-  the same.
-- **Setup: turn on the setup Wi-Fi** (needs the data link): the Pi turns on
-  its setup Wi-Fi for 15 minutes. Connect the device to **AuxLink-setup**
-  (password `auxlink-setup` unless changed). If the Pi is on your home Wi-Fi
-  it doesn't start the setup Wi-Fi; its page is then on the home network.
-- **Open setup page**: finds the Pi on its setup Wi-Fi (10.42.0.1) or on the
-  same network as the device (auxlink.local) and opens its page in the
-  browser.
+The app runs in the background by itself; you don't need to keep it open.
+It keeps a quiet "Phone Link connected" notification, which stops Android
+(and head units' app killers) closing it. It also sends the Pi its time zone
+and clock every few minutes, so message times and logs are right even
+without internet in the car.
 
-While the app is connected it also sends a small "still here" message every
-5 seconds, so the Pi and the XIAO know it has its link.
+**Tools** (Status tab):
+- **Fix sound:** the car shows music playing but it's silent. The Pi
+  restarts the music stream to the car, like **Check and fix**. Pausing and
+  pressing play again in the car within a few seconds does the same.
+- **Test the call pop-up:** a pretend call for 8 seconds.
+- **Setup Wi-Fi:** the Pi turns on **AuxLink-setup** for 15 minutes (not if
+  it's on your home Wi-Fi; its page is then on the home network).
+- **Restart the Pi** (asks first): music and calls stop for about a minute.
+- **Setup page:** finds the Pi (10.42.0.1 or auxlink.local) and opens its
+  page in the browser.
+- **Details for troubleshooting** (tap to open): the link, USB and the raw
+  data sent to the Pi.
 
-**Calls and texts on the music device** (Settings tab, on by default; USB-C
-or Bluetooth source, not the XIAO yet): an incoming call pops up with the
-caller's name (from the synced contacts) and **Answer** / **Decline**
-buttons that answer or decline it on your phone; new texts show as
-notifications (with **Text messages in the car** on). Allow the app's
-notifications; each kind can be turned off in Android's settings for the app.
+**Calls and texts on the music device** (Pi Settings tab, on by default;
+USB-C or Bluetooth source, not the XIAO yet), with **Call and text pop-ups**
+allowed:
+- **Calls:** a floating bar over whatever is on screen shows the caller
+  (name from your contacts, or e.g. "Messenger user" for app calls),
+  **Answer** / **Decline**, then a timer and **Hang up**. It stays until the
+  call ends; drag it up or down if it covers something. Tapping anything but
+  its buttons does nothing.
+- **Texts:** a pop-up with the sender and message for 10 seconds. Tap it to
+  open that conversation on the Messages tab.
+- Without the pop-up permission they show as normal notifications instead.
 
 ### 6.4 Other requirements for the device
 - **Android 8.0 or newer.**
@@ -558,6 +587,9 @@ notifications; each kind can be turned off in Android's settings for the app.
 - The **Google app / Assistant** (or the head unit's own voice search) uses
   the USB mic automatically when the XIAO or the Pi's USB-C is plugged in. For
   the Bluetooth source it needs a Bluetooth-headset-aware voice app (see 5.3).
+- The music app must play to the **USB / wired** output. If music suddenly
+  goes mono or quiet, check the player's output device (e.g. Spotify's device
+  picker) didn't switch to the device's own speaker.
 
 ---
 
@@ -567,11 +599,18 @@ notifications; each kind can be turned off in Android's settings for the app.
   - **From the web page:** go to the **Updates** tab, choose `auxlink-pi-update-X.zip`
     from the latest "AuxLink Pi image" release (or GitHub's "Download ZIP" of
     this repository) and tap **Install update**.
-    No reboot is needed, and the car and phone stay connected.
+    No reboot is needed, and the car and phone stay connected. The installed
+    version shows at the top of the page and on Phone Link's Status tab.
+  - When an update changes the Bluetooth patches (album art, favourites), it
+    also rebuilds the Pi's Bluetooth program **in the background** (15-20
+    min, needs internet; Recent events shows progress and retries on the next
+    update if it fails). Bluetooth restarts once at the end, so do it while
+    parked.
   - **Over SSH:** `git clone` (or `git pull`) this repository, then
     `cd auxlink/pi && sudo ./update.sh`.
   - Or flash the newest image again (it starts unpaired).
-- **The app:** Obtainium (or install the newer APK).
+- **The app:** Obtainium (or install the newer APK). Features that need both
+  (e.g. Phone and Messages) say so; update the Pi too.
 - **The XIAO:** only when there's a new "AuxLink XIAO firmware" release.
   Easiest: the setup page's **Updates** tab (**XIAO firmware**). Hold **B**, plug the
   XIAO into one of the Pi's USB ports, choose the `.uf2` and tap **Flash
@@ -589,7 +628,9 @@ supports Bluetooth calls and music:
 - **Music:** A2DP.
 - **Track info and buttons:** AVRCP.
 - **Album art:** AVRCP 1.6 cover art.
-- **Contacts and recent calls:** PBAP.
+- **Contacts, favourites and recent calls:** PBAP (1.2, with the
+  phonebook's favourites).
+- **Text messages:** MAP.
 
 Its defaults were tuned on a Tesla. Three settings on the setup page
 (**Settings** tab) let you adjust it for other cars:
@@ -617,19 +658,24 @@ awake (Tesla: **Controls → Electrical → Keep Accessory Power On**), or tap
 |---|---|
 | Can't find the setup page | Join `AuxLink-setup` and open http://10.42.0.1. If the setup Wi-Fi is off, hold the setup button 3 s, or reboot (it is on for 10 minutes after boot). |
 | No music in the car | Setup page → Music → **Check audio**, then **Check and fix**. Check that the car's media source is **Bluetooth / AuxLink**. |
-| Silent or only one side | **Check and fix** recreates the audio path. With the wired source, check the three I2S wires and their ground. |
-| No track info (wired) | App status: notification access granted, XIAO plugged in, data link open. Re-plug the XIAO. Check the serial wires (D6 → pin 10, D7 ← pin 8). |
+| Silent or only one side | **Check and fix** recreates the audio path. Check the music app plays to the USB/wired output. With the wired source, check the three I2S wires and their ground. |
+| No track info (wired) | Phone Link → Status: Connected, Setup all done. Re-plug the XIAO. Check the serial wires (D6 → pin 10, D7 ← pin 8). |
 | No album art | With the image it is built in; on a manual install run `build-bluetoothd-cover.sh` (2.2). Test with `sudo cover-test.sh` on the Pi, then turn the car's Bluetooth off and on once. |
 | No contacts / recent calls in the car | With a manual install, build the contacts server (2.2). Allow contacts and call history on the phone, then on the setup page restart the services. |
 | Car doesn't reconnect | It reconnects by itself when it wakes. After a fresh start of the Pi it may already have given up: see "Pi powered by the car" in [Other cars](#other-cars). Otherwise open **Recent events / Logs** on the setup page. |
 | Car pairs, then shows "Connecting..." for a minute and restarts its Bluetooth | Update the Pi (1.0.44+): older versions offered the car an empty text-messages service that some cars wait on. If **Text messages in the car** is on (Settings), turn it off. |
 | Music shows as playing but is silent (e.g. the car connected after the music started) | Pause and play again in the car within a few seconds, or the app's **Fix sound**, or **Check and fix**. |
 | USB-C source: the music device lost its connection to the Pi | **Check and fix**, or pause and play again in the car within a few seconds: both re-plug the USB-C connection in software when it's broken (never a working one). If it reports "stuck", reboot the Pi. |
-| The app asks for USB access at every plug-in | Allow the app's **Microphone** permission, re-plug the XIAO and tick **Always**. |
-| After a restart of the music device the app has no data link | Update the XIAO to firmware 1.0.2+ (it re-plugs itself); meanwhile tap **Allow USB** in the app. |
-| The app stops sending after a while | In the app tap **Let AuxLink run in the background**, allow notifications, and allow AuxLink in any app-killer / auto-start list on the device. |
+| The app asks for USB access at every plug-in | Allow the app's **Microphone** permission, re-plug and tick **Always**. |
+| After a restart of the music device the app has no data link | It re-plugs itself after ~15 s (USB-C, or XIAO firmware 1.0.2+); otherwise tap **Allow** next to USB access in the app. |
+| The app stops sending after a while | Phone Link → Status → Setup: allow **Run in the background** and notifications, and allow Phone Link in any app-killer / auto-start list on the device. |
 | Music device volume low | The Pi turns it to 100% when the device connects (Settings, wired/USB-C, needs the app). Check the setting is on. |
 | Music skips with the Bluetooth source | The built-in Bluetooth shares the Wi-Fi radio: use a USB dongle for the source. |
+| No favourites in the car | The Pi needs its Bluetooth program built with the favourites patch (the 1.0.80+ image has it; updates rebuild it in the background). Then forget **AuxLink** in the car and pair again, so it re-reads what the Pi offers. Favourites on the phone must be starred contacts. |
+| Car keeps switching **Sync Messages** off | Update the Pi (1.0.81+), turn it back on in the car's Bluetooth settings. |
+| Message times wrong (e.g. hours off) | Update the Pi (1.0.79+) and the app: the Pi then takes its time zone and clock from the music device. |
+| Phone Link doesn't show a new version | In Obtainium, pull down to check; check its URL is `https://github.com/chris-hemmings/auxlink`. Or install the APK by hand (6.2). |
+| Pop-ups for calls/texts don't appear | Phone Link → Status → Setup: allow **Call and text pop-ups**; then **Tools → Test the call pop-up**. |
 | Logs over SSH | `journalctl -u auxlink-media -u hfp-relay -u auxlink-pairing -f` and `journalctl --user -u auxlink-audio -f` |
 
 ---
