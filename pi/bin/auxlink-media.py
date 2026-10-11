@@ -209,6 +209,14 @@ def smo_volume_max(why):
     if time.time() - VOLUME["last_max"] < 60:
         return
     VOLUME["last_max"] = time.time()
+    if MUSIC_SOURCE == "usbc" and FD is not None and APP_CTL.get("ver", 0) >= 2:
+        # Phone Link sets the volume itself, in one go. (Key presses stop at
+        # Android's "safe listening" warning, and confirming it then applies
+        # only the one press it was holding back; a direct "maximum" is
+        # applied in full once it's confirmed.)
+        log(f"SMO volume to 100% ({why}, by Phone Link)")
+        app_send({"volume": "max"})
+        return
     log(f"SMO volume to 100% ({why})")
     left = [30]                     # more presses than any Android volume scale has steps
 
@@ -2077,11 +2085,15 @@ def main():
                 # The app sends a line at least every 5 s while connected: the
                 # first after a long gap means the SMO has (re)connected.
                 now = time.time()
+                if info.get("ctl"):
+                    APP_CTL["seen"] = now
+                    try:
+                        APP_CTL["ver"] = int(info["ctl"])
+                    except (TypeError, ValueError):
+                        pass
                 if now - VOLUME["last_line"] > 20:
                     smo_volume_max("the SMO connected")
                 VOLUME["last_line"] = now
-                if info.get("ctl"):
-                    APP_CTL["seen"] = now
                 if "clock" in info:
                     set_clock(info["clock"])
                 elif info.get("req") == "pi":

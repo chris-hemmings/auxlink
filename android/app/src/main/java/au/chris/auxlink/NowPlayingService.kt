@@ -130,7 +130,7 @@ class NowPlayingService : NotificationListenerService() {
             pickController()          // also resends (clears lastLine, pushes)
             // Nothing playing anywhere: say "still here" anyway, so the XIAO
             // sees the app has its USB link (else it replugs to get it one).
-            if (controller == null) io.execute { sendLine("{\"cmd\":\"ping\"}") }
+            if (controller == null) io.execute { sendLine("{\"cmd\":\"ping\",\"ctl\":2}") }
             // This device's time zone and clock for the Pi (which has neither
             // in the car): at the start, then every 5 minutes.
             if (beats++ % 60 == 0) request(JSONObject().put("clock", JSONObject()
@@ -204,6 +204,7 @@ class NowPlayingService : NotificationListenerService() {
                 channels()
                 when {
                     j.has("media") -> media(j.optString("media"))
+                    j.has("volume") -> if (j.optString("volume") == "max") volumeMax()
                     j.has("call") -> showCall(j.optString("call"), j.optString("name"), j.optString("number"))
                     j.has("text") -> j.optJSONObject("text")?.let {
                         showText(it.optString("from"), it.optString("body"), it.optString("number"))
@@ -212,6 +213,20 @@ class NowPlayingService : NotificationListenerService() {
             } catch (e: Exception) {
                 Log.w(TAG, "notification failed: ${e.message}")
             }
+        }
+    }
+
+    /** Media volume to 100% when the Pi asks (each time this device connects;
+     *  the car's volume is what people use). Set directly: if Android shows its
+     *  "safe listening" warning, confirming it applies the full 100%. */
+    private fun volumeMax() {
+        try {
+            val am = getSystemService(android.media.AudioManager::class.java)
+            val max = am.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
+            am.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, max,
+                android.media.AudioManager.FLAG_SHOW_UI)
+        } catch (e: Exception) {
+            Log.w(TAG, "volume: ${e.message}")
         }
     }
 
@@ -449,7 +464,7 @@ class NowPlayingService : NotificationListenerService() {
             put("dur", md?.getLong(MediaMetadata.METADATA_KEY_DURATION) ?: 0L)
             put("pos", currentPosition(ps))
             put("state", state)
-            put("ctl", 1)   // the Pi may send play/pause/next as {"media": ...}
+            put("ctl", 2)   // the Pi may send {"media": play/pause/next...} and {"volume": "max"}
         }
         val line = json.toString()
         nowPlaying = line
