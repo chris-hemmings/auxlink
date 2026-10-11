@@ -562,8 +562,50 @@ class Player(dbus.service.Object):
         elif changed:
             log("[SMO] sound " + ("arriving" if present else "stopped"))
 
+    def boot_fix(self):
+        """First play after the Pi starts: the car often takes that first
+        stream silently. Do what the setup page's Check and fix does (repair
+        USB-C if broken, then restart the car's stream with music in it),
+        once, a few seconds into the music."""
+        if self.status != "Playing" or self.in_call:
+            self.boot_fix_done = False      # try again on the next play
+            return False
+
+        try:
+            open("/run/auxlink/boot-fix-done", "w").close()   # once per boot (/run is emptied at boot)
+        except OSError:
+            pass
+
+        def run():
+            log("First play since the Pi started: running Check and fix")
+            if MUSIC_SOURCE == "usbc":
+                try:
+                    r = subprocess.run(["/usr/local/bin/auxlink-usb-gadget.sh", "repair"],
+                                       capture_output=True, text=True, timeout=60)
+                    for line in (r.stdout or "").splitlines()[-3:]:
+                        log("  USB-C: " + line.strip())
+                except (OSError, subprocess.TimeoutExpired) as e:
+                    log(f"  USB-C check failed: {e}")
+            try:
+                pw = pwd.getpwnam(AUDIO_USER)
+                r = subprocess.run(["/usr/sbin/runuser", "-u", AUDIO_USER, "--", "env",
+                                    f"XDG_RUNTIME_DIR=/run/user/{pw.pw_uid}",
+                                    os.path.join(pw.pw_dir, ".local/bin/audio-check.sh"), "--fix"],
+                                   capture_output=True, text=True, timeout=90)
+                out = re.sub(r"\x1b\[[0-9;]*m", "", (r.stdout or "") + (r.stderr or ""))
+                for line in out.strip().splitlines()[-3:]:
+                    log("  audio: " + line.strip())
+            except (OSError, KeyError, subprocess.TimeoutExpired) as e:
+                log(f"  Audio check failed: {e}")
+        threading.Thread(target=run, daemon=True).start()
+        return False
+
     def write_play_state(self):
         want = "1" if self.status == "Playing" else "0"
+        if (want == "1" and not getattr(self, "boot_fix_done", False)
+                and not os.path.exists("/run/auxlink/boot-fix-done")):
+            self.boot_fix_done = True
+            GLib.timeout_add(5000, self.boot_fix)
         if getattr(self, "_play_written", None) == want:
             return
         try:
