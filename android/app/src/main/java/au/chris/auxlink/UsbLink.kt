@@ -39,6 +39,9 @@ class UsbLink(private val context: Context, private val onLine: ((String) -> Uni
 
     fun isOpen() = conn != null
 
+    /** What is plugged in, for the app screen: "the Pi (USB-C)", "the XIAO" or null. */
+    fun kind(): String? = findDevice()?.let { if (it.productId == PID_PI) "the Pi (USB-C)" else "the XIAO" }
+
     fun permitted() = findDevice()?.let { usb.hasPermission(it) } ?: false
 
     /** Android's USB permission prompt; only from the app screen (a person is there). */

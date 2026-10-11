@@ -224,7 +224,7 @@ class MainActivity : Activity() {
             }
         }
         steps += Step("USB access",
-            "The XIAO is plugged in but AuxLink may not use it yet. Allow it, and tick Always.",
+            "Android needs your OK before AuxLink can use the USB connection to the Pi. Allow it, and tick Always.",
             "Allow", false,
             { UsbLink(this).findDevice() != null }, { UsbLink(this).permitted() }) {
             UsbLink(this).askPermission()
@@ -299,7 +299,7 @@ class MainActivity : Activity() {
     private fun update() {
         val linked = NowPlayingService.linkOpen
         val running = NowPlayingService.instance != null
-        val xiao = UsbLink(this).findDevice() != null
+        val usb = UsbLink(this).kind()      // the Pi's USB-C, the XIAO, or nothing
 
         // Connection
         val (title, sub, colour) = when {
@@ -307,7 +307,7 @@ class MainActivity : Activity() {
             linked -> Triple("Connected to AuxLink", "Over " + NowPlayingService.linkKind.ifEmpty { "USB" } +
                 ". Track info and car buttons are working.", good)
             !running -> Triple("Starting…", "AuxLink is starting in the background.", warn)
-            xiao && !UsbLink(this).permitted() -> Triple("Waiting for USB access",
+            usb != null && !UsbLink(this).permitted() -> Triple("Waiting for USB access",
                 "Tap Allow next to USB access below.", warn)
             else -> Triple("Not connected", "Plug this device into the Pi's USB-C port (or the XIAO). " +
                 "With the Bluetooth music source, connect to AuxLink-music.", bad)
@@ -360,10 +360,10 @@ class MainActivity : Activity() {
         // Details
         details.text = buildString {
             appendLine("Link: " + if (linked) NowPlayingService.linkKind else "none")
-            appendLine("XIAO plugged in: " + if (xiao) "yes" else "no")
+            appendLine("USB: " + (usb ?: "nothing plugged in"))
             appendLine("Service running: " + if (running) "yes" else "no")
             if (CallBar.lastProblem.isNotEmpty()) appendLine("Pop-up problem: " + CallBar.lastProblem)
-            if (!linked && !xiao) { appendLine("Bluetooth, last try:"); appendLine(BtLink.lastTry) }
+            if (!linked && usb == null) { appendLine("Bluetooth, last try:"); appendLine(BtLink.lastTry) }
             appendLine("Last sent to the Pi:")
             append(NowPlayingService.lastSent)
         }
