@@ -395,7 +395,7 @@ class Messages:
                 log(f"Message {handle} wasn't plain UTF-8 ({how}); bytes there: {raw[max(0, at - 8):at + 16].hex()}")
             name, number, body = parse_bmessage(text)
             self.messages.append({"handle": handle, "folder": "inbox",
-                                  "time": time.strftime("%Y%m%dT%H%M%S"),
+                                  "time": time.strftime("%Y%m%dT%H%M%S"), "ts": time.time(),
                                   "sender": name, "number": number, "text": body, "read": False})
             self.save()
             who = name or number or "unknown"

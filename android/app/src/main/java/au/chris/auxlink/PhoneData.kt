@@ -16,6 +16,8 @@ object PhoneData {
     data class Message(
         val incoming: Boolean, val who: String, val number: String,
         val text: String, val at: String, var status: String = "",
+        /** The moment, in ms since 1970 (shown in this device's time zone). */
+        val ts: Long = 0,
     )
 
     var contacts: List<Contact> = emptyList(); private set
@@ -78,8 +80,9 @@ object PhoneData {
             "messages" -> {
                 messages = (0 until a.length()).mapNotNull { a.optJSONObject(it) }.map {
                     Message(it.optInt("in") == 1, it.optString("who"), it.optString("num"),
-                        it.optString("text"), it.optString("at"), it.optString("st"))
-                }.sortedBy { it.at }
+                        it.optString("text"), it.optString("at"), it.optString("st"),
+                        (it.optDouble("ts", 0.0) * 1000).toLong())
+                }.sortedBy { it.ts }
                 messagesEnabled = last.optBoolean("enabled", true)
                 messagesLoaded = true
                 // The Pi now has our sent texts on record: stop showing local copies.
@@ -115,12 +118,20 @@ object PhoneData {
         return nameIndex[key(number)] ?: ""
     }
 
-    /** "20261011T101010" -> "10:10" today, "Yesterday", or "11 Oct". */
+    /** A moment (ms since 1970) -> "10:10" today, "Yesterday", or "11 Oct". */
+    fun shortTime(ts: Long): String = if (ts <= 0) "" else shortTime(java.util.Date(ts))
+
+    /** Phone-local "20261011T101010" (call history) -> the same short form. */
     fun shortTime(at: String): String {
         if (at.length < 13) return ""
         return try {
             val f = java.text.SimpleDateFormat("yyyyMMdd'T'HHmmss", java.util.Locale.US)
-            val d = f.parse(at.take(15)) ?: return ""
+            shortTime(f.parse(at.take(15)) ?: return "")
+        } catch (e: Exception) { "" }
+    }
+
+    private fun shortTime(d: java.util.Date): String {
+        return try {
             val now = java.util.Calendar.getInstance()
             val then = java.util.Calendar.getInstance().apply { time = d }
             val sameDay = now.get(java.util.Calendar.YEAR) == then.get(java.util.Calendar.YEAR) &&

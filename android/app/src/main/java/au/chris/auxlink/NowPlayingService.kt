@@ -113,12 +113,17 @@ class NowPlayingService : NotificationListenerService() {
     // list, so nothing else would switch to it - the app kept following the
     // old one until reopened), and resend so the car's position stays right
     // and a Pi that rebooted catches up.
+    private var beats = 0
     private val heartbeat = object : Runnable {
         override fun run() {
             pickController()          // also resends (clears lastLine, pushes)
             // Nothing playing anywhere: say "still here" anyway, so the XIAO
             // sees the app has its USB link (else it replugs to get it one).
             if (controller == null) io.execute { sendLine("{\"cmd\":\"ping\"}") }
+            // This device's time zone and clock for the Pi (which has neither
+            // in the car): at the start, then every 5 minutes.
+            if (beats++ % 60 == 0) request(JSONObject().put("clock", JSONObject()
+                .put("tz", java.util.TimeZone.getDefault().id).put("now", System.currentTimeMillis())))
             main.postDelayed(this, 5000)
         }
     }

@@ -1459,7 +1459,7 @@ class PhoneLink:
             return
         self.pending[rid] = app_id
         self.remember({"id": app_id, "to": to, "text": text,
-                       "time": time.strftime("%Y%m%dT%H%M%S"), "status": "sending"})
+                       "time": time.strftime("%Y%m%dT%H%M%S"), "ts": time.time(), "status": "sending"})
         log(f"App: text to {to}: {text[:60]}")
 
     @staticmethod
@@ -1596,10 +1596,19 @@ class PhoneLink:
             sent = json.load(open(self.SENT))
         except (OSError, ValueError):
             sent = []
+        def ts(m):
+            # The moment (seconds since 1970): what the app shows in its own
+            # time zone. Older records only have the Pi's local time.
+            if m.get("ts"):
+                return m["ts"]
+            try:
+                return time.mktime(time.strptime(m.get("time", "")[:15], "%Y%m%dT%H%M%S"))
+            except ValueError:
+                return 0
         items = [{"in": 1, "who": m.get("sender") or "", "num": m.get("number") or "",
-                  "text": m.get("text") or "", "at": m.get("time") or ""} for m in inbox]
+                  "text": m.get("text") or "", "at": m.get("time") or "", "ts": ts(m)} for m in inbox]
         items += [{"in": 0, "num": m.get("to") or "", "text": m.get("text") or "",
-                   "at": m.get("time") or "", "st": m.get("status") or ""} for m in sent]
+                   "at": m.get("time") or "", "ts": ts(m), "st": m.get("status") or ""} for m in sent]
         self.send_list("messages", items, {"enabled": CONF.get("MESSAGES", "0") == "1"})
 
     def send_list(self, kind, items, extra=None):
@@ -1627,6 +1636,42 @@ class PhoneLink:
 
 
 PHONE = {"link": None}
+
+
+def set_clock(c):
+    """The music device's time zone and clock (from its network or GPS):
+    the Pi has no clock of its own and usually no internet in the car, and
+    it starts in UTC. Message times (for the car too) and logs then match."""
+    def run():
+        tz = str(c.get("tz") or "")
+        if re.fullmatch(r"[A-Za-z]+(/[A-Za-z0-9_+-]+)+", tz) and os.path.exists("/usr/share/zoneinfo/" + tz):
+            try:
+                cur = os.path.realpath("/etc/localtime").split("/zoneinfo/", 1)[-1]
+            except OSError:
+                cur = ""
+            if cur != tz:
+                r = subprocess.run(["timedatectl", "set-timezone", tz], capture_output=True, text=True)
+                if r.returncode == 0:
+                    log(f"Time zone set to {tz} (from the music device)")
+                    os.environ.pop("TZ", None)
+                    time.tzset()
+                    # The texts service stamps times in local time: restart it
+                    # so new texts use the new zone (it's not the car's service).
+                    subprocess.run(["/usr/sbin/runuser", "-u", AUDIO_USER, "--", "env",
+                                    f"XDG_RUNTIME_DIR=/run/user/{pwd.getpwnam(AUDIO_USER).pw_uid}",
+                                    "systemctl", "--user", "restart", "auxlink-messages"],
+                                   capture_output=True)
+        try:
+            now = float(c.get("now") or 0) / 1000
+        except (TypeError, ValueError):
+            now = 0
+        if now > 1.7e9:
+            synced = subprocess.run(["timedatectl", "show", "-p", "NTPSynchronized", "--value"],
+                                    capture_output=True, text=True).stdout.strip() == "yes"
+            if not synced and abs(now - time.time()) > 120:
+                if subprocess.run(["date", "-s", "@%d" % int(now)], capture_output=True).returncode == 0:
+                    log("Clock set from the music device (no internet time here)")
+    threading.Thread(target=run, daemon=True).start()
 
 
 def pi_status():
@@ -1879,7 +1924,9 @@ def main():
                 VOLUME["last_line"] = now
                 if info.get("ctl"):
                     APP_CTL["seen"] = now
-                if info.get("req") == "pi":
+                if "clock" in info:
+                    set_clock(info["clock"])
+                elif info.get("req") == "pi":
                     app_send({"pi": pi_status()})
                 elif PHONE["link"] and ("req" in info or "dial" in info or "sms" in info):
                     PHONE["link"].handle(info)

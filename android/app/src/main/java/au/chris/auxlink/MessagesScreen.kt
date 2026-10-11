@@ -179,7 +179,7 @@ class MessagesScreen(private val ctx: Context, private val ui: Ui) {
 
     // ------------------------------------------------------------ data
 
-    private fun allMessages() = (PhoneData.messages + PhoneData.sending.values).sortedBy { it.at }
+    private fun allMessages() = (PhoneData.messages + PhoneData.sending.values).sortedBy { it.ts }
 
     private fun build(): List<Convo> =
         allMessages().filter { it.number.isNotEmpty() }.groupBy { PhoneData.key(it.number) }.map { (k, items) ->
@@ -187,7 +187,7 @@ class MessagesScreen(private val ctx: Context, private val ui: Ui) {
             val name = items.lastOrNull { it.who.isNotEmpty() }?.who?.takeIf { it != number }
                 ?: PhoneData.nameFor(number)
             Convo(k, number, name, items.last(), items)
-        }.sortedByDescending { it.last.at }
+        }.sortedByDescending { it.last.ts }
 
     private fun refresh() {
         convos = build()
@@ -236,7 +236,7 @@ class MessagesScreen(private val ctx: Context, private val ui: Ui) {
         }
         val id = System.currentTimeMillis().toString()
         val at = java.text.SimpleDateFormat("yyyyMMdd'T'HHmmss", java.util.Locale.US).format(java.util.Date())
-        PhoneData.sending[id] = PhoneData.Message(false, "", openNumber, t, at, "sending")
+        PhoneData.sending[id] = PhoneData.Message(false, "", openNumber, t, at, "sending", System.currentTimeMillis())
         svc.request(JSONObject().put("sms", JSONObject().put("to", openNumber).put("text", t).put("id", id)))
         input.setText("")
         refresh()
@@ -295,7 +295,7 @@ class MessagesScreen(private val ctx: Context, private val ui: Ui) {
                 orientation = LinearLayout.HORIZONTAL
                 addView(ui.text(name, 17f, ui.text1, lines = 1),
                     LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-                addView(ui.text(PhoneData.shortTime(c.last.at), 13f, ui.text2))
+                addView(ui.text(PhoneData.shortTime(c.last.ts), 13f, ui.text2))
             })
             addView(ui.text(preview, 14f, ui.text2, lines = 2))
         }
@@ -319,7 +319,7 @@ class MessagesScreen(private val ctx: Context, private val ui: Ui) {
             val status = when {
                 m.status == "sending" -> "Sending…"
                 failed -> "Not sent: " + m.status.removePrefix("failed: ").ifEmpty { "error" }
-                else -> PhoneData.shortTime(m.at)
+                else -> PhoneData.shortTime(m.ts)
             }
             if (status.isNotEmpty())
                 addView(ui.text(status, 11f, if (mine) 0xCCFFFFFF.toInt() else ui.text2).apply {
