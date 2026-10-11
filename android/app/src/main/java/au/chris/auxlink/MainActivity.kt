@@ -67,6 +67,14 @@ class MainActivity : Activity() {
     private lateinit var npState: TextView
     private lateinit var setupHead: TextView
     private lateinit var piRows: LinearLayout
+    private lateinit var btRows: LinearLayout
+    private lateinit var flowRows: LinearLayout
+    private lateinit var checkRows: LinearLayout
+    private var btShown = ""
+    private var flowShown = ""
+    private var checkShown: org.json.JSONObject? = null
+    private var btResultShown: org.json.JSONObject? = null
+    private var checking = false
     private var ticks = 0
     private lateinit var note: TextView
     private lateinit var details: TextView
@@ -107,6 +115,8 @@ class MainActivity : Activity() {
         col.addView(header())
         col.addView(connectionCard())
         col.addView(piCard())
+        col.addView(btCard())
+        col.addView(flowCard())
         col.addView(setupCard())
         col.addView(toolsCard())
         col.addView(detailsCard())
@@ -331,6 +341,225 @@ class MainActivity : Activity() {
         if (st.optString("host").isNotEmpty()) piRows.addView(piRow("Name", st.optString("host")))
     }
 
+    // ------------------------------------------------------------ Bluetooth
+
+    private fun btCard(): View {
+        val c = card()
+        c.addView(TextView(this).apply {
+            text = "Bluetooth"; setTextColor(text1); textSize = 18f; typeface = Typeface.DEFAULT_BOLD
+        })
+        btRows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, px(4), 0, 0) }
+        c.addView(btRows)
+        return c
+    }
+
+    private fun btDo(action: String, role: String) {
+        NowPlayingService.instance?.request(org.json.JSONObject().put("bt_do",
+            org.json.JSONObject().put("action", action).put("role", role)))
+        Toast.makeText(this, when (action) {
+            "pair" -> "Pairing open for 2 minutes"
+            "connect" -> "Connecting… (up to 30 s)"
+            "forget" -> "Forgetting…"
+            else -> "Done"
+        }, Toast.LENGTH_SHORT).show()
+    }
+
+    private fun updateBt(linked: Boolean) {
+        val r = NowPlayingService.btResult
+        if (r != null && r !== btResultShown) {
+            btResultShown = r
+            if (r.optString("error").isNotEmpty())
+                Toast.makeText(this, "Couldn't do that: " + r.optString("error"), Toast.LENGTH_LONG).show()
+        }
+        val st = NowPlayingService.btStatus
+        val key = (if (linked) "1" else "0") + (st?.toString() ?: "")
+        if (key == btShown) return          // rebuild only on change (taps stay reliable)
+        btShown = key
+        btRows.removeAllViews()
+        if (!linked || st == null) {
+            btRows.addView(TextView(this).apply {
+                text = if (!linked) "Connect to the Pi to see and manage Bluetooth."
+                       else "Asking the Pi… (needs Pi update 1.0.84 or newer)"
+                setTextColor(text2); textSize = 14f
+            })
+            return
+        }
+        if (st.optString("error").isNotEmpty()) {
+            btRows.addView(TextView(this).apply { text = st.optString("error"); setTextColor(warn); textSize = 14f })
+            return
+        }
+        val w = st.optJSONObject("window")
+        if (w != null) {
+            val role = w.optString("role")
+            val name = when (role) { "car" -> "AuxLink"; "phone" -> "AuxLink-phone"; else -> "AuxLink-music" }
+            val left = w.optInt("seconds_left")
+            btRows.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                background = round(0xFF1F2A3D.toInt(), 10f)
+                setPadding(px(12), px(10), px(8), px(10))
+                addView(TextView(this@MainActivity).apply {
+                    text = "Pairing open: on the ${if (role == "source") "music source" else role}, add Bluetooth " +
+                        "device \"$name\" (${left / 60}:${"%02d".format(left % 60)} left)"
+                    setTextColor(text1); textSize = 14f
+                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                addView(pillButton("Cancel", false) { btDo("pair/cancel", role) })
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = px(6); bottomMargin = px(4) })
+        }
+        val roles = mutableListOf("car" to "Car", "phone" to "Your phone")
+        if (st.optString("source_kind") == "bluetooth") roles += "source" to "Music source"
+        for ((role, label) in roles) {
+            val d = st.optJSONObject(role) ?: org.json.JSONObject()
+            val paired = d.optString("address").isNotEmpty()
+            val connected = d.optBoolean("connected")
+            val dotColour = if (connected) good else if (paired) warn else line
+            val detail = if (!paired) "Not paired" else
+                (d.optString("name").ifEmpty { d.optString("address") }) +
+                    "  ·  " + (if (connected) "connected" else "not connected")
+            btRows.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, px(10), 0, px(4))
+                addView(View(this@MainActivity).apply {
+                    background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(dotColour) }
+                }, LinearLayout.LayoutParams(px(12), px(12)).apply { marginEnd = px(12) })
+                addView(textBlock(label, detail),
+                    LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                if (paired && !connected) addView(pillButton("Connect", true) { btDo("connect", role) })
+                if (paired) addView(pillButton("Forget", false) {
+                    android.app.AlertDialog.Builder(this@MainActivity, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                        .setTitle("Forget the ${label.lowercase()}?")
+                        .setMessage("It will need pairing again. On the ${label.lowercase()} too, remove the AuxLink entry before pairing again.")
+                        .setPositiveButton("Forget") { _, _ -> btDo("forget", role) }
+                        .setNegativeButton("Cancel", null).show()
+                })
+                if (!paired) addView(pillButton("Pair", true) { btDo("pair", role) })
+            })
+        }
+    }
+
+    // ------------------------------------------------------------ audio path
+
+    private fun flowCard(): View {
+        val c = card()
+        c.addView(TextView(this).apply {
+            text = "Audio path"; setTextColor(text1); textSize = 18f; typeface = Typeface.DEFAULT_BOLD
+        })
+        flowRows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, px(4), 0, 0) }
+        c.addView(flowRows)
+        c.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END
+            setPadding(0, px(12), 0, 0)
+            addView(pillButton("Full check", false) { runCheck(false) })
+            addView(pillButton("Check and fix", true) { runCheck(true) })
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        checkRows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, px(8), 0, 0) }
+        c.addView(checkRows)
+        return c
+    }
+
+    private fun runCheck(fix: Boolean) {
+        if (!NowPlayingService.connected()) { say("Not connected to the Pi"); return }
+        checking = true
+        NowPlayingService.instance?.request(org.json.JSONObject().put("req", "check").put("fix", fix))
+        checkRows.removeAllViews()
+        checkRows.addView(TextView(this).apply {
+            text = if (fix) "Checking and fixing… (up to a minute)" else "Checking… (up to a minute)"
+            setTextColor(text2); textSize = 14f
+        })
+    }
+
+    private fun stColour(st: String) = when (st) { "ok" -> good; "warn" -> warn; "bad" -> bad; else -> text2 }
+
+    private fun updateFlow(linked: Boolean) {
+        val f = NowPlayingService.flow
+        val key = (if (linked) "1" else "0") + (f?.toString() ?: "")
+        if (key != flowShown) {
+            flowShown = key
+            flowRows.removeAllViews()
+            if (!linked || f == null) {
+                flowRows.addView(TextView(this).apply {
+                    text = if (!linked) "Connect to the Pi to see the audio path."
+                           else "Asking the Pi… (needs Pi update 1.0.84 or newer)"
+                    setTextColor(text2); textSize = 14f
+                })
+            } else {
+                val items = (0 until f.length()).mapNotNull { f.optJSONObject(it) }
+                for ((sec, label) in listOf("input" to "INPUT", "processing" to "PROCESSING", "output" to "OUTPUT")) {
+                    val part = items.filter { it.optString("sec") == sec }
+                    if (part.isEmpty()) continue
+                    val worst = part.map { it.optString("st") }.let {
+                        when { "bad" in it -> "bad"; "warn" in it -> "warn"; "ok" in it -> "ok"; else -> "idle" }
+                    }
+                    flowRows.addView(LinearLayout(this).apply {
+                        orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                        setPadding(0, px(12), 0, px(2))
+                        addView(View(this@MainActivity).apply {
+                            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(stColour(worst)) }
+                        }, LinearLayout.LayoutParams(px(10), px(10)).apply { marginEnd = px(10) })
+                        addView(TextView(this@MainActivity).apply {
+                            text = label; setTextColor(text1); textSize = 13f; typeface = Typeface.DEFAULT_BOLD
+                            letterSpacing = 0.08f
+                        })
+                        addView(TextView(this@MainActivity).apply {
+                            text = "  " + when (worst) { "ok" -> "Working"; "warn" -> "Check"; "bad" -> "Problem"; else -> "Idle" }
+                            setTextColor(stColour(worst)); textSize = 12f
+                        })
+                    })
+                    for (it in part) {
+                        flowRows.addView(LinearLayout(this).apply {
+                            orientation = LinearLayout.HORIZONTAL
+                            setPadding(px(4), px(4), 0, px(4))
+                            addView(View(this@MainActivity).apply { setBackgroundColor(line) },
+                                LinearLayout.LayoutParams(px(2), ViewGroup.LayoutParams.MATCH_PARENT).apply { marginEnd = px(14) })
+                            addView(LinearLayout(this@MainActivity).apply {
+                                orientation = LinearLayout.VERTICAL
+                                addView(TextView(this@MainActivity).apply {
+                                    text = it.optString("title"); setTextColor(text1); textSize = 15f
+                                })
+                                addView(TextView(this@MainActivity).apply {
+                                    text = it.optString("detail"); setTextColor(stColour(it.optString("st")).let { c ->
+                                        if (it.optString("st") == "ok" || it.optString("st") == "idle") text2 else c })
+                                    textSize = 13f
+                                })
+                            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                        })
+                    }
+                }
+            }
+        }
+        // Full check result: its numbered steps, each line marked OK / WARN / FAIL.
+        val r = NowPlayingService.checkResult
+        if (r != null && r !== checkShown) {
+            checkShown = r
+            checking = false
+            checkRows.removeAllViews()
+            checkRows.addView(TextView(this).apply {
+                text = if (r.optBoolean("fix")) "Check and fix" else "Full check"
+                setTextColor(text1); textSize = 14f; typeface = Typeface.DEFAULT_BOLD
+                setPadding(0, px(4), 0, px(4))
+            })
+            for (raw in r.optString("output").lines()) {
+                val l = raw.trimEnd()
+                if (l.isBlank()) continue
+                val t = l.trim()
+                val (mark, colour, rest) = when {
+                    t.startsWith("OK") -> Triple("✓", good, t.removePrefix("OK").trim())
+                    t.startsWith("WARN") -> Triple("!", warn, t.removePrefix("WARN").trim())
+                    t.startsWith("FAIL") -> Triple("✕", bad, t.removePrefix("FAIL").trim())
+                    Regex("^\\d+\\.").containsMatchIn(t) -> Triple("", text1, t)
+                    else -> Triple("", text2, t)
+                }
+                checkRows.addView(TextView(this).apply {
+                    text = if (mark.isEmpty()) rest else "$mark  $rest"
+                    setTextColor(colour); textSize = if (mark.isEmpty() && colour == text1) 14f else 13f
+                    if (mark.isEmpty() && colour == text1) { typeface = Typeface.DEFAULT_BOLD; setPadding(0, px(6), 0, 0) }
+                    else setPadding(px(12), px(1), 0, px(1))
+                })
+            }
+        }
+    }
+
     private fun setupCard(): View {
         val c = card()
         setupHead = TextView(this).apply { setTextColor(text1); textSize = 18f; typeface = Typeface.DEFAULT_BOLD }
@@ -499,6 +728,8 @@ class MainActivity : Activity() {
         }
 
         updatePi(linked)
+        updateBt(linked)
+        updateFlow(linked)
 
         // Setup checklist
         var left = 0

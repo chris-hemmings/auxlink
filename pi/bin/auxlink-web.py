@@ -355,6 +355,33 @@ def act_forget(body):
     return {"ok": True}
 
 
+def act_connect(body):
+    """Ask BlueZ to connect the car / phone / music source now (from the app).
+    Connecting takes up to ~30 s, so it runs in the background."""
+    role = body.get("role")
+    if role not in ROLE_KEYS:
+        raise ValueError("role must be car, phone or source")
+    c = auxconf.load()
+    dk, ak = ROLE_KEYS[role]
+    addr = c.get(dk, "").upper()
+    if not addr:
+        raise ValueError(f"no {role} paired yet")
+    bus, objs = bluez()
+    d = device(objs, c.get(ak, "").upper(), addr)
+    if not d or not d.get("path"):
+        raise ValueError(f"the {role} isn't known to its Bluetooth adapter: pair it again")
+
+    def run():
+        try:
+            dbus.Interface(dbus.SystemBus().get_object("org.bluez", d["path"]), "org.bluez.Device1").Connect(timeout=40)
+            auxconf.event(f"Connected the {role}")
+        except dbus.DBusException as e:
+            auxconf.event(f"Couldn't connect the {role}: {e.get_dbus_message() or e.get_dbus_name()}")
+    threading.Thread(target=run, daemon=True).start()
+    auxconf.event(f"Connecting the {role}...")
+    return {"ok": True}
+
+
 def act_config(body):
     upd = {}
     for k, v in body.items():
@@ -820,6 +847,7 @@ def act_wifi_connect(body):
 
 
 ACTIONS = {"pair": act_pair, "pair/cancel": act_pair_cancel, "forget": act_forget,
+           "connect": act_connect,
            "source": act_source,
            "config": act_config, "adapters": act_adapters, "check": act_check,
            "term/open": act_term_open, "term/write": act_term_write, "term/read": act_term_read,

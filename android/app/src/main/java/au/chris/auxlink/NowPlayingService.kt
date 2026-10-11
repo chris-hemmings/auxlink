@@ -50,6 +50,12 @@ class NowPlayingService : NotificationListenerService() {
         /** The Pi's latest status (Wi-Fi, IP, version...), and when it came. */
         @Volatile var piStatus: JSONObject? = null
         @Volatile var piStatusAt = 0L
+        /** Car/phone Bluetooth state, the live audio path, the last full check
+         *  and the last Bluetooth action's result, from the Pi. */
+        @Volatile var btStatus: JSONObject? = null
+        @Volatile var flow: org.json.JSONArray? = null
+        @Volatile var checkResult: JSONObject? = null
+        @Volatile var btResult: JSONObject? = null
         @Volatile var linkOpen: Boolean = false
         @Volatile var linkKind: String = ""
         /** Last successful send to / line from the Pi (ms). */
@@ -186,6 +192,10 @@ class NowPlayingService : NotificationListenerService() {
         val j = try { JSONObject(line) } catch (e: Exception) { return }
         lastTraffic = System.currentTimeMillis()
         if (j.has("pi")) { piStatus = j.optJSONObject("pi"); piStatusAt = System.currentTimeMillis(); return }
+        if (j.has("bt")) { btStatus = j.optJSONObject("bt"); return }
+        if (j.has("flow")) { flow = j.optJSONArray("flow"); return }
+        if (j.has("check")) { checkResult = j.optJSONObject("check"); return }
+        if (j.has("bt_result")) { btResult = j.optJSONObject("bt_result"); return }
         if (PhoneData.onLine(j)) return     // contacts, recents, texts for the Phone/Messages screens
         // A new text: the Messages screen's list is out of date.
         if (j.has("text")) request(JSONObject().put("req", "messages"))

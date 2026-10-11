@@ -20,6 +20,7 @@
 """
 import array
 import base64
+import glob
 import json
 import pwd
 import socket
@@ -1687,6 +1688,141 @@ def set_clock(c):
     threading.Thread(target=run, daemon=True).start()
 
 
+def web_api(path, body=None, timeout=10):
+    """The setup page's own API (pairing, forget, connect, check): the app's
+    Bluetooth and audio controls use the same code as the page."""
+    import urllib.request
+    import urllib.error
+    req = urllib.request.Request("http://127.0.0.1/api/" + path,
+                                 data=None if body is None else json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"})
+    pw = load_conf().get("WEB_PASSWORD", "")
+    if pw:
+        req.add_header("Authorization", "Basic " + base64.b64encode(f"app:{pw}".encode()).decode())
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        try:
+            return {"error": json.loads(e.read()).get("error") or str(e)}
+        except ValueError:
+            return {"error": str(e)}
+    except (OSError, ValueError) as e:
+        return {"error": f"setup page not reachable: {e}"}
+
+
+def load_conf():
+    conf = {}
+    try:
+        for line in open("/etc/auxlink.conf"):
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                conf[k.strip()] = v.strip().strip('"')
+    except OSError:
+        pass
+    return conf
+
+
+def bt_status():
+    """Car / phone / music source and the pairing window, for the app."""
+    st = web_api("state", timeout=8)
+    if "error" in st:
+        return {"error": st["error"]}
+    conf = st.get("conf", {})
+    out = {"window": st.get("window"), "source_kind": conf.get("MUSIC_SOURCE", "")}
+    for role in ("car", "phone", "source"):
+        d = st.get(role) or {}
+        out[role] = {"name": d.get("name", ""), "address": d.get("address", ""),
+                     "paired": bool(d.get("paired")), "connected": bool(d.get("connected"))}
+    return out
+
+
+def audio_flow(player):
+    """The music's path right now, as INPUT / PROCESSING / OUTPUT steps, each
+    ok / warn / bad / idle with a detail line (like the setup page's check,
+    but from what is known live)."""
+    def item(sec, title, detail, st):
+        return {"sec": sec, "title": title, "detail": detail, "st": st}
+    out = []
+    playing = player.status == "Playing"
+    # ---- INPUT: the music device ----
+    app_ok = time.time() - VOLUME["last_line"] < 15
+    track = " - ".join(x for x in (player.title, player.artist) if x and x not in ("Screenmate", "SMO"))
+    out.append(item("input", "Music device (Phone Link)",
+                    ("Connected" if app_ok else "No word from the app") + (f"  ·  {track}" if track else ""),
+                    "ok" if app_ok else "warn"))
+    if MUSIC_SOURCE == "usbc":
+        state = ""
+        for u in glob.glob("/sys/class/udc/*/state"):
+            try:
+                state = open(u).read().strip()
+            except OSError:
+                pass
+        try:
+            card = "UAC1" in open("/proc/asound/cards").read().replace("_", "")
+        except OSError:
+            card = False
+        out.append(item("input", "USB-C to the Pi",
+                        ("Connected" if state == "configured" else (state or "no USB-C port")) +
+                        ("  ·  48 kHz 16-bit stereo sound card" if card else "  ·  sound card missing"),
+                        "ok" if state == "configured" and card else "bad"))
+    sound = player.present
+    out.append(item("input", "Sound from the music device",
+                    "Arriving" if sound else ("Silent (paused)" if not playing else "Silent, but it should be playing"),
+                    "ok" if sound else ("idle" if not playing else "bad")))
+    # ---- PROCESSING: the Pi ----
+    try:
+        loop = subprocess.run(["pgrep", "-f", "pw-loopback.*to_tesla"], capture_output=True).returncode == 0
+    except OSError:
+        loop = False
+    out.append(item("processing", "Pi audio link",
+                    "Streaming to the car" if loop else ("Stopped (music paused)" if not playing else "Not running"),
+                    "ok" if loop else ("idle" if not playing else "bad")))
+    # ---- OUTPUT: Bluetooth to the car ----
+    car = CONF.get("CAR", "").upper()
+    connected, tstate, codec = False, "", ""
+    try:
+        om = dbus.Interface(dbus.SystemBus().get_object("org.bluez", "/"), "org.freedesktop.DBus.ObjectManager")
+        dev = car.replace(":", "_")
+        for path, ifaces in om.GetManagedObjects().items():
+            if path.endswith("dev_" + dev) and "org.bluez.Device1" in ifaces:
+                connected = connected or bool(ifaces["org.bluez.Device1"].get("Connected"))
+            t = ifaces.get("org.bluez.MediaTransport1")
+            if t and ("dev_" + dev) in path:
+                tstate = str(t.get("State", ""))
+                codec = {0: "SBC", 1: "MP3", 2: "AAC", 255: "aptX"}.get(int(t.get("Codec", 0)), "")
+    except dbus.DBusException:
+        pass
+    spec = ""
+    try:
+        pw = pwd.getpwnam(AUDIO_USER)
+        r = subprocess.run(["/usr/sbin/runuser", "-u", AUDIO_USER, "--", "env",
+                            f"XDG_RUNTIME_DIR=/run/user/{pw.pw_uid}", "pactl", "list", "sinks"],
+                           capture_output=True, text=True, timeout=5)
+        block = ""
+        for b in r.stdout.split("Sink #"):
+            if "bluez_output." + car.replace(":", "_") in b:
+                block = b
+        m = re.search(r"Sample Specification: \S+ (\d+)ch (\d+)Hz", block)
+        if m:
+            spec = f"{int(m.group(2)) // 1000} kHz {'stereo' if m.group(1) == '2' else m.group(1) + ' ch'}"
+        m = re.search(r'api\.bluez5\.codec = "([^"]+)"', block)
+        if m:
+            codec = m.group(1).upper().replace("_", "-")
+    except (OSError, KeyError, subprocess.TimeoutExpired):
+        pass
+    out.append(item("output", "Bluetooth to the car",
+                    "Not connected" if not connected else "  ·  ".join(x for x in (
+                        {"active": "Streaming", "pending": "Starting", "idle": "Idle"}.get(tstate, "Connected"),
+                        codec, spec) if x),
+                    "bad" if not connected else ("ok" if tstate == "active" else ("idle" if not playing else "warn"))))
+    # Playing with sound, or paused and quiet, is consistent; anything else is worth a look.
+    out.append(item("output", "Car is told", player.status,
+                    "ok" if playing == bool(sound) else "warn"))
+    return out
+
+
 def pi_status():
     """The Pi's network and basics, for the app's AuxLink tab."""
     def nm(*args):
@@ -1950,6 +2086,28 @@ def main():
                     set_clock(info["clock"])
                 elif info.get("req") == "pi":
                     app_send({"pi": pi_status()})
+
+                    def more():
+                        bt, flow = bt_status(), audio_flow(player)
+                        GLib.idle_add(lambda: (app_send({"bt": bt}), app_send({"flow": flow}), False)[-1])
+                    threading.Thread(target=more, daemon=True).start()
+                elif "bt_do" in info:
+                    def do(a=info["bt_do"]):
+                        action = str(a.get("action", ""))
+                        if action not in ("pair", "pair/cancel", "forget", "connect"):
+                            return
+                        r = web_api(action, {"role": a.get("role", ""), "seconds": 120}, timeout=15)
+                        log(f"App: Bluetooth {action} {a.get('role', '')}: {r.get('error') or 'ok'}")
+                        bt = bt_status()
+                        GLib.idle_add(lambda: (app_send({"bt_result": {"action": action, "error": r.get("error", "")}}),
+                                               app_send({"bt": bt}), False)[-1])
+                    threading.Thread(target=do, daemon=True).start()
+                elif info.get("req") == "check":
+                    def chk(fix=bool(info.get("fix"))):
+                        r = web_api("check", {"fix": fix}, timeout=150)
+                        text = r.get("output") or r.get("error") or ""
+                        GLib.idle_add(lambda: (app_send({"check": {"fix": fix, "output": text}}), False)[-1])
+                    threading.Thread(target=chk, daemon=True).start()
                 elif PHONE["link"] and ("req" in info or "dial" in info or "sms" in info):
                     PHONE["link"].handle(info)
                 elif "cmd" in info:
