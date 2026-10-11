@@ -22,6 +22,9 @@ echo "-- contacts server (obexd with the file phonebook)"
 bash $A/extras/build-obexd-dummy.sh --image
 echo "-- bluetoothd with album art"
 bash $A/extras/build-bluetoothd-cover.sh --image
+# Which patches it was built with (update.sh rebuilds when they change).
+mkdir -p /var/lib/auxlink
+cat $A/extras/bluez-*.patch | md5sum | cut -d' ' -f1 > /var/lib/auxlink/bluetoothd-patches
 
 echo "-- tidying up"
 # Keep every library the two compiled programs use (e.g. libical for the

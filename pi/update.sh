@@ -114,5 +114,19 @@ asuser systemctl --user daemon-reload
 asuser systemctl --user enable auxlink-messages >/dev/null 2>&1 || true
 asuser systemctl --user restart auxlink-audio pbap-sync auxlink-messages
 [ "$OBEX_RESTART" = 1 ] && asuser systemctl --user restart obex && echo "Contacts server: messages part turned off"
+# AuxLink's Bluetooth patches (album art, phonebook favourites) are compiled
+# into bluetoothd. When they change, rebuild it - in the background, since it
+# takes 15-20 minutes and needs internet; it retries on the next update if
+# that fails. (Pis without the album-art bluetoothd are left alone.)
+BT_SUM=$(cat "$HERE"/extras/bluez-*.patch | md5sum | cut -d' ' -f1)
+if [ -x /usr/local/libexec/bluetoothd-auxlink ] &&
+   [ "$(cat /var/lib/auxlink/bluetoothd-patches 2>/dev/null)" != "$BT_SUM" ] &&
+   ! systemctl is-active --quiet auxlink-bt-rebuild; then
+  BT_SRC=/usr/local/src/auxlink/extras
+  rm -rf "$BT_SRC" && mkdir -p "$BT_SRC"
+  cp "$HERE"/extras/build-bluetoothd-cover.sh "$HERE"/extras/rebuild-bluetoothd-bg.sh "$HERE"/extras/bluez-*.patch "$BT_SRC"/
+  systemd-run --unit=auxlink-bt-rebuild --collect --quiet bash "$BT_SRC/rebuild-bluetoothd-bg.sh" "$BT_SUM" &&
+    echo "Bluetooth software: rebuilding in the background (15-20 min, needs internet); see Recent events"
+fi
 sync
 echo "Services restarted. Done (no reboot needed)."
