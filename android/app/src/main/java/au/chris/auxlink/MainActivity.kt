@@ -67,7 +67,7 @@ class MainActivity : Activity() {
     private lateinit var details: TextView
     private val steps = mutableListOf<Step>()
 
-    // Tabs: Phone, Messages, and this status screen ("AuxLink")
+    // Tabs: Phone, Messages, and this status screen ("Status")
     private lateinit var phone: PhoneScreen
     private lateinit var msgs: MessagesScreen
     private lateinit var pages: List<View>
@@ -106,7 +106,7 @@ class MainActivity : Activity() {
         col.addView(toolsCard())
         col.addView(detailsCard())
         col.addView(TextView(this).apply {
-            text = "AuxLink app v" + appVersion()
+            text = "Phone Link v" + appVersion()
             setTextColor(text2); textSize = 12f; gravity = Gravity.CENTER
             setPadding(0, px(12), 0, 0)
         })
@@ -125,7 +125,7 @@ class MainActivity : Activity() {
             setBackgroundColor(cardBg)
             setPadding(0, px(6), 0, px(6))
         }
-        tabViews = listOf("✆" to "Phone", "✉" to "Messages", "♪" to "AuxLink").mapIndexed { i, (icon, name) ->
+        tabViews = listOf("✆" to "Phone", "✉" to "Messages", "♪" to "Status").mapIndexed { i, (icon, name) ->
             TextView(this).apply {
                 text = icon + "\n" + name; textSize = 13f; gravity = Gravity.CENTER
                 setPadding(0, px(6), 0, px(6))
@@ -180,20 +180,20 @@ class MainActivity : Activity() {
 
     private fun header(): View {
         val logo = TextView(this).apply {
-            text = "♪"
+            text = "✆"
             setTextColor(Color.WHITE); textSize = 24f; gravity = Gravity.CENTER
-            background = round(accent, 14f)
+            background = round(0xFF0D9488.toInt(), 14f)
             layoutParams = LinearLayout.LayoutParams(px(48), px(48))
         }
         val names = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(px(14), 0, 0, 0)
             addView(TextView(this@MainActivity).apply {
-                text = "AuxLink"; setTextColor(text1); textSize = 26f
+                text = "Phone Link"; setTextColor(text1); textSize = 26f
                 typeface = Typeface.DEFAULT_BOLD
             })
             addView(TextView(this@MainActivity).apply {
-                text = "Music, track info and buttons for your car"
+                text = "Your phone and music, linked to your car"
                 setTextColor(text2); textSize = 14f
             })
         }
@@ -309,16 +309,16 @@ class MainActivity : Activity() {
         setupHead = TextView(this).apply { setTextColor(text1); textSize = 18f; typeface = Typeface.DEFAULT_BOLD }
         c.addView(setupHead)
         c.addView(TextView(this).apply {
-            text = "AuxLink needs a few permissions. Each one says why."
+            text = "Phone Link needs a few permissions. Each one says why."
             setTextColor(text2); textSize = 14f; setPadding(0, px(2), 0, px(4))
         })
         steps += Step("Notification access",
-            "Lets AuxLink see what's playing (title, artist, album art) to show it in the car. Required.",
+            "Lets Phone Link see what's playing (title, artist, album art) to show it in the car. Required.",
             "Open", false, { true }, ::hasAccess) {
             startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
         }
         steps += Step("Run in the background",
-            "Stops Android closing AuxLink to save battery, which would drop track info and buttons.",
+            "Stops Android closing Phone Link to save battery, which would drop track info and buttons.",
             "Allow", false, { true }, ::unrestricted) {
             try {
                 startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
@@ -345,13 +345,13 @@ class MainActivity : Activity() {
             }
         }
         steps += Step("USB access",
-            "Android needs your OK before AuxLink can use the USB connection to the Pi. Allow it, and tick Always.",
+            "Android needs your OK before Phone Link can use the USB connection to the Pi. Allow it, and tick Always.",
             "Allow", false,
             { UsbLink(this).findDevice() != null }, { UsbLink(this).permitted() }) {
             UsbLink(this).askPermission()
         }
         steps += Step("Nearby devices (Bluetooth)",
-            "Only for the Bluetooth music source: lets AuxLink reach the Pi without a cable.",
+            "Only for the Bluetooth music source: lets Phone Link reach the Pi without a cable.",
             "Allow", true, { Build.VERSION.SDK_INT >= 31 }, { BtLink(this).permitted() }) {
             if (Build.VERSION.SDK_INT >= 31) askOrSettings(Manifest.permission.BLUETOOTH_CONNECT)
         }
@@ -372,7 +372,7 @@ class MainActivity : Activity() {
             "Shows a pretend call for 8 seconds, so you can see where it appears. Switch to your music app to see it on top.",
             "Test") {
             val svc = NowPlayingService.instance
-            if (svc == null) say("AuxLink isn't running yet: allow Notification access first.")
+            if (svc == null) say("Phone Link isn't running yet: allow Notification access first.")
             else { svc.testCallBar(); say("Showing a pretend call for 8 seconds.") }
         })
         c.addView(toolRow("Setup Wi-Fi",
@@ -425,9 +425,9 @@ class MainActivity : Activity() {
         // Connection
         val (title, sub, colour) = when {
             !hasAccess() -> Triple("Not set up yet", "Allow Notification access below to get started.", warn)
-            linked -> Triple("Connected to AuxLink", "Over " + NowPlayingService.linkKind.ifEmpty { "USB" } +
+            linked -> Triple("Connected to the Pi", "Over " + NowPlayingService.linkKind.ifEmpty { "USB" } +
                 ". Track info and car buttons are working.", good)
-            !running -> Triple("Starting…", "AuxLink is starting in the background.", warn)
+            !running -> Triple("Starting…", "Phone Link is starting in the background.", warn)
             usb != null && !UsbLink(this).permitted() -> Triple("Waiting for USB access",
                 "Tap Allow next to USB access below.", warn)
             else -> Triple("Not connected", "Plug this device into the Pi's USB-C port (or the XIAO). " +
@@ -522,7 +522,7 @@ class MainActivity : Activity() {
 
     private fun send(cmd: String, ok: String) {
         val svc = NowPlayingService.instance
-        if (svc == null) { say("AuxLink isn't running yet: allow Notification access first."); return }
+        if (svc == null) { say("Phone Link isn't running yet: allow Notification access first."); return }
         say("Sending…")
         svc.command(cmd) { sent ->
             say(if (sent) ok else "Couldn't reach the Pi. Check this device is plugged into the Pi " +

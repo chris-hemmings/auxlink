@@ -41,7 +41,7 @@ class CallBar(private val ctx: Context, private val onCmd: (String) -> Unit) {
      *  (SystemClock.elapsedRealtime), for the timer. */
     fun show(state: String, name: String, since: Long) {
         if (!allowed()) {
-            lastProblem = "\"Display over other apps\" is off for AuxLink"
+            lastProblem = "\"Display over other apps\" is off for Phone Link"
             return hide()
         }
         try {

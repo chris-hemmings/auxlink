@@ -39,7 +39,7 @@ as three separate kinds of release:
 |---|---|---|
 | **AuxLink Pi image** | `auxlink-pi-X.img.xz` | The whole Pi: Raspberry Pi OS Lite with AuxLink installed. One file, flashed with Raspberry Pi Imager. |
 | | `auxlink-pi-update-X.zip` | Updates a running Pi from its setup page. |
-| **AuxLink app** | `auxlink-v1.0.N.apk` | The Android app (now playing, album art, Fix sound and Setup buttons). Install with Obtainium. |
+| **Phone Link app** (AuxLink app) | `auxlink-v1.0.N.apk` | The Android app "Phone Link" for the music device: now playing, album art, Phone and Messages tabs, car buttons. Install with Obtainium. |
 | **AuxLink XIAO firmware** | `auxlink-xiao-X.uf2` | Firmware for the Seeed XIAO RP2040 (wired backup source only). |
 
 ### Source

@@ -296,13 +296,13 @@ class NowPlayingService : NotificationListenerService() {
         try {
             val nm = getSystemService(NotificationManager::class.java)
             nm.createNotificationChannel(NotificationChannel(
-                "running", "AuxLink running", NotificationManager.IMPORTANCE_MIN
+                "running", "Phone Link running", NotificationManager.IMPORTANCE_MIN
             ).apply { setShowBadge(false) })
             val open = PendingIntent.getActivity(
                 this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
             val n = Notification.Builder(this, "running")
                 .setSmallIcon(android.R.drawable.ic_media_play)
-                .setContentTitle("AuxLink connected")
+                .setContentTitle("Phone Link connected")
                 .setContentText("Sending what's playing to the car")
                 .setContentIntent(open)
                 .setOngoing(true)
