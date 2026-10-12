@@ -619,6 +619,20 @@ class MainActivity : Activity() {
             { UsbLink(this).findDevice() != null }, { UsbLink(this).permitted() }) {
             UsbLink(this).askPermission()
         }
+        steps += Step("No high-volume warning",
+            "Optional: lets Phone Link keep Android's hearing warning off, so full volume always works. " +
+                "Needs a computer once: with USB debugging on, run  adb shell pm grant au.chris.auxlink " +
+                "android.permission.WRITE_SECURE_SETTINGS", "How", true, { true },
+            { checkSelfPermission("android.permission.WRITE_SECURE_SETTINGS") == PackageManager.PERMISSION_GRANTED }) {
+            android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle("Turn off the high-volume warning")
+                .setMessage("Android only lets a computer allow this, once:\n\n" +
+                    "1. Turn on USB debugging (Settings > Developer options).\n" +
+                    "2. Connect this device to a computer with adb.\n" +
+                    "3. Run:\n   adb shell pm grant au.chris.auxlink android.permission.WRITE_SECURE_SETTINGS\n\n" +
+                    "Phone Link then keeps the warning off, including after restarts.")
+                .setPositiveButton("OK", null).show()
+        }
         steps += Step("Nearby devices (Bluetooth)",
             "Only for the Bluetooth music source: lets Phone Link reach the Pi without a cable.",
             "Allow", true, { Build.VERSION.SDK_INT >= 31 }, { BtLink(this).permitted() }) {

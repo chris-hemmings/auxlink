@@ -219,7 +219,25 @@ class NowPlayingService : NotificationListenerService() {
     /** Media volume to 100% when the Pi asks (each time this device connects;
      *  the car's volume is what people use). Set directly: if Android shows its
      *  "safe listening" warning, confirming it applies the full 100%. */
+    /** With WRITE_SECURE_SETTINGS (granted once over adb), mark Android's
+     *  high-volume warning as already accepted, so it never holds the volume
+     *  back. Android reads this at start-up, so keeping it set means it stays
+     *  off after every restart of this device too. */
+    fun keepVolumeWarningOff(): Boolean {
+        if (checkSelfPermission("android.permission.WRITE_SECURE_SETTINGS") !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED) return false
+        return try {
+            val cr = contentResolver
+            if (android.provider.Settings.Global.getInt(cr, "audio_safe_volume_state", 0) != 2)
+                android.provider.Settings.Global.putInt(cr, "audio_safe_volume_state", 2)
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "volume warning: ${e.message}"); false
+        }
+    }
+
     fun volumeMax(personAsked: Boolean = false) {
+        keepVolumeWarningOff()
         try {
             val am = getSystemService(android.media.AudioManager::class.java)
             val stream = android.media.AudioManager.STREAM_MUSIC
@@ -423,6 +441,7 @@ class NowPlayingService : NotificationListenerService() {
     }
 
     override fun onListenerConnected() {
+        keepVolumeWarningOff()
         instance = this
         goForeground()
         link = UsbLink(this) { onPiLine(it) }
