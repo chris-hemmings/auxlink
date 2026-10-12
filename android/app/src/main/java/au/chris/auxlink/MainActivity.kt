@@ -649,24 +649,24 @@ class MainActivity : Activity() {
         return c
     }
 
-    /** "Wi-Fi when parked": a switch + hotspot name/password (saved locally).
-     *  The service reads these and, when the car isn't connected, turns Wi-Fi on
-     *  and suggests the hotspot so this device joins it. */
+    /** "Connect to Wi-Fi when the car connects": a switch + hotspot name/password
+     *  (saved locally). When the car's Bluetooth connects and Wi-Fi isn't already
+     *  on the hotspot, the service turns Wi-Fi on and suggests the hotspot once. */
     private fun wifiParkedBlock(): View {
         val p = getSharedPreferences("auxlink", MODE_PRIVATE)
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, px(10), 0, 0) }
         box.addView(TextView(this).apply {
-            text = "Wi-Fi when parked"; setTextColor(text1); textSize = 15f; typeface = Typeface.DEFAULT_BOLD
+            text = "Wi-Fi when the car connects"; setTextColor(text1); textSize = 15f; typeface = Typeface.DEFAULT_BOLD
         })
         box.addView(TextView(this).apply {
-            text = "When the car isn't connected, turn this device's Wi-Fi on and join the hotspot below. " +
-                "The first time, approve Phone Link's Wi-Fi suggestion when Android asks; it then connects " +
-                "whenever the hotspot is in range."
+            text = "When the car's Bluetooth connects and Wi-Fi isn't already on the hotspot below, turn " +
+                "Wi-Fi on and join it (some head units sit with Wi-Fi off, and Spotify needs it). The first " +
+                "time, approve Phone Link's Wi-Fi suggestion when Android asks."
             setTextColor(text2); textSize = 13f; setPadding(0, px(2), 0, px(6))
         })
         val sw = android.widget.Switch(this).apply {
-            text = "  Connect to Wi-Fi when the car's off"; setTextColor(text1); textSize = 14f
-            isChecked = p.getBoolean("wifi_on_car_off", false)
+            text = "  Connect to Wi-Fi when the car connects"; setTextColor(text1); textSize = 14f
+            isChecked = p.getBoolean("wifi_keep_on", p.getBoolean("wifi_on_car_off", false))
         }
         val ssid = android.widget.EditText(this).apply {
             hint = "Hotspot name (SSID)"; setText(p.getString("wifi_ssid", "")); setTextColor(text1)
@@ -679,7 +679,8 @@ class MainActivity : Activity() {
             inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
         }
         fun save() {
-            p.edit().putBoolean("wifi_on_car_off", sw.isChecked)
+            p.edit().putBoolean("wifi_keep_on", sw.isChecked)
+                .remove("wifi_on_car_off")
                 .putString("wifi_ssid", ssid.text.toString().trim())
                 .putString("wifi_pass", pass.text.toString()).apply()
         }

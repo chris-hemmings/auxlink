@@ -196,7 +196,7 @@ class NowPlayingService : NotificationListenerService() {
         val j = try { JSONObject(line) } catch (e: Exception) { return }
         lastTraffic = System.currentTimeMillis()
         if (j.has("pi")) { piStatus = j.optJSONObject("pi"); piStatusAt = System.currentTimeMillis(); return }
-        if (j.has("bt")) { btStatus = j.optJSONObject("bt"); maybeWifiOnCarOff(); return }
+        if (j.has("bt")) { btStatus = j.optJSONObject("bt"); onBtStatus(); return }
         if (j.has("flow")) { flow = j.optJSONArray("flow"); main.post { if (instance != null) goForeground() }; return }
         if (j.has("check")) { checkResult = j.optJSONObject("check"); return }
         if (j.has("bt_result")) { btResult = j.optJSONObject("bt_result"); return }
@@ -445,46 +445,52 @@ class NowPlayingService : NotificationListenerService() {
         return (if (bad) "Audio path: needs attention" else "Audio path OK") to big
     }
 
-    private var wifiNudgedAt = 0L
+    private var carWasConnected = false
     private var hotspotSuggested = false
 
-    /** "Connect to Wi-Fi when the car's off" switch. When the car isn't
-     *  connected: turn Wi-Fi on and (on Android 10+) suggest the configured
-     *  hotspot so the system joins it when it's in range. When the car is
-     *  connected again, drop the suggestion so it isn't preferred while driving.
-     *  All best effort - a no-op where the platform forbids it. */
-    private fun maybeWifiOnCarOff() {
+    /** "Connect to Wi-Fi when the car connects" switch. When the car's
+     *  Bluetooth connects and this device isn't already on the hotspot, turn
+     *  Wi-Fi on and (on Android 10+) suggest the configured hotspot once, so the
+     *  system joins it - some head units sit with Wi-Fi off and Spotify needs it.
+     *  One shot per car-connect; it does not keep retrying. Best effort - a
+     *  no-op where the platform forbids it. */
+    private fun onBtStatus() {
         val p = try { getSharedPreferences("auxlink", MODE_PRIVATE) } catch (e: Exception) { return }
-        if (!p.getBoolean("wifi_on_car_off", false)) { dropHotspotSuggestion(); return }
-        val carConnected = btStatus?.optJSONObject("car")?.optBoolean("connected") ?: return
-        val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
-        if (carConnected) { dropHotspotSuggestion(); return }
+        // New key, falling back to the old "when the car's off" key.
+        if (!p.getBoolean("wifi_keep_on", p.getBoolean("wifi_on_car_off", false))) return
 
-        val now = System.currentTimeMillis()
-        if (now - wifiNudgedAt < 60_000L) return      // don't hammer it
-        wifiNudgedAt = now
+        val carObj = btStatus?.optJSONObject("car") ?: return
+        val carConnected = carObj.optBoolean("connected")
+        val justConnected = carConnected && !carWasConnected
+        carWasConnected = carConnected
+        if (!justConnected) return
+
+        val wm = applicationContext.getSystemService(Context.WIFI_SERVICE)
+            as? android.net.wifi.WifiManager ?: return
+        val ssid = p.getString("wifi_ssid", "").orEmpty().trim()
+        if (ssid.isEmpty()) return
+
+        // Already on our hotspot? Then Wi-Fi is fine - do nothing.
+        val onOurSsid = try {
+            @Suppress("DEPRECATION")
+            wm.isWifiEnabled && wm.connectionInfo?.ssid?.trim('"') == ssid
+        } catch (e: Exception) { false }
+        if (onOurSsid) return
+
         try { if (!wm.isWifiEnabled) { @Suppress("DEPRECATION") wm.setWifiEnabled(true) } }
         catch (e: Exception) { Log.w(TAG, "turn Wi-Fi on: ${e.message}") }
 
-        val ssid = p.getString("wifi_ssid", "").orEmpty().trim()
-        if (ssid.isEmpty() || Build.VERSION.SDK_INT < 29 || hotspotSuggested) return
+        if (Build.VERSION.SDK_INT < 29) return
         try {
             val pass = p.getString("wifi_pass", "").orEmpty()
             val b = android.net.wifi.WifiNetworkSuggestion.Builder().setSsid(ssid)
             if (pass.isNotEmpty()) b.setWpa2Passphrase(pass)
+            // Re-register so the system re-evaluates and joins.
+            if (hotspotSuggested) wm.removeNetworkSuggestions(emptyList())
             val r = wm.addNetworkSuggestions(listOf(b.build()))
             hotspotSuggested = true
-            Log.i(TAG, "car off: suggested hotspot \"$ssid\" -> $r")
+            Log.i(TAG, "car connected: suggested hotspot \"$ssid\" -> $r")
         } catch (e: Exception) { Log.w(TAG, "suggest hotspot: ${e.message}") }
-    }
-
-    private fun dropHotspotSuggestion() {
-        if (!hotspotSuggested || Build.VERSION.SDK_INT < 29) { hotspotSuggested = false; return }
-        try {
-            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
-            wm.removeNetworkSuggestions(emptyList())   // empty list clears all of ours
-        } catch (e: Exception) { Log.w(TAG, "drop hotspot: ${e.message}") }
-        hotspotSuggested = false
     }
 
     private fun goForeground() {
