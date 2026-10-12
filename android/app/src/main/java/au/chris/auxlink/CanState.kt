@@ -57,6 +57,7 @@ class CanState {
         // clean car-on/off signal; GEAR_SELECTION is shown for context.
         private const val ID_IGNITION = 0x11400409
         private const val ID_GEAR = 0x11400400
+        private const val ID_PBRAKE = 0x11200402    // PARKING_BRAKE_ON (0/1)
         // VehicleIgnitionState: 0 UNDEFINED, 1 LOCK, 2 OFF, 3 ACC, 4 ON, 5 START.
         // Car is "on" from ACC up (someone is in/using it); "off" at LOCK/OFF.
         private const val IGN_ACC = 3
@@ -81,6 +82,7 @@ class CanState {
     private var onChange: ((Boolean) -> Unit)? = null
     // Confined to the handler thread: when the car first looked off (0 = it doesn't).
     private var offSince = 0L
+    private var lastSnap = ""   // last values logged, to log only on change
 
     /** Start listening. [onChange] is called (on a background thread) only when
      *  the car on/off state actually flips. Safe to call once; a second call is
@@ -129,6 +131,7 @@ class CanState {
         val count: Int
         var ignition: Int? = null
         var gear: Int? = null
+        var pbrake: Int? = null
         try {
             val din = DataInputStream(ByteArrayInputStream(raw, 0, payloadLen))
             val version = din.readInt()
@@ -151,6 +154,7 @@ class CanState {
                 when (id) {
                     ID_IGNITION -> if (kind == 0) ignition = bits
                     ID_GEAR -> if (kind == 0) gear = bits
+                    ID_PBRAKE -> if (kind == 0) pbrake = bits
                 }
             }
         } catch (e: Exception) {
@@ -159,6 +163,12 @@ class CanState {
 
         lastBatchAt = System.currentTimeMillis()
         val serviceDown = (flags and FLAG_CAR_DOWN) != 0
+        // Live log, but only when a watched value changes, so `adb logcat -s
+        // AuxLinkCan` streams a clean record of ignition/gear/parking-brake
+        // changing on the real car without spamming at the broadcast rate.
+        val snap = "ign=${ignition?.let { ignName(it) } ?: "-"} gear=${gear ?: "-"} " +
+            "pbrake=${pbrake ?: "-"} count=$count flags=$flags"
+        if (snap != lastSnap) { lastSnap = snap; Log.i(TAG, snap) }
 
         // Preferred path: IGNITION_STATE, when the agent could read a sane code.
         // 0 UNDEFINED is treated as "unknown" and falls through to the signal
@@ -166,7 +176,7 @@ class CanState {
         val ign = ignition
         if (ign != null && ign in 1..7) {
             val on = ign >= IGN_ACC
-            val g = gearName(gear)
+            val g = gearName(gear) + brakeName(pbrake)
             if (on) {
                 offSince = 0L
                 status = "Car on (ign ${ignName(ign)}$g)"
@@ -218,6 +228,11 @@ class CanState {
     private fun gearName(v: Int?) = when (v) {
         null -> ""
         4 -> ", P"; 2 -> ", R"; 1 -> ", N"; 8 -> ", D"; else -> ", gear $v"
+    }
+
+    /** PARKING_BRAKE_ON: 1 on, 0 off. "" if absent. */
+    private fun brakeName(v: Int?) = when (v) {
+        1 -> ", brake"; else -> ""
     }
 
     private fun flip(on: Boolean) {
