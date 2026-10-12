@@ -126,6 +126,17 @@ unmute_input() {
   RESTART_MUTED=""
 }
 smo_playing() { [ "$(cat "$PLAY_FILE" 2>/dev/null || echo 1)" != 0 ]; }
+# Should music be streaming to the car right now? Eager by default: play
+# unless the source reports a pause (so apps that never report one still
+# play). With WAIT_FOR_AUDIO=1 it waits like a phone - only while real sound
+# is actually arriving from the source.
+should_stream() {
+  if [ "${WAIT_FOR_AUDIO:-0}" = 1 ]; then
+    [ "$PRESENT" = 1 ]
+  else
+    smo_playing || [ "$PRESENT" = 1 ]
+  fi
+}
 # Is sound arriving from the XIAO? 0.4 s sample; the SMO sends digital
 # silence when nothing plays, so a very low threshold is enough.
 sound_now() {
@@ -285,7 +296,8 @@ while true; do
   WHY=""
   if car_busy; then WHY="a call"
   elif [ $(( $(date +%s) - CALL_ENDED_AT )) -lt "$(call_settle)" ]; then WHY="the call just ended"
-  elif ! smo_playing && [ "$PRESENT" != 1 ]; then WHY="the SMO is paused"
+  elif ! should_stream; then
+    [ "${WAIT_FOR_AUDIO:-0}" = 1 ] && WHY="no audio is playing" || WHY="the SMO is paused"
   elif ! car_ready; then WHY="the car is still connecting"
   fi
 
