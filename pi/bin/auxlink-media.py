@@ -78,16 +78,6 @@ KICK_FILE = "/run/auxlink/audio-kick"
 SETUP_WIFI_FILE = "/run/auxlink/setup-wifi"   # the app's Setup button; auxlink-web turns the Wi-Fi on
 # "1" while hfp-relay has the car's mic borrowed for the source's voice search
 MIC_ACTIVE_FILE = "/run/auxlink/mic-active"
-# Exists while the car is off, as told by the SMO app ({"car":"off"}, which it
-# derives read-only from the car's CAN state). When CAR_OFF_DROPS_PHONE=1 the
-# phone is disconnected on "off" and this flag tells auxlink-reconnect not to
-# dial it back until "on". Emptied at boot (/run), so it never goes stale.
-CAR_OFF_FLAG = "/run/auxlink/car-off"
-# 1 = drop the phone's Bluetooth link as soon as the car turns off, instead of
-# waiting for the SMO to power the Pi down ~10 min later. Off by default.
-CAR_OFF_DROPS_PHONE = CONF.get("CAR_OFF_DROPS_PHONE", "0") == "1"
-PHONE_ADDR = CONF.get("PHONE", "").upper()
-PHONE_ADAPTER = CONF.get("PHONE_ADAPTER", "").upper()
 VOICE_GRACE = 4.0     # s after voice search in which the car's play/pause is ignored   # read by auxlink-audio (play pressed in the car)
 CALL_POLL_MS = 250                          # how quickly a call is noticed
 # s after the call ends; at least 3 - the car plays no music sooner than
@@ -1938,56 +1928,6 @@ def app_command(player, cmd):
         log(f"App: unknown command {cmd!r}")
 
 
-# Last car state the SMO told us ("on"/"off"/""), so a repeat line is a no-op.
-CAR = {"state": ""}
-
-
-def set_car_state(on):
-    """The SMO app reports the car turned on or off (read-only, from CAN).
-
-    With CAR_OFF_DROPS_PHONE=1 we drop the phone's Bluetooth link the moment the
-    car is off (instead of waiting ~10 min for the SMO to power the Pi down) and
-    leave a flag so auxlink-reconnect does not dial it straight back; on "on" we
-    clear the flag and reconnect at once. With the setting off we only note the
-    state (so the feature can be enabled without reinstalling the app). The car
-    link is never touched - only the phone."""
-    state = "on" if on else "off"
-    if state == CAR["state"]:
-        return
-    CAR["state"] = state
-    log(f"Car {state} (from the SMO app)")
-    if not CAR_OFF_DROPS_PHONE:
-        return
-    if not PHONE_ADDR or not PHONE_ADAPTER:
-        return
-
-    def work():
-        try:
-            if on:
-                try:
-                    os.remove(CAR_OFF_FLAG)
-                except OSError:
-                    pass
-                subprocess.run([sys.executable, "/usr/local/bin/btdev.py",
-                                PHONE_ADAPTER, PHONE_ADDR, "connect"],
-                               capture_output=True, timeout=30)
-                log("Car on: reconnecting the phone")
-            else:
-                try:
-                    os.makedirs(os.path.dirname(CAR_OFF_FLAG), exist_ok=True)
-                    open(CAR_OFF_FLAG, "w").close()
-                except OSError as e:
-                    log(f"Cannot write {CAR_OFF_FLAG}: {e}")
-                subprocess.run([sys.executable, "/usr/local/bin/btdev.py",
-                                PHONE_ADAPTER, PHONE_ADDR, "disconnect"],
-                               capture_output=True, timeout=30)
-                log("Car off: dropped the phone's Bluetooth link")
-        except (OSError, subprocess.TimeoutExpired) as e:
-            log(f"Car {state}: phone link change failed: {e}")
-
-    threading.Thread(target=work, daemon=True).start()
-
-
 class AppLink(dbus.service.Object):
     """Bluetooth serial service for the now-playing app (Bluetooth source)."""
 
@@ -2170,8 +2110,6 @@ def main():
                 VOLUME["last_line"] = now
                 if "clock" in info:
                     set_clock(info["clock"])
-                elif "car" in info:
-                    set_car_state(str(info["car"]).lower() == "on")
                 elif info.get("req") == "pi":
                     app_send({"pi": pi_status()})
 

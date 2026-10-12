@@ -91,7 +91,6 @@ class NowPlayingService : NotificationListenerService() {
     private val main = Handler(Looper.getMainLooper())
     private lateinit var link: UsbLink
     private lateinit var bt: BtLink
-    private val can = CanState()
     private var sessions: MediaSessionManager? = null
     private var controller: MediaController? = null
     private var lastLine = ""
@@ -132,8 +131,6 @@ class NowPlayingService : NotificationListenerService() {
             // Nothing playing anywhere: say "still here" anyway, so the XIAO
             // sees the app has its USB link (else it replugs to get it one).
             if (controller == null) io.execute { sendLine("{\"cmd\":\"ping\",\"ctl\":2}") }
-            // Keep the Pi's idea of the car state fresh (e.g. after it rebooted).
-            CanState.carOn?.let { on -> io.execute { sendLine(carLine(on)) } }
             // This device's time zone and clock for the Pi (which has neither
             // in the car): at the start, then every 5 minutes.
             if (beats++ % 60 == 0) request(JSONObject().put("clock", JSONObject()
@@ -463,21 +460,14 @@ class NowPlayingService : NotificationListenerService() {
         sessions = getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
         val me = ComponentName(this, NowPlayingService::class.java)
         sessions?.addOnActiveSessionsChangedListener(sessionsChanged, me, main)
-        // Read the car's on/off state (head unit only) and tell the Pi when it
-        // changes, so it can drop the phone early when the car is off. We only
-        // listen; nothing is ever sent to the car.
-        can.start(this) { on -> io.execute { sendLine(carLine(on)) } }
         pickController()
         main.post(heartbeat)
     }
-
-    private fun carLine(on: Boolean) = "{\"car\":\"${if (on) "on" else "off"}\"}"
 
     override fun onListenerDisconnected() {
         instance = null
         try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (_: Exception) {}
         main.removeCallbacks(heartbeat)
-        can.stop(this)
         sessions?.removeOnActiveSessionsChangedListener(sessionsChanged)
         controller?.unregisterCallback(callback)
         try { unregisterReceiver(usbEvents) } catch (_: Exception) {}
