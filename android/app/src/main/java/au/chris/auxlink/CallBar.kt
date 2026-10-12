@@ -167,7 +167,7 @@ class TextPopup(private val ctx: Context) {
     private val close = Runnable { hide() }
 
     /** False if it couldn't be shown (then use a notification). */
-    fun show(from: String, body: String, onTap: () -> Unit = {}): Boolean {
+    fun show(from: String, body: String, stayMs: Long = 10000, onTap: () -> Unit = {}): Boolean {
         if (!Settings.canDrawOverlays(ctx)) return false
         return try {
             hide()
@@ -198,7 +198,7 @@ class TextPopup(private val ctx: Context) {
             }
             wm.addView(box, p)
             root = box
-            main.postDelayed(close, 10000)
+            main.postDelayed(close, stayMs)
             true
         } catch (e: Exception) {
             hide()

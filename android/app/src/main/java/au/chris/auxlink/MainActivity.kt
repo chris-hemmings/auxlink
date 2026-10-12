@@ -649,6 +649,13 @@ class MainActivity : Activity() {
             send("setup", "Setup Wi-Fi is turning on (up to 30 s). Join \"AuxLink-setup\" " +
                 "(password auxlink-setup, unless you changed it), then tap Open.")
         })
+        c.addView(toolRow("Volume to full",
+            "Sets this device's media volume to 100% (use the car's volume). If Android warns about " +
+                "high volume, tap OK.", "Set") {
+            val svc = NowPlayingService.instance
+            if (svc == null) say("Phone Link isn't running yet: allow Notification access first.")
+            else { svc.volumeMax(true); say("Volume set to full. If Android asks, tap OK.") }
+        })
         c.addView(toolRow("Restart the Pi",
             "Reboots the Pi: music and calls stop for about a minute while it starts again.", "Restart") {
             android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)

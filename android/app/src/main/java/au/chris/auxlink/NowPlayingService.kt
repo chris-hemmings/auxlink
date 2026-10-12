@@ -219,15 +219,57 @@ class NowPlayingService : NotificationListenerService() {
     /** Media volume to 100% when the Pi asks (each time this device connects;
      *  the car's volume is what people use). Set directly: if Android shows its
      *  "safe listening" warning, confirming it applies the full 100%. */
-    private fun volumeMax() {
+    fun volumeMax(personAsked: Boolean = false) {
         try {
             val am = getSystemService(android.media.AudioManager::class.java)
-            val max = am.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
-            am.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, max,
-                android.media.AudioManager.FLAG_SHOW_UI)
+            val stream = android.media.AudioManager.STREAM_MUSIC
+            val max = am.getStreamMaxVolume(stream)
+            if (am.getStreamVolume(stream) >= max) return
+            am.setStreamVolume(stream, max, android.media.AudioManager.FLAG_SHOW_UI)
+            if (personAsked) {
+                // Android's hearing warning is up: once OK is tapped, set the full
+                // volume again (some Android versions drop the held-back request).
+                volumeWatchUntil = System.currentTimeMillis() + 60000
+                registerVolumeWatch()
+            } else {
+                // Blocked by the warning (which can vanish before anyone taps it):
+                // ask in a pop-up of our own that stays until tapped.
+                main.postDelayed({
+                    if (am.getStreamVolume(stream) < max) {
+                        textPopup.show("Volume limited by Android",
+                            "Android's hearing-safety warning held the volume back. " +
+                                "Tap here, then OK, for full volume.", 60000) { volumeMax(true) }
+                    }
+                }, 2500)
+            }
         } catch (e: Exception) {
             Log.w(TAG, "volume: ${e.message}")
         }
+    }
+
+    private var volumeWatchUntil = 0L
+    private var volumeWatching = false
+    private val volumeWatch = object : BroadcastReceiver() {
+        override fun onReceive(c: Context, i: Intent) {
+            val am = getSystemService(android.media.AudioManager::class.java)
+            val stream = android.media.AudioManager.STREAM_MUSIC
+            val max = am.getStreamMaxVolume(stream)
+            if (System.currentTimeMillis() > volumeWatchUntil) {
+                try { unregisterReceiver(this) } catch (_: Exception) {}
+                volumeWatching = false
+                return
+            }
+            // The volume moved (OK was tapped): finish the job, no more warnings.
+            if (am.getStreamVolume(stream) < max) am.setStreamVolume(stream, max, 0)
+        }
+    }
+
+    private fun registerVolumeWatch() {
+        if (volumeWatching) return
+        volumeWatching = true
+        val f = IntentFilter("android.media.VOLUME_CHANGED_ACTION")
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(volumeWatch, f, Context.RECEIVER_EXPORTED)
+        else @Suppress("UnspecifiedRegisterReceiverFlag") registerReceiver(volumeWatch, f)
     }
 
     /** The car's play/pause/next/previous, relayed by the Pi: straight to
