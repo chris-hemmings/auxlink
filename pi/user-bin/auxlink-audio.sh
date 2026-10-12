@@ -52,7 +52,7 @@ CALL_ENDED_AT=0; WAS_CALL=0
 # again (wired: auxlink-media holds it until this stream runs anyway).
 call_settle() { echo 2; }
 LOOP=""; LOOP_SINK_ID=""; LOOP_INPUT=""; LOOP_STARTED=0; UNLINKED=0; GONE=2; NO_CARD=0; NOT_ACTIVE=0; LAST_NUDGE=0
-CONNECTED_AT=0; WAITING_SAID=""; NEXT_STEREO=0; STEREO_BAD=0; STOPPED_FOR=""
+CONNECTED_AT=0; WAITING_SAID=""; NEXT_STEREO=0; STEREO_BAD=0; STOPPED_FOR=""; CAR_SUSP=0
 XQ_FAILS=0   # SBC-XQ attempts since this script started (never reset by a disconnect)
 INPUT=""; INPUT_SAID=""
 # A Bluetooth music source must become an INPUT (not a stream WirePlumber
@@ -275,6 +275,7 @@ while true; do
   LINE=$(car_sink_line)
   SINK=$(echo "$LINE" | cut -f2)
   SINK_ID=$(echo "$LINE" | cut -f1)
+  SINK_STATE=$(echo "$LINE" | awk '{print $NF}')   # RUNNING / IDLE / SUSPENDED
   if [ -z "$SINK" ]; then
     stop_loop; sleep 2; continue
   fi
@@ -365,6 +366,18 @@ while true; do
     sleep 1; continue
   fi
   UNLINKED=0
+
+  # React to the car suspending/resuming its own A2DP stream (chimes, nav, the
+  # link settling after connect). A resume while our loopback is running leaves
+  # its right channel silent, so recreate the loopback the instant the car
+  # brings the stream back - heals the mono blip at its cause, not by sampling.
+  if [ "$SINK_STATE" = SUSPENDED ]; then
+    CAR_SUSP=1
+  elif [ "$CAR_SUSP" = 1 ]; then
+    CAR_SUSP=0
+    echo "Car resumed its stream; recreating the loopback to keep both channels"
+    stop_loop; continue
+  fi
 
   now=$(date +%s)
   if [ "$RECHECK_AT" -gt 0 ] && [ "$now" -ge "$RECHECK_AT" ]; then
