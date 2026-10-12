@@ -276,14 +276,18 @@ class NowPlayingService : NotificationListenerService() {
      *  the car's volume is what people use). Set directly: if Android shows its
      *  "safe listening" warning, confirming it applies the full 100%. */
     /** With WRITE_SECURE_SETTINGS (granted once over adb), mark Android's
-     *  high-volume warning as already accepted, so it never holds the volume
-     *  back. Android reads this at start-up, so keeping it set means it stays
-     *  off after every restart of this device too. */
+     *  high-volume ("safe listening") limiter as DISABLED, so it never holds
+     *  the volume back. We use 1 = SAFE_MEDIA_VOLUME_DISABLED, not 2 = INACTIVE:
+     *  INACTIVE only means "dismissed for now" and the system re-arms it to
+     *  ACTIVE (value 3) on a reboot or a Bluetooth reconnect, which is what kept
+     *  the warning coming back. Android reads this flag at start-up, so a set
+     *  value takes full effect after the next restart of this device. */
     fun keepVolumeWarningOff(): Boolean {
         if (checkSelfPermission("android.permission.WRITE_SECURE_SETTINGS") !=
             android.content.pm.PackageManager.PERMISSION_GRANTED) return false
         val cr = contentResolver
-        val key = "audio_safe_volume_state"   // 2 = already accepted / don't limit
+        val key = "audio_safe_volume_state"   // 1 = DISABLED (feature off for good)
+        val off = 1
         var touched = false
         // ROMs keep this flag in different namespaces. Set it wherever it
         // already lives (and fall back to Global). WRITE_SECURE_SETTINGS covers
@@ -295,14 +299,14 @@ class NowPlayingService : NotificationListenerService() {
             else -> android.provider.Settings.System.getInt(cr, key, -1)
         } } catch (e: Exception) { -1 }
         fun putNs(ns: Int) = try { when (ns) {
-            0 -> android.provider.Settings.Global.putInt(cr, key, 2)
-            1 -> android.provider.Settings.Secure.putInt(cr, key, 2)
-            else -> android.provider.Settings.System.putInt(cr, key, 2)
+            0 -> android.provider.Settings.Global.putInt(cr, key, off)
+            1 -> android.provider.Settings.Secure.putInt(cr, key, off)
+            else -> android.provider.Settings.System.putInt(cr, key, off)
         }; true } catch (e: Exception) { Log.w(TAG, "safe-vol ns$ns: ${e.message}"); false }
         for (ns in 0..2) {
             val cur = getNs(ns)
             if (cur == -1) continue                        // key not in this namespace
-            if (cur == 2) { touched = true; continue }     // already off here
+            if (cur == off) { touched = true; continue }   // already disabled here
             if (putNs(ns)) touched = true
         }
         if (!touched) touched = putNs(0)                   // not found anywhere: try Global
