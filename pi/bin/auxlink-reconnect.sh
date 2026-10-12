@@ -19,7 +19,18 @@ car_was=no; phone_was=no; phone_warned=no; car_err=; source_was=no; source_next=
 # before the car has ever connected (e.g. right after boot). The flag file,
 # emptied at boot, tells the phone section to stay disconnected.
 CAR_OFF_FLAG=/run/auxlink/car-off
+MOVING_FILE=/run/auxlink/moving
 car_seen=no; car_down_since=0
+
+# True if the SMO app says the vehicle is moving, from a FRESH report (the app
+# sends it every ~10 s). No file, a stale file, or "0" -> not moving, so the
+# guard is simply ignored when location isn't available (Bluetooth-only).
+moving_now() {
+  [ -f "$MOVING_FILE" ] || return 1
+  local age; age=$(( $(date +%s) - $(stat -c %Y "$MOVING_FILE" 2>/dev/null || echo 0) ))
+  [ "$age" -le "${CAR_OFF_MOVING_STALE:-60}" ] || return 1
+  [ "$(cat "$MOVING_FILE" 2>/dev/null)" = "1" ]
+}
 # Calls the Pi makes to the car: first one 45 s after start (the car usually
 # connects by itself first), then backing off 60 s -> 5 min.
 CAR_FIRST_WAIT=45; CAR_MIN_WAIT=60; CAR_MAX_WAIT=300
@@ -85,10 +96,16 @@ while true; do
     # Car gone long enough (and it had been connected): drop the phone. Leave a
     # flag so the phone section keeps it down until the car returns.
     if [ "${CAR_OFF_DROPS_PHONE:-0}" = 1 ] && [ "$car_seen" = yes ]; then
-      [ "$car_down_since" = 0 ] && car_down_since=$now
-      if [ ! -f "$CAR_OFF_FLAG" ] && [ $((now - car_down_since)) -ge "${CAR_OFF_PHONE_DELAY:-30}" ]; then
-        touch "$CAR_OFF_FLAG"
-        echo "Car gone ${CAR_OFF_PHONE_DELAY:-30}s; dropping the phone until it returns"
+      if [ "${CAR_OFF_REQUIRE_STILL:-1}" = 1 ] && moving_now; then
+        # Car's Bluetooth is gone but the vehicle is still moving (a Bluetooth
+        # blip, not the car turning off): hold off, keep the phone.
+        car_down_since=0
+      else
+        [ "$car_down_since" = 0 ] && car_down_since=$now
+        if [ ! -f "$CAR_OFF_FLAG" ] && [ $((now - car_down_since)) -ge "${CAR_OFF_PHONE_DELAY:-30}" ]; then
+          touch "$CAR_OFF_FLAG"
+          echo "Car gone ${CAR_OFF_PHONE_DELAY:-30}s (and stationary); dropping the phone until it returns"
+        fi
       fi
     fi
     if [ "$car_was" = yes ]; then

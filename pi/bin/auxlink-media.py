@@ -78,6 +78,10 @@ KICK_FILE = "/run/auxlink/audio-kick"
 SETUP_WIFI_FILE = "/run/auxlink/setup-wifi"   # the app's Setup button; auxlink-web turns the Wi-Fi on
 # "1" while hfp-relay has the car's mic borrowed for the source's voice search
 MIC_ACTIVE_FILE = "/run/auxlink/mic-active"
+# "1"/"0" from the SMO app: is the vehicle moving (from the car's location)?
+# auxlink-reconnect uses it (and its freshness) to hold off dropping the phone
+# while the car is still moving. Emptied at boot (/run).
+MOVING_FILE = "/run/auxlink/moving"
 VOICE_GRACE = 4.0     # s after voice search in which the car's play/pause is ignored   # read by auxlink-audio (play pressed in the car)
 CALL_POLL_MS = 250                          # how quickly a call is noticed
 # s after the call ends; at least 3 - the car plays no music sooner than
@@ -2110,6 +2114,17 @@ def main():
                 VOLUME["last_line"] = now
                 if "clock" in info:
                     set_clock(info["clock"])
+                elif "moving" in info:
+                    # The SMO app's view of whether the vehicle is moving (from
+                    # the car's location). auxlink-reconnect reads this file (and
+                    # its mtime for freshness) to avoid dropping the phone while
+                    # the car is still moving.
+                    try:
+                        os.makedirs("/run/auxlink", exist_ok=True)
+                        with open(MOVING_FILE, "w") as f:
+                            f.write("1" if info["moving"] else "0")
+                    except OSError as e:
+                        log(f"Cannot write {MOVING_FILE}: {e}")
                 elif info.get("req") == "pi":
                     app_send({"pi": pi_status()})
 

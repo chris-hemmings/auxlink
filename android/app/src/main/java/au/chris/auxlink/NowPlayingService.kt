@@ -131,6 +131,8 @@ class NowPlayingService : NotificationListenerService() {
             // Nothing playing anywhere: say "still here" anyway, so the XIAO
             // sees the app has its USB link (else it replugs to get it one).
             if (controller == null) io.execute { sendLine("{\"cmd\":\"ping\",\"ctl\":2}") }
+            // Keep the Pi's idea of vehicle movement fresh (e.g. after it rebooted).
+            LocationWatch.moving?.let { mv -> io.execute { sendLine("{\"moving\":$mv}") } }
             // This device's time zone and clock for the Pi (which has neither
             // in the car): at the start, then every 5 minutes.
             if (beats++ % 60 == 0) request(JSONObject().put("clock", JSONObject()
@@ -432,9 +434,15 @@ class NowPlayingService : NotificationListenerService() {
                 .setContentIntent(open)
                 .setOngoing(true)
                 .build()
-            if (Build.VERSION.SDK_INT >= 29)
-                startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
-            else startForeground(1, n)
+            if (Build.VERSION.SDK_INT >= 29) {
+                // Add the location type only once the permission is granted, so
+                // reading the car's (mock) location from here is allowed; without
+                // it, start as a plain connected-device service.
+                var type = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+                if (Build.VERSION.SDK_INT >= 30 && LocationWatch.hasPermission(this))
+                    type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+                startForeground(1, n, type)
+            } else startForeground(1, n)
         } catch (e: Exception) {
             Log.w(TAG, "could not keep a running notification: ${e.message}")
         }
@@ -460,13 +468,28 @@ class NowPlayingService : NotificationListenerService() {
         sessions = getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
         val me = ComponentName(this, NowPlayingService::class.java)
         sessions?.addOnActiveSessionsChangedListener(sessionsChanged, me, main)
+        startLocationWatch()
         pickController()
         main.post(heartbeat)
+    }
+
+    private val loc = LocationWatch()
+
+    /** Report vehicle movement to the Pi (if the location permission is on), so
+     *  it won't drop the phone while still moving. Safe to call again after the
+     *  permission is granted. */
+    fun startLocationWatch() {
+        // Re-assert the foreground notification so its service type now includes
+        // "location" (allowed once the permission is granted), then watch.
+        goForeground()
+        loc.stop()
+        loc.start(this) { mv -> io.execute { sendLine("{\"moving\":$mv}") } }
     }
 
     override fun onListenerDisconnected() {
         instance = null
         try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (_: Exception) {}
+        loc.stop()
         main.removeCallbacks(heartbeat)
         sessions?.removeOnActiveSessionsChangedListener(sessionsChanged)
         controller?.unregisterCallback(callback)

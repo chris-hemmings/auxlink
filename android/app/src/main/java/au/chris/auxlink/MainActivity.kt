@@ -638,6 +638,13 @@ class MainActivity : Activity() {
             "Allow", true, { Build.VERSION.SDK_INT >= 31 }, { BtLink(this).permitted() }) {
             if (Build.VERSION.SDK_INT >= 31) askOrSettings(Manifest.permission.BLUETOOTH_CONNECT)
         }
+        steps += Step("Vehicle location",
+            "Optional: stops the Pi dropping the phone while the car is still moving. The head unit " +
+                "shares the car's GPS as the device location; Phone Link reads it only to tell the Pi " +
+                "moving or stationary (needs the Pi's \"disconnect when the car turns off\" setting on).",
+            "Allow", true, { true }, { LocationWatch.hasPermission(this) }) {
+            askOrSettings(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
         for (s in steps) c.addView(stepRow(s))
         return c
     }
@@ -847,6 +854,17 @@ class MainActivity : Activity() {
         }
     }
     private val asked = mutableSetOf<String>()
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        // Location just granted: (re)start the watcher so the service begins
+        // reporting movement to the Pi (and re-arms its foreground service type).
+        if (permissions.any { it == Manifest.permission.ACCESS_FINE_LOCATION ||
+                it == Manifest.permission.ACCESS_COARSE_LOCATION } &&
+            LocationWatch.hasPermission(this)) {
+            NowPlayingService.instance?.startLocationWatch()
+        }
+    }
 
     // ------------------------------------------------------------ checks
 
