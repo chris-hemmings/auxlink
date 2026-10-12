@@ -14,6 +14,12 @@ while [ -z "$CAR" ] || [ -z "$CAR_ADAPTER" ]; do sleep 5; . /etc/auxlink.conf; d
 [ -z "$PHONE" ] || [ -z "$PHONE_ADAPTER" ] && PHONE_ENABLED=0
 
 car_was=no; phone_was=no; phone_warned=no; car_err=; source_was=no; source_next=0
+# Drop the phone a while after the CAR's Bluetooth goes (i.e. the car turned
+# off), and bring it back when the car returns. car_seen stops this firing
+# before the car has ever connected (e.g. right after boot). The flag file,
+# emptied at boot, tells the phone section to stay disconnected.
+CAR_OFF_FLAG=/run/auxlink/car-off
+car_seen=no; car_down_since=0
 # Calls the Pi makes to the car: first one 45 s after start (the car usually
 # connects by itself first), then backing off 60 s -> 5 min.
 CAR_FIRST_WAIT=45; CAR_MIN_WAIT=60; CAR_MAX_WAIT=300
@@ -71,9 +77,20 @@ while true; do
   # --- Car ---
   if $BT "$CAR_ADAPTER" "$CAR" connected; then
     [ "$car_was" = no ] && echo "Car connected"
-    car_was=yes
+    car_was=yes; car_seen=yes; car_down_since=0
+    # Car is back: let the phone reconnect (the phone section does the connect).
+    if [ -f "$CAR_OFF_FLAG" ]; then rm -f "$CAR_OFF_FLAG"; echo "Car back; reconnecting the phone"; fi
   else
     now=$(date +%s)
+    # Car gone long enough (and it had been connected): drop the phone. Leave a
+    # flag so the phone section keeps it down until the car returns.
+    if [ "${CAR_OFF_DROPS_PHONE:-0}" = 1 ] && [ "$car_seen" = yes ]; then
+      [ "$car_down_since" = 0 ] && car_down_since=$now
+      if [ ! -f "$CAR_OFF_FLAG" ] && [ $((now - car_down_since)) -ge "${CAR_OFF_PHONE_DELAY:-30}" ]; then
+        touch "$CAR_OFF_FLAG"
+        echo "Car gone ${CAR_OFF_PHONE_DELAY:-30}s; dropping the phone until it returns"
+      fi
+    fi
     if [ "$car_was" = yes ]; then
       if [ "${CAR_CALLS:-0}" = 1 ]; then
         echo "Car disconnected; giving it ${CAR_FIRST_WAIT}s to reconnect by itself"
@@ -130,7 +147,16 @@ while true; do
   fi
 
   # --- Phone (every ~30 s; phones normally reconnect by themselves too) ---
-  if [ "$PHONE_ENABLED" = 1 ] && $BT "$PHONE_ADAPTER" present 2>/dev/null; then
+  # Car off (flag set, feature on): keep the phone disconnected - don't dial it
+  # back, and drop it again if something reconnected it - until the car returns
+  # (the car section removes the flag).
+  if [ "$PHONE_ENABLED" = 1 ] && [ "${CAR_OFF_DROPS_PHONE:-0}" = 1 ] && [ -f "$CAR_OFF_FLAG" ]; then
+    if $BT "$PHONE_ADAPTER" present 2>/dev/null && $BT "$PHONE_ADAPTER" "$PHONE" connected 2>/dev/null; then
+      $BT "$PHONE_ADAPTER" "$PHONE" disconnect >/dev/null 2>&1
+      [ "$phone_was" = yes ] && echo "Car off: phone disconnected"
+    fi
+    phone_was=no
+  elif [ "$PHONE_ENABLED" = 1 ] && $BT "$PHONE_ADAPTER" present 2>/dev/null; then
     if $BT "$PHONE_ADAPTER" "$PHONE" connected; then
       [ "$phone_was" = no ] && echo "Phone connected"
       phone_was=yes

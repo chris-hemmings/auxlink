@@ -6,6 +6,7 @@ between boots, so plain `bluetoothctl connect` may use the wrong dongle.
 
   btdev.py ADAPTER DEVICE connected        exit 0 if connected
   btdev.py ADAPTER DEVICE connect [UUID]   connect (optionally one profile)
+  btdev.py ADAPTER DEVICE disconnect       drop the link now
   btdev.py ADAPTER DEVICE trust            mark trusted
   btdev.py ADAPTER present                 exit 0 if the adapter exists
   btdev.py ADAPTER power                   switch the adapter on
@@ -65,6 +66,10 @@ def main():
             else:
                 d.Connect(timeout=20)
             print("Connection successful")
+            return 0
+        if cmd == "disconnect":
+            d.Disconnect(timeout=20)
+            print("Disconnected")
             return 0
         if cmd == "trust":
             props.Set("org.bluez.Device1", "Trusted", dbus.Boolean(True))
