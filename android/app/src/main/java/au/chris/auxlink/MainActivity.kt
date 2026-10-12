@@ -649,9 +649,9 @@ class MainActivity : Activity() {
         return c
     }
 
-    /** "Connect to Wi-Fi when the car connects": a switch + hotspot name/password
-     *  (saved locally). When the car's Bluetooth connects and Wi-Fi isn't already
-     *  on the hotspot, the service turns Wi-Fi on and suggests the hotspot once. */
+    /** "Nudge Wi-Fi when the car connects": a single switch. When the car's
+     *  Bluetooth connects and this device isn't on any Wi-Fi, the service turns
+     *  Wi-Fi on and re-scans so the system rejoins a known network. */
     private fun wifiParkedBlock(): View {
         val p = getSharedPreferences("auxlink", MODE_PRIVATE)
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, px(10), 0, 0) }
@@ -659,39 +659,19 @@ class MainActivity : Activity() {
             text = "Wi-Fi when the car connects"; setTextColor(text1); textSize = 15f; typeface = Typeface.DEFAULT_BOLD
         })
         box.addView(TextView(this).apply {
-            text = "When the car's Bluetooth connects and Wi-Fi isn't already on the hotspot below, turn " +
-                "Wi-Fi on and join it (some head units sit with Wi-Fi off, and Spotify needs it). The first " +
-                "time, approve Phone Link's Wi-Fi suggestion when Android asks."
+            text = "A fallback only: if Wi-Fi isn't connected when the car's Bluetooth connects, turn Wi-Fi " +
+                "on and scan again so it rejoins a known network (some head units sit with Wi-Fi off, and " +
+                "Spotify needs it). It doesn't pick a specific network and doesn't keep retrying."
             setTextColor(text2); textSize = 13f; setPadding(0, px(2), 0, px(6))
         })
         val sw = android.widget.Switch(this).apply {
-            text = "  Connect to Wi-Fi when the car connects"; setTextColor(text1); textSize = 14f
+            text = "  Nudge Wi-Fi when the car connects"; setTextColor(text1); textSize = 14f
             isChecked = p.getBoolean("wifi_keep_on", p.getBoolean("wifi_on_car_off", false))
         }
-        val ssid = android.widget.EditText(this).apply {
-            hint = "Hotspot name (SSID)"; setText(p.getString("wifi_ssid", "")); setTextColor(text1)
-            setHintTextColor(text2); textSize = 14f
-            inputType = android.text.InputType.TYPE_CLASS_TEXT
+        sw.setOnCheckedChangeListener { _, _ ->
+            p.edit().putBoolean("wifi_keep_on", sw.isChecked).remove("wifi_on_car_off").apply()
         }
-        val pass = android.widget.EditText(this).apply {
-            hint = "Hotspot password"; setText(p.getString("wifi_pass", "")); setTextColor(text1)
-            setHintTextColor(text2); textSize = 14f
-            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
-        }
-        fun save() {
-            p.edit().putBoolean("wifi_keep_on", sw.isChecked)
-                .remove("wifi_on_car_off")
-                .putString("wifi_ssid", ssid.text.toString().trim())
-                .putString("wifi_pass", pass.text.toString()).apply()
-        }
-        sw.setOnCheckedChangeListener { _, _ -> save() }
-        val watch = object : android.text.TextWatcher {
-            override fun afterTextChanged(s: android.text.Editable?) = save()
-            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
-            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
-        }
-        ssid.addTextChangedListener(watch); pass.addTextChangedListener(watch)
-        box.addView(sw); box.addView(ssid); box.addView(pass)
+        box.addView(sw)
         return box
     }
 

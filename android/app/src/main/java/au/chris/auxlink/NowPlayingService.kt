@@ -446,14 +446,14 @@ class NowPlayingService : NotificationListenerService() {
     }
 
     private var carWasConnected = false
-    private var hotspotSuggested = false
 
-    /** "Connect to Wi-Fi when the car connects" switch. When the car's
-     *  Bluetooth connects and this device isn't already on the hotspot, turn
-     *  Wi-Fi on and (on Android 10+) suggest the configured hotspot once, so the
-     *  system joins it - some head units sit with Wi-Fi off and Spotify needs it.
-     *  One shot per car-connect; it does not keep retrying. Best effort - a
-     *  no-op where the platform forbids it. */
+    /** "Nudge Wi-Fi when the car connects" switch. A fallback only: when the
+     *  car's Bluetooth connects and this device isn't on any Wi-Fi, turn Wi-Fi
+     *  on and kick off a fresh scan, so the system re-evaluates its known
+     *  networks and joins one (some head units sit with Wi-Fi off, and Spotify
+     *  needs it). No specific network is suggested. One shot per car-connect;
+     *  it does not keep retrying. Best effort - a no-op where the platform
+     *  forbids it. */
     private fun onBtStatus() {
         val p = try { getSharedPreferences("auxlink", MODE_PRIVATE) } catch (e: Exception) { return }
         // New key, falling back to the old "when the car's off" key.
@@ -465,32 +465,21 @@ class NowPlayingService : NotificationListenerService() {
         carWasConnected = carConnected
         if (!justConnected) return
 
+        // Already on Wi-Fi? Then nothing to do - this is only a fallback.
+        val onWifi = try {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+            cm.getNetworkCapabilities(cm.activeNetwork)
+                ?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) == true
+        } catch (e: Exception) { false }
+        if (onWifi) return
+
         val wm = applicationContext.getSystemService(Context.WIFI_SERVICE)
             as? android.net.wifi.WifiManager ?: return
-        val ssid = p.getString("wifi_ssid", "").orEmpty().trim()
-        if (ssid.isEmpty()) return
-
-        // Already on our hotspot? Then Wi-Fi is fine - do nothing.
-        val onOurSsid = try {
-            @Suppress("DEPRECATION")
-            wm.isWifiEnabled && wm.connectionInfo?.ssid?.trim('"') == ssid
-        } catch (e: Exception) { false }
-        if (onOurSsid) return
-
         try { if (!wm.isWifiEnabled) { @Suppress("DEPRECATION") wm.setWifiEnabled(true) } }
         catch (e: Exception) { Log.w(TAG, "turn Wi-Fi on: ${e.message}") }
-
-        if (Build.VERSION.SDK_INT < 29) return
-        try {
-            val pass = p.getString("wifi_pass", "").orEmpty()
-            val b = android.net.wifi.WifiNetworkSuggestion.Builder().setSsid(ssid)
-            if (pass.isNotEmpty()) b.setWpa2Passphrase(pass)
-            // Re-register so the system re-evaluates and joins.
-            if (hotspotSuggested) wm.removeNetworkSuggestions(emptyList())
-            val r = wm.addNetworkSuggestions(listOf(b.build()))
-            hotspotSuggested = true
-            Log.i(TAG, "car connected: suggested hotspot \"$ssid\" -> $r")
-        } catch (e: Exception) { Log.w(TAG, "suggest hotspot: ${e.message}") }
+        // Re-scan so the system reconnects to a known network it can see.
+        try { @Suppress("DEPRECATION") wm.startScan(); Log.i(TAG, "car connected, no Wi-Fi: rescanning") }
+        catch (e: Exception) { Log.w(TAG, "Wi-Fi rescan: ${e.message}") }
     }
 
     private fun goForeground() {

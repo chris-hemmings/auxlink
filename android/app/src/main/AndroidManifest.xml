@@ -20,11 +20,12 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
-    <!-- Optional "Wi-Fi when the car connects" switch: when the car's Bluetooth
-         connects and Wi-Fi isn't already on the hotspot, turn Wi-Fi on and join
-         it (some head units sit with Wi-Fi off, and Spotify needs it). Works where
-         the platform still allows an app to toggle Wi-Fi / suggest networks (most
-         head units); a no-op otherwise. -->
+    <!-- Optional "Wi-Fi when the car connects" switch (a fallback): when the
+         car's Bluetooth connects and Wi-Fi isn't connected, turn Wi-Fi on and
+         re-scan so the system rejoins a known network (some head units sit with
+         Wi-Fi off, and Spotify needs it). No specific network is chosen. Works
+         where the platform still allows an app to toggle Wi-Fi / scan (most head
+         units); a no-op otherwise. -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <!-- The vehicle's location (the SMO publishes the car's GPS as the system
