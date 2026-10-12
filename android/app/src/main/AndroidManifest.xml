@@ -20,6 +20,12 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <!-- Optional "turn Wi-Fi on when the car isn't connected" switch: lets the
+         head unit rejoin its own Wi-Fi when you're not driving. Works where the
+         platform still allows an app to toggle Wi-Fi (most head units); a no-op
+         otherwise. -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <!-- The vehicle's location (the SMO publishes the car's GPS as the system
          mock location). Used only to tell the Pi "moving / stationary", so it
          won't drop the phone while the car is still moving. Optional: without
