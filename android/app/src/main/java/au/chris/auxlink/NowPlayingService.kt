@@ -183,6 +183,9 @@ class NowPlayingService : NotificationListenerService() {
             LocationWatch.moving?.let { mv -> io.execute { sendLine("{\"moving\":$mv}") } }
             // Refresh the audio-path check shown in the notification (~every 30 s).
             if (beats % 6 == 0) request(JSONObject().put("req", "pi"))
+            // Keep Android's safe-volume warning suppressed: a car (A2DP)
+            // reconnect can re-arm it mid-drive, so re-assert it every ~60 s.
+            if (beats % 12 == 0) keepVolumeWarningOff()
             // This device's time zone and clock for the Pi (which has neither
             // in the car): at the start, then every 5 minutes.
             if (beats++ % 60 == 0) request(JSONObject().put("clock", JSONObject()
@@ -279,14 +282,31 @@ class NowPlayingService : NotificationListenerService() {
     fun keepVolumeWarningOff(): Boolean {
         if (checkSelfPermission("android.permission.WRITE_SECURE_SETTINGS") !=
             android.content.pm.PackageManager.PERMISSION_GRANTED) return false
-        return try {
-            val cr = contentResolver
-            if (android.provider.Settings.Global.getInt(cr, "audio_safe_volume_state", 0) != 2)
-                android.provider.Settings.Global.putInt(cr, "audio_safe_volume_state", 2)
-            true
-        } catch (e: Exception) {
-            Log.w(TAG, "volume warning: ${e.message}"); false
+        val cr = contentResolver
+        val key = "audio_safe_volume_state"   // 2 = already accepted / don't limit
+        var touched = false
+        // ROMs keep this flag in different namespaces. Set it wherever it
+        // already lives (and fall back to Global). WRITE_SECURE_SETTINGS covers
+        // Global and Secure; System needs WRITE_SETTINGS, so that one may throw
+        // - harmless, we just skip it.
+        fun getNs(ns: Int) = try { when (ns) {
+            0 -> android.provider.Settings.Global.getInt(cr, key, -1)
+            1 -> android.provider.Settings.Secure.getInt(cr, key, -1)
+            else -> android.provider.Settings.System.getInt(cr, key, -1)
+        } } catch (e: Exception) { -1 }
+        fun putNs(ns: Int) = try { when (ns) {
+            0 -> android.provider.Settings.Global.putInt(cr, key, 2)
+            1 -> android.provider.Settings.Secure.putInt(cr, key, 2)
+            else -> android.provider.Settings.System.putInt(cr, key, 2)
+        }; true } catch (e: Exception) { Log.w(TAG, "safe-vol ns$ns: ${e.message}"); false }
+        for (ns in 0..2) {
+            val cur = getNs(ns)
+            if (cur == -1) continue                        // key not in this namespace
+            if (cur == 2) { touched = true; continue }     // already off here
+            if (putNs(ns)) touched = true
         }
+        if (!touched) touched = putNs(0)                   // not found anywhere: try Global
+        return touched
     }
 
     fun volumeMax(personAsked: Boolean = false) {
