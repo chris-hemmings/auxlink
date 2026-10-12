@@ -1737,6 +1737,66 @@ def web_api(path, body=None, timeout=10):
         return {"error": f"setup page not reachable: {e}"}
 
 
+def web_update(data):
+    """POST a raw update zip to the Pi's own setup-page update endpoint (the
+    same one the page's Update button uses), so a zip pushed over the app link
+    installs exactly like an uploaded one."""
+    import urllib.request
+    import urllib.error
+    req = urllib.request.Request("http://127.0.0.1/api/update", data=data,
+                                 headers={"Content-Type": "application/zip"})
+    pw = load_conf().get("WEB_PASSWORD", "")
+    if pw:
+        req.add_header("Authorization", "Basic " + base64.b64encode(f"app:{pw}".encode()).decode())
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        try:
+            return {"error": json.loads(e.read()).get("error") or str(e)}
+        except ValueError:
+            return {"error": str(e)}
+    except (OSError, ValueError) as e:
+        return {"error": f"update endpoint not reachable: {e}"}
+
+
+# A Pi update pushed from the app over the link, in base64 chunks.
+FW = {"parts": None, "n": 0, "ver": ""}
+
+
+def handle_fw(fw):
+    """{"fw": {"op": "begin"/"data"/"end", ...}} from the app: collect the
+    base64 chunks of an update zip and install it on "end"."""
+    op = fw.get("op")
+    if op == "begin":
+        FW["parts"] = []
+        FW["n"] = int(fw.get("n", 0) or 0)
+        FW["ver"] = str(fw.get("ver", ""))
+        log(f"App: receiving Pi update v{FW['ver']} ({FW['n']} chunks)")
+    elif op == "data":
+        if FW.get("parts") is not None:
+            FW["parts"].append(str(fw.get("b", "")))
+    elif op == "end":
+        parts = FW.get("parts")
+        FW["parts"] = None
+        if not parts:
+            app_send({"fw_result": {"ok": False, "msg": "no data received"}})
+            return
+
+        def run(ver=FW["ver"]):
+            try:
+                data = base64.b64decode("".join(parts))
+            except (ValueError, TypeError) as e:
+                GLib.idle_add(lambda: (app_send({"fw_result": {"ok": False, "msg": f"bad data: {e}"}}), False)[-1])
+                return
+            log(f"App: installing Pi update v{ver} ({len(data) // 1024} KB) pushed over the link")
+            r = web_update(data)
+            ok = not r.get("error")
+            msg = r.get("error") or f"installing v{ver}; the Pi will restart its services"
+            GLib.idle_add(lambda: (app_send({"fw_result": {"ok": ok, "msg": msg}}), False)[-1])
+        threading.Thread(target=run, daemon=True).start()
+
+
 def load_conf():
     conf = {}
     try:
@@ -2125,6 +2185,8 @@ def main():
                             f.write("1" if info["moving"] else "0")
                     except OSError as e:
                         log(f"Cannot write {MOVING_FILE}: {e}")
+                elif "fw" in info:
+                    handle_fw(info["fw"])
                 elif info.get("req") == "pi":
                     app_send({"pi": pi_status()})
 

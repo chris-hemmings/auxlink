@@ -699,9 +699,8 @@ class MainActivity : Activity() {
             text = "Pi software updates"; setTextColor(text1); textSize = 15f; typeface = Typeface.DEFAULT_BOLD
         })
         box.addView(TextView(this).apply {
-            text = "Fetches the latest Pi software from GitHub and installs it on the Pi. It always asks " +
-                "before downloading. You need to be on the Pi's Wi-Fi (its setup Wi-Fi, or the same network) " +
-                "for the install, just like opening the setup page."
+            text = "Fetches the latest Pi software from GitHub and installs it on the Pi over the USB-C (or " +
+                "Bluetooth) link — no Wi-Fi needed, so it works in the car. It always asks before downloading."
             setTextColor(text2); textSize = 13f; setPadding(0, px(2), 0, px(6))
         })
         val sw = android.widget.Switch(this).apply {
@@ -786,8 +785,8 @@ class MainActivity : Activity() {
         android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle("Update the Pi to v$latest?")
             .setMessage("The Pi is on v$have. This downloads the latest Pi software from GitHub " +
-                "(under 1 MB) and installs it on the Pi. The Pi restarts its services and reconnects " +
-                "by itself. You need to be on the Pi's Wi-Fi for the install.")
+                "(under 1 MB) and installs it on the Pi over the USB-C or Bluetooth link. The Pi restarts " +
+                "its services and reconnects by itself.")
             .setPositiveButton("Download & install") { _, _ -> downloadAndPushPiUpdate(latest) }
             .setNegativeButton("Not now") { _, _ ->
                 if (auto) getSharedPreferences("auxlink", MODE_PRIVATE)
@@ -799,18 +798,9 @@ class MainActivity : Activity() {
     private fun downloadAndPushPiUpdate(latest: String) {
         if (piUpdateBusy) return
         piUpdateBusy = true
-        piUpdateSay("Finding the Pi…")
+        piUpdateSay("Downloading v$latest from GitHub…")
         Thread {
-            // 1. Reach the Pi (needs to be on its network, like the setup page).
-            val base = resolvePiBase()
-            if (base == null) {
-                main.post { piUpdateBusy = false
-                    piUpdateSay("Pi not found on the network. Turn on the Pi's Setup Wi-Fi (Tools above) " +
-                        "and join AuxLink-setup, or get on the same Wi-Fi as the Pi, then try again.") }
-                return@Thread
-            }
-            // 2. Download the branch zip from GitHub (this device needs internet).
-            main.post { piUpdateSay("Downloading v$latest from GitHub…") }
+            // Download the branch zip from GitHub (this device needs internet).
             val zip = try {
                 val c = URL("https://codeload.github.com/$piRepo/zip/refs/heads/$piBranch")
                     .openConnection() as HttpURLConnection
@@ -819,13 +809,45 @@ class MainActivity : Activity() {
             } catch (e: Exception) { null }
             if (zip == null || zip.size < 1000) {
                 main.post { piUpdateBusy = false
-                    piUpdateSay("Download failed. Is this device online? (If you're on the Pi's Setup " +
-                        "Wi-Fi it has no internet - connect to normal Wi-Fi to download, then retry on the " +
-                        "Pi's network.)") }
+                    piUpdateSay("Download failed — is this device online?") }
                 return@Thread
             }
-            // 3. Push it to the Pi's update endpoint (the setup page uses the same one).
-            main.post { piUpdateSay("Installing on the Pi (${zip.size / 1024} KB)…") }
+            main.post {
+                // Prefer the USB/Bluetooth link to the Pi (works in the car, no
+                // Wi-Fi needed). Fall back to Wi-Fi/HTTP if there's no link, or
+                // if the Pi is too old to receive a pushed zip (added in 1.0.90).
+                val svc = NowPlayingService.instance
+                val piVer = NowPlayingService.piStatus?.optString("version").orEmpty()
+                val linkOk = svc != null && piVer.isNotEmpty() && !verNewer("1.0.90", piVer)
+                if (linkOk && svc != null) {
+                    piUpdateSay("Sending v$latest to the Pi over the link…")
+                    svc.pushPiUpdate(zip, latest, { msg -> piUpdateSay(msg) }) { ok, msg ->
+                        if (msg == "nolink") installPiUpdateOverWifi(zip, latest)
+                        else {
+                            piUpdateBusy = false
+                            piUpdateSay(if (ok) "Update sent over the link. The Pi is installing v$latest and " +
+                                "will restart its services (about a minute), then reconnect." else "Couldn't " +
+                                "install: $msg")
+                        }
+                    }
+                } else installPiUpdateOverWifi(zip, latest)
+            }
+        }.start()
+    }
+
+    /** Fallback: push the zip to the Pi's /api/update over Wi-Fi (needs to be
+     *  on the Pi's network, like the setup page). */
+    private fun installPiUpdateOverWifi(zip: ByteArray, latest: String) {
+        piUpdateSay("No link to the Pi — looking for it on Wi-Fi…")
+        Thread {
+            val base = resolvePiBase()
+            if (base == null) {
+                main.post { piUpdateBusy = false
+                    piUpdateSay("Pi not found. Plug this device into the Pi's USB-C, or get on the Pi's Wi-Fi " +
+                        "(its Setup Wi-Fi, or the same network), then try again.") }
+                return@Thread
+            }
+            main.post { piUpdateSay("Installing on the Pi over Wi-Fi (${zip.size / 1024} KB)…") }
             val ok = try {
                 val c = URL("${base}api/update").openConnection() as HttpURLConnection
                 c.requestMethod = "POST"; c.doOutput = true
@@ -843,10 +865,10 @@ class MainActivity : Activity() {
             main.post {
                 piUpdateBusy = false
                 when {
-                    ok.first -> piUpdateSay("Update sent. The Pi is installing v$latest and will restart its " +
-                        "services (about a minute), then reconnect. Its version here updates once it's back.")
-                    ok.second == 401 -> piUpdateSay("The Pi's setup page is password-protected, so the app " +
-                        "can't install this way. Use Setup page → Update with the zip instead.")
+                    ok.first -> piUpdateSay("Update sent over Wi-Fi. The Pi is installing v$latest and will " +
+                        "restart its services (about a minute), then reconnect.")
+                    ok.second == 401 -> piUpdateSay("The Pi's setup page is password-protected, so Wi-Fi " +
+                        "install isn't available — plug into the Pi's USB-C to install over the link instead.")
                     else -> piUpdateSay("The Pi rejected the update: ${ok.third.take(200)}")
                 }
             }

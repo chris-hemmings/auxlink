@@ -88,6 +88,54 @@ class NowPlayingService : NotificationListenerService() {
         }
     }
 
+    @Volatile private var fwCb: ((JSONObject) -> Unit)? = null
+
+    /** Push a Pi update zip to the Pi over the open USB/Bluetooth link, in
+     *  base64 chunks. [done] gets (ok, message); false with "nolink" means
+     *  there's no link to the Pi (fall back to Wi-Fi). Callbacks run on the
+     *  main thread. */
+    fun pushPiUpdate(zip: ByteArray, ver: String,
+                     progress: (String) -> Unit, done: (Boolean, String) -> Unit) {
+        io.execute {
+            val b64 = android.util.Base64.encodeToString(zip, android.util.Base64.NO_WRAP)
+            val chunk = 24000            // base64 chars per line (well under the 64 KB cap)
+            val total = (b64.length + chunk - 1) / chunk
+            val begin = JSONObject().put("fw", JSONObject()
+                .put("op", "begin").put("n", total).put("size", zip.size).put("ver", ver))
+            if (!sendLine(begin.toString())) { main.post { done(false, "nolink") }; return@execute }
+            val latch = java.util.concurrent.CountDownLatch(1)
+            val result = arrayOfNulls<JSONObject>(1)
+            fwCb = { r -> result[0] = r; latch.countDown() }
+            var ok = true
+            var i = 0
+            while (i < total) {
+                val part = b64.substring(i * chunk, minOf((i + 1) * chunk, b64.length))
+                if (!sendLine(JSONObject().put("fw",
+                        JSONObject().put("op", "data").put("i", i).put("b", part)).toString())) {
+                    ok = false; break
+                }
+                i++
+                if (i % 4 == 0 || i == total) { val n = i; main.post { progress("Sending to the Pi… $n/$total") } }
+            }
+            if (ok) sendLine(JSONObject().put("fw", JSONObject().put("op", "end")).toString())
+            if (!ok) { fwCb = null; main.post { done(false, "The link to the Pi dropped while sending.") }; return@execute }
+            main.post { progress("Installing on the Pi…") }
+            val got = try {
+                latch.await(90, java.util.concurrent.TimeUnit.SECONDS)
+            } catch (e: Exception) { false }
+            fwCb = null
+            val r = result[0]
+            main.post {
+                when {
+                    !got -> done(false, "No reply from the Pi (it may still be installing — check its " +
+                        "version in a minute).")
+                    r?.optBoolean("ok") == true -> done(true, r.optString("msg", "installing"))
+                    else -> done(false, r?.optString("msg").orEmpty().ifEmpty { "the Pi rejected the update" })
+                }
+            }
+        }
+    }
+
     private val main = Handler(Looper.getMainLooper())
     private lateinit var link: UsbLink
     private lateinit var bt: BtLink
@@ -197,6 +245,7 @@ class NowPlayingService : NotificationListenerService() {
         lastTraffic = System.currentTimeMillis()
         if (j.has("pi")) { piStatus = j.optJSONObject("pi"); piStatusAt = System.currentTimeMillis(); return }
         if (j.has("bt")) { btStatus = j.optJSONObject("bt"); onBtStatus(); return }
+        if (j.has("fw_result")) { fwCb?.invoke(j.optJSONObject("fw_result") ?: JSONObject()); return }
         if (j.has("flow")) { flow = j.optJSONArray("flow"); main.post { if (instance != null) goForeground() }; return }
         if (j.has("check")) { checkResult = j.optJSONObject("check"); return }
         if (j.has("bt_result")) { btResult = j.optJSONObject("bt_result"); return }
