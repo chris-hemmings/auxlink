@@ -446,14 +446,14 @@ class NowPlayingService : NotificationListenerService() {
     }
 
     private var carWasConnected = false
+    private val wifiNudge = Runnable { wifiRescanIfNeeded() }
 
-    /** "Nudge Wi-Fi when the car connects" switch. A fallback only: when the
-     *  car's Bluetooth connects and this device isn't on any Wi-Fi, turn Wi-Fi
-     *  on and kick off a fresh scan, so the system re-evaluates its known
-     *  networks and joins one (some head units sit with Wi-Fi off, and Spotify
-     *  needs it). No specific network is suggested. One shot per car-connect;
-     *  it does not keep retrying. Best effort - a no-op where the platform
-     *  forbids it. */
+    /** "Nudge Wi-Fi when the car connects" switch. A fallback only: 15 s after
+     *  the car's Bluetooth connects (giving Wi-Fi a chance to join on its own),
+     *  if this device still isn't on any Wi-Fi, turn Wi-Fi on and kick off a
+     *  fresh scan so the system re-evaluates its known networks and joins one
+     *  (some head units sit with Wi-Fi off, and Spotify needs it). No specific
+     *  network is suggested, and it does not keep retrying. Best effort. */
     private fun onBtStatus() {
         val p = try { getSharedPreferences("auxlink", MODE_PRIVATE) } catch (e: Exception) { return }
         // New key, falling back to the old "when the car's off" key.
@@ -464,6 +464,16 @@ class NowPlayingService : NotificationListenerService() {
         val justConnected = carConnected && !carWasConnected
         carWasConnected = carConnected
         if (!justConnected) return
+
+        // Check 15 s later, not instantly - Wi-Fi often reconnects on its own.
+        main.removeCallbacks(wifiNudge)
+        main.postDelayed(wifiNudge, 15_000L)
+    }
+
+    private fun wifiRescanIfNeeded() {
+        if (!carWasConnected) return      // car dropped again within the 15 s
+        val p = try { getSharedPreferences("auxlink", MODE_PRIVATE) } catch (e: Exception) { return }
+        if (!p.getBoolean("wifi_keep_on", p.getBoolean("wifi_on_car_off", false))) return
 
         // Already on Wi-Fi? Then nothing to do - this is only a fallback.
         val onWifi = try {
@@ -478,7 +488,7 @@ class NowPlayingService : NotificationListenerService() {
         try { if (!wm.isWifiEnabled) { @Suppress("DEPRECATION") wm.setWifiEnabled(true) } }
         catch (e: Exception) { Log.w(TAG, "turn Wi-Fi on: ${e.message}") }
         // Re-scan so the system reconnects to a known network it can see.
-        try { @Suppress("DEPRECATION") wm.startScan(); Log.i(TAG, "car connected, no Wi-Fi: rescanning") }
+        try { @Suppress("DEPRECATION") wm.startScan(); Log.i(TAG, "car connected, still no Wi-Fi: rescanning") }
         catch (e: Exception) { Log.w(TAG, "Wi-Fi rescan: ${e.message}") }
     }
 
@@ -557,6 +567,7 @@ class NowPlayingService : NotificationListenerService() {
         try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (_: Exception) {}
         loc.stop()
         main.removeCallbacks(heartbeat)
+        main.removeCallbacks(wifiNudge)
         sessions?.removeOnActiveSessionsChangedListener(sessionsChanged)
         controller?.unregisterCallback(callback)
         try { unregisterReceiver(usbEvents) } catch (_: Exception) {}

@@ -659,9 +659,9 @@ class MainActivity : Activity() {
             text = "Wi-Fi when the car connects"; setTextColor(text1); textSize = 15f; typeface = Typeface.DEFAULT_BOLD
         })
         box.addView(TextView(this).apply {
-            text = "A fallback only: if Wi-Fi isn't connected when the car's Bluetooth connects, turn Wi-Fi " +
-                "on and scan again so it rejoins a known network (some head units sit with Wi-Fi off, and " +
-                "Spotify needs it). It doesn't pick a specific network and doesn't keep retrying."
+            text = "A fallback only: 15 s after the car's Bluetooth connects, if Wi-Fi still isn't connected, " +
+                "turn Wi-Fi on and scan again so it rejoins a known network (some head units sit with Wi-Fi " +
+                "off, and Spotify needs it). It doesn't pick a specific network and doesn't keep retrying."
             setTextColor(text2); textSize = 13f; setPadding(0, px(2), 0, px(6))
         })
         val sw = android.widget.Switch(this).apply {
