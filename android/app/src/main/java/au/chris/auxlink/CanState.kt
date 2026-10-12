@@ -52,7 +52,19 @@ class CanState {
         private const val FLAG_NO_DATA = 0x1
         private const val FLAG_CAR_DOWN = 0x2
 
-        /** How long NO_DATA must hold before we call the car off. */
+        // Standard Android Automotive VehicleProperty ids the agent now also
+        // reads (added alongside the vendor signals). IGNITION_STATE is the
+        // clean car-on/off signal; GEAR_SELECTION is shown for context.
+        private const val ID_IGNITION = 0x11400409
+        private const val ID_GEAR = 0x11400400
+        // VehicleIgnitionState: 0 UNDEFINED, 1 LOCK, 2 OFF, 3 ACC, 4 ON, 5 START.
+        // Car is "on" from ACC up (someone is in/using it); "off" at LOCK/OFF.
+        private const val IGN_ACC = 3
+
+        /** How long "off" must hold before we drop the phone. Ignition is
+         *  authoritative, so a short debounce; the vendor-signal fallback is
+         *  noisier and uses the longer window. */
+        private const val OFF_DEBOUNCE_IGN_MS = 8_000L
         private const val OFF_DEBOUNCE_MS = 20_000L
         /** A batch older than this (vs the shared boot clock) is stale/replayed. */
         private const val FRESH_MS = 5_000L
@@ -67,8 +79,8 @@ class CanState {
     private var handler: Handler? = null
     private var receiver: BroadcastReceiver? = null
     private var onChange: ((Boolean) -> Unit)? = null
-    // Confined to the handler thread.
-    private var noDataSince = 0L
+    // Confined to the handler thread: when the car first looked off (0 = it doesn't).
+    private var offSince = 0L
 
     /** Start listening. [onChange] is called (on a background thread) only when
      *  the car on/off state actually flips. Safe to call once; a second call is
@@ -115,6 +127,8 @@ class CanState {
         if (!macOk(raw, payloadLen)) { Log.w(TAG, "batch failed HMAC; ignored"); return }
         val flags: Int
         val count: Int
+        var ignition: Int? = null
+        var gear: Int? = null
         try {
             val din = DataInputStream(ByteArrayInputStream(raw, 0, payloadLen))
             val version = din.readInt()
@@ -129,16 +143,52 @@ class CanState {
             din.readInt()                        // reconnectCount
             din.readInt()                        // maxReadMicros
             count = din.readInt()
+            // Read the signal entries, picking out ignition + gear by id.
+            for (i in 0 until count) {
+                val id = din.readInt()
+                val kind = din.readByte().toInt()
+                val bits = din.readInt()
+                when (id) {
+                    ID_IGNITION -> if (kind == 0) ignition = bits
+                    ID_GEAR -> if (kind == 0) gear = bits
+                }
+            }
         } catch (e: Exception) {
             Log.w(TAG, "bad batch: ${e.message}"); return
         }
 
         lastBatchAt = System.currentTimeMillis()
-        val hasData = count > 0
         val serviceDown = (flags and FLAG_CAR_DOWN) != 0
 
+        // Preferred path: IGNITION_STATE, when the agent could read a sane code.
+        // 0 UNDEFINED is treated as "unknown" and falls through to the signal
+        // heuristic rather than being read as off.
+        val ign = ignition
+        if (ign != null && ign in 1..7) {
+            val on = ign >= IGN_ACC
+            val g = gearName(gear)
+            if (on) {
+                offSince = 0L
+                status = "Car on (ign ${ignName(ign)}$g)"
+                flip(true)
+            } else {
+                val now = SystemClock.elapsedRealtime()
+                if (offSince == 0L) offSince = now
+                val held = now - offSince
+                if (held >= OFF_DEBOUNCE_IGN_MS) {
+                    status = "Car off (ign ${ignName(ign)})"
+                    flip(false)
+                } else {
+                    status = "Car off? ign ${ignName(ign)} (${held / 1000}s)"
+                }
+            }
+            return
+        }
+
+        // Fallback: no usable ignition reading - use "any signal readable".
+        val hasData = count > 0
         if (hasData) {
-            noDataSince = 0L
+            offSince = 0L
             status = "Car on ($count signals)"
             flip(true)
             return
@@ -150,14 +200,24 @@ class CanState {
             return
         }
         val now = SystemClock.elapsedRealtime()
-        if (noDataSince == 0L) noDataSince = now
-        val held = now - noDataSince
+        if (offSince == 0L) offSince = now
+        val held = now - offSince
         if (held >= OFF_DEBOUNCE_MS) {
             status = "Car off"
             flip(false)
         } else {
             status = "No data (${held / 1000}s)"
         }
+    }
+
+    private fun ignName(v: Int) = when (v) {
+        1 -> "LOCK"; 2 -> "OFF"; 3 -> "ACC"; 4 -> "ON"; 5 -> "START"; else -> v.toString()
+    }
+
+    /** GEAR_SELECTION bits: PARK 4, REVERSE 2, NEUTRAL 1, DRIVE 8. "" if absent. */
+    private fun gearName(v: Int?) = when (v) {
+        null -> ""
+        4 -> ", P"; 2 -> ", R"; 1 -> ", N"; 8 -> ", D"; else -> ", gear $v"
     }
 
     private fun flip(on: Boolean) {
