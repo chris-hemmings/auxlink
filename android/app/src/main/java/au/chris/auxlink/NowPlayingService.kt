@@ -133,6 +133,8 @@ class NowPlayingService : NotificationListenerService() {
             if (controller == null) io.execute { sendLine("{\"cmd\":\"ping\",\"ctl\":2}") }
             // Keep the Pi's idea of vehicle movement fresh (e.g. after it rebooted).
             LocationWatch.moving?.let { mv -> io.execute { sendLine("{\"moving\":$mv}") } }
+            // Refresh the audio-path check shown in the notification (~every 30 s).
+            if (beats % 6 == 0) request(JSONObject().put("req", "pi"))
             // This device's time zone and clock for the Pi (which has neither
             // in the car): at the start, then every 5 minutes.
             if (beats++ % 60 == 0) request(JSONObject().put("clock", JSONObject()
@@ -195,7 +197,7 @@ class NowPlayingService : NotificationListenerService() {
         lastTraffic = System.currentTimeMillis()
         if (j.has("pi")) { piStatus = j.optJSONObject("pi"); piStatusAt = System.currentTimeMillis(); return }
         if (j.has("bt")) { btStatus = j.optJSONObject("bt"); return }
-        if (j.has("flow")) { flow = j.optJSONArray("flow"); return }
+        if (j.has("flow")) { flow = j.optJSONArray("flow"); main.post { if (instance != null) goForeground() }; return }
         if (j.has("check")) { checkResult = j.optJSONObject("check"); return }
         if (j.has("bt_result")) { btResult = j.optJSONObject("bt_result"); return }
         if (PhoneData.onLine(j)) return     // contacts, recents, texts for the Phone/Messages screens
@@ -419,6 +421,30 @@ class NowPlayingService : NotificationListenerService() {
      *  foreground service, which Android (and head units' app killers) leave
      *  alone. If Android refuses (e.g. started in the background on a
      *  device that forbids it), the app still works as before. */
+    /** The audio-path check as (one-line summary, multi-line detail) for the
+     *  ongoing notification, or null when the Pi hasn't sent it yet. */
+    private fun flowText(): Pair<String, String>? {
+        val f = flow ?: return null
+        if (f.length() == 0) return null
+        val sb = StringBuilder()
+        var bad = false
+        for (i in 0 until f.length()) {
+            val s = f.optJSONObject(i) ?: continue
+            val title = s.optString("title")
+            if (title.isEmpty()) continue
+            val st = s.optString("st")
+            if (st == "bad") bad = true
+            val sym = when (st) { "ok" -> "✓"; "bad" -> "✗"; "idle" -> "–"; else -> "•" }
+            sb.append(sym).append(' ').append(title)
+            val detail = s.optString("detail")
+            if (detail.isNotEmpty()) sb.append(" — ").append(detail)
+            sb.append('\n')
+        }
+        val big = sb.toString().trimEnd()
+        if (big.isEmpty()) return null
+        return (if (bad) "Audio path: needs attention" else "Audio path OK") to big
+    }
+
     private fun goForeground() {
         try {
             val nm = getSystemService(NotificationManager::class.java)
@@ -427,13 +453,16 @@ class NowPlayingService : NotificationListenerService() {
             ).apply { setShowBadge(false) })
             val open = PendingIntent.getActivity(
                 this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
-            val n = Notification.Builder(this, "running")
+            // Swipe down to see the audio path check (source -> Pi -> car).
+            val path = flowText()
+            val b = Notification.Builder(this, "running")
                 .setSmallIcon(android.R.drawable.ic_media_play)
                 .setContentTitle("Phone Link connected")
-                .setContentText("Sending what's playing to the car")
+                .setContentText(path?.first ?: "Sending what's playing to the car")
                 .setContentIntent(open)
                 .setOngoing(true)
-                .build()
+            path?.let { b.setStyle(Notification.BigTextStyle().bigText(it.second)) }
+            val n = b.build()
             if (Build.VERSION.SDK_INT >= 29) {
                 // Add the location type only once the permission is granted, so
                 // reading the car's (mock) location from here is allowed; without

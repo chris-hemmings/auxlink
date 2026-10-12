@@ -326,7 +326,7 @@ class MainActivity : Activity() {
         if (!linked || !fresh) {
             piRows.addView(TextView(this).apply {
                 text = if (!linked) "Connect to the Pi to see its Wi-Fi and status."
-                       else "Asking the Pi… (needs Pi update 1.0.77 or newer)"
+                       else "Asking the Pi…"
                 setTextColor(text2); textSize = 14f
             })
             return
@@ -392,7 +392,7 @@ class MainActivity : Activity() {
         if (!linked || st == null) {
             btRows.addView(TextView(this).apply {
                 text = if (!linked) "Connect to the Pi to see and manage Bluetooth."
-                       else "Asking the Pi… (needs Pi update 1.0.84 or newer)"
+                       else "Asking the Pi…"
                 setTextColor(text2); textSize = 14f
             })
             return
@@ -493,7 +493,7 @@ class MainActivity : Activity() {
             if (!linked || f == null) {
                 flowRows.addView(TextView(this).apply {
                     text = if (!linked) "Connect to the Pi to see the audio path."
-                           else "Asking the Pi… (needs Pi update 1.0.84 or newer)"
+                           else "Asking the Pi…"
                     setTextColor(text2); textSize = 14f
                 })
             } else {
