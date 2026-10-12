@@ -789,6 +789,7 @@ class MainActivity : Activity() {
             appendLine("Link: " + if (linked) NowPlayingService.linkKind else "none")
             appendLine("USB: " + (usb ?: "nothing plugged in"))
             appendLine("Service running: " + if (running) "yes" else "no")
+            appendLine("Car (CAN): " + CanState.status)
             if (CallBar.lastProblem.isNotEmpty()) appendLine("Pop-up problem: " + CallBar.lastProblem)
             if (!linked && usb == null) { appendLine("Bluetooth, last try:"); appendLine(BtLink.lastTry) }
             appendLine("Last sent to the Pi:")

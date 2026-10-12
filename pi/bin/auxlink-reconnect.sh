@@ -130,7 +130,16 @@ while true; do
   fi
 
   # --- Phone (every ~30 s; phones normally reconnect by themselves too) ---
-  if [ "$PHONE_ENABLED" = 1 ] && $BT "$PHONE_ADAPTER" present 2>/dev/null; then
+  # Car off + the drop-phone setting on: keep the phone disconnected (don't
+  # dial it back, and drop it again if something reconnected it) until the SMO
+  # app says the car is on again, which removes the flag.
+  if [ "$PHONE_ENABLED" = 1 ] && [ "${CAR_OFF_DROPS_PHONE:-0}" = 1 ] && [ -f /run/auxlink/car-off ]; then
+    if $BT "$PHONE_ADAPTER" present 2>/dev/null && $BT "$PHONE_ADAPTER" "$PHONE" connected 2>/dev/null; then
+      $BT "$PHONE_ADAPTER" "$PHONE" disconnect >/dev/null 2>&1
+    fi
+    [ "$phone_was" = yes ] && echo "Car off: keeping the phone disconnected"
+    phone_was=no
+  elif [ "$PHONE_ENABLED" = 1 ] && $BT "$PHONE_ADAPTER" present 2>/dev/null; then
     if $BT "$PHONE_ADAPTER" "$PHONE" connected; then
       [ "$phone_was" = no ] && echo "Phone connected"
       phone_was=yes

@@ -29,6 +29,16 @@
         tools:ignore="ProtectedPermissions" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
+    <!-- Reading the car's on/off state on a head unit (SMO): the device's own
+         ScreenMate app, with the owner's CAN agent injected, broadcasts the
+         car's CAN state gated by this permission. We only listen (read-only),
+         to drop the phone early when the car is off. Defined here as a normal
+         permission and held by us; harmless on a device with no such agent. -->
+    <permission
+        android:name="co.screenmate.can.permission.SIGNALS"
+        android:protectionLevel="normal" />
+    <uses-permission android:name="co.screenmate.can.permission.SIGNALS" />
+
     <application
         android:label="Phone Link"
         android:icon="@mipmap/ic_launcher"
