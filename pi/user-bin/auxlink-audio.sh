@@ -118,7 +118,9 @@ start_loop() {
               --capture-props="target.object=$INPUT node.name=smo_capture audio.position=[ FL FR ]" \
               --playback-props="target.object=$SINK node.name=to_tesla audio.position=[ FL FR ]" &
   LOOP=$!; LOOP_SINK_ID=$SINK_ID; LOOP_INPUT=$INPUT; LOOP_STARTED=$(date +%s); UNLINKED=0; NOT_ACTIVE=0; STEREO_BAD=0
-  NEXT_STEREO=$((LOOP_STARTED + 3))
+  # Check the stereo early after a fresh start: a mono (right-silent) loopback
+  # right after a connect/restart should self-heal in a few seconds, not ~10.
+  NEXT_STEREO=$((LOOP_STARTED + 2))
   echo "Streaming to $SINK"
 }
 unmute_input() {
@@ -381,10 +383,10 @@ while true; do
     else
       STEREO_BAD=$((STEREO_BAD + 1))
       if [ "$STEREO_BAD" -ge 2 ]; then
-        echo "Right channel silent at the car; recreating the loopback"
+        echo "Right channel silent at the car (car suspended/resumed its stream); recreating the loopback"
         stop_loop; continue
       fi
-      NEXT_STEREO=$((now + 3))
+      NEXT_STEREO=$((now + 2))     # confirm quickly, so a mono blip heals in ~4 s not ~10
     fi
   fi
 
