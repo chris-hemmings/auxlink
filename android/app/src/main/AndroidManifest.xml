@@ -32,11 +32,12 @@
     <!-- Reading the car's on/off state on a head unit (SMO): the device's own
          ScreenMate app, with the owner's CAN agent injected, broadcasts the
          car's CAN state gated by this permission. We only listen (read-only),
-         to drop the phone early when the car is off. Defined here as a normal
-         permission and held by us; harmless on a device with no such agent. -->
-    <permission
-        android:name="co.screenmate.can.permission.SIGNALS"
-        android:protectionLevel="normal" />
+         to drop the phone early when the car is off. The SM CAN Injector app
+         OWNS (defines) this permission and is always installed first, so we
+         only <uses-permission> it - defining it here too would clash with the
+         injector and fail install (duplicate permission). It is a normal
+         permission, so it is simply not granted on a device without the
+         injector, and we just never hear the broadcast there. -->
     <uses-permission android:name="co.screenmate.can.permission.SIGNALS" />
 
     <application
