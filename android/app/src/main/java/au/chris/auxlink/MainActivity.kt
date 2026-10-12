@@ -25,9 +25,11 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import org.json.JSONObject
+import java.net.HttpURLConnection
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.net.URL
 
 /**
  * The app's one screen: is it connected, what is playing, what still needs
@@ -223,7 +225,13 @@ class MainActivity : Activity() {
         super.onDestroy()
     }
 
-    override fun onResume() { super.onResume(); main.post(refresh); if (::pages.isInitialized) showTab(tab) }
+    override fun onResume() {
+        super.onResume(); main.post(refresh); if (::pages.isInitialized) showTab(tab)
+        // Daily auto-check (if the switch is on). Waits ~8 s for the Pi's
+        // version to arrive first; stays silent unless there's something new.
+        if (getSharedPreferences("auxlink", MODE_PRIVATE).getBoolean("pi_auto_update", false))
+            main.postDelayed({ checkPiUpdate(auto = true) }, 8000)
+    }
     override fun onPause() { super.onPause(); main.removeCallbacks(refresh) }
 
     // ------------------------------------------------------------ sections
@@ -675,6 +683,176 @@ class MainActivity : Activity() {
         return box
     }
 
+    // ----------------------------------------------------- Pi software update
+    private val piRepo = "chris-hemmings/teslabridge"
+    private val piBranch = "main"
+    private var piUpdateStatus: TextView? = null
+    @Volatile private var piUpdateBusy = false
+
+    /** "Keep the Pi up to date": a switch + a "Check now" button. The switch
+     *  checks on its own (once a day); either way nothing downloads or installs
+     *  until you confirm. */
+    private fun piUpdateBlock(): View {
+        val p = getSharedPreferences("auxlink", MODE_PRIVATE)
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, px(10), 0, 0) }
+        box.addView(TextView(this).apply {
+            text = "Pi software updates"; setTextColor(text1); textSize = 15f; typeface = Typeface.DEFAULT_BOLD
+        })
+        box.addView(TextView(this).apply {
+            text = "Fetches the latest Pi software from GitHub and installs it on the Pi. It always asks " +
+                "before downloading. You need to be on the Pi's Wi-Fi (its setup Wi-Fi, or the same network) " +
+                "for the install, just like opening the setup page."
+            setTextColor(text2); textSize = 13f; setPadding(0, px(2), 0, px(6))
+        })
+        val sw = android.widget.Switch(this).apply {
+            text = "  Check for Pi updates automatically"; setTextColor(text1); textSize = 14f
+            isChecked = p.getBoolean("pi_auto_update", false)
+        }
+        sw.setOnCheckedChangeListener { _, on ->
+            p.edit().putBoolean("pi_auto_update", on).apply()
+            if (on) checkPiUpdate(auto = false)
+        }
+        box.addView(sw)
+        val status = TextView(this).apply {
+            setTextColor(text2); textSize = 13f; setPadding(0, px(4), 0, px(4)); visibility = View.GONE
+        }
+        piUpdateStatus = status
+        box.addView(status)
+        box.addView(Button(this).apply {
+            text = "Check for Pi updates now"
+            setOnClickListener { checkPiUpdate(auto = false) }
+        })
+        return box
+    }
+
+    private fun piUpdateSay(msg: String) {
+        piUpdateStatus?.let { it.text = msg; it.visibility = View.VISIBLE }
+    }
+
+    /** "1.0.89" > "1.0.9"? Numeric, component by component. */
+    private fun verNewer(a: String, b: String): Boolean {
+        val pa = a.split("."); val pb = b.split(".")
+        for (i in 0 until maxOf(pa.size, pb.size)) {
+            val x = pa.getOrNull(i)?.toIntOrNull() ?: 0
+            val y = pb.getOrNull(i)?.toIntOrNull() ?: 0
+            if (x != y) return x > y
+        }
+        return false
+    }
+
+    /** Check GitHub for a newer Pi version and, if there is one, offer to
+     *  install it. [auto] = triggered by the daily auto-check (stays quiet
+     *  when there's nothing new or a check already ran today). */
+    private fun checkPiUpdate(auto: Boolean) {
+        if (piUpdateBusy) return
+        val have = NowPlayingService.piStatus?.optString("version").orEmpty()
+        if (have.isEmpty()) {
+            if (!auto) piUpdateSay("The Pi isn't connected yet, so its version is unknown. " +
+                "Plug this device into the Pi (or connect the Bluetooth source) and try again.")
+            return
+        }
+        val p = getSharedPreferences("auxlink", MODE_PRIVATE)
+        val now = System.currentTimeMillis()
+        if (auto && now - p.getLong("pi_update_checked", 0L) < 24 * 60 * 60 * 1000L) return
+        piUpdateBusy = true
+        if (!auto) piUpdateSay("Checking GitHub for a newer Pi version…")
+        Thread {
+            val latest = try {
+                val c = URL("https://raw.githubusercontent.com/$piRepo/$piBranch/pi/VERSION")
+                    .openConnection() as HttpURLConnection
+                c.connectTimeout = 10000; c.readTimeout = 10000
+                c.inputStream.bufferedReader().use { it.readText() }.trim()
+            } catch (e: Exception) { null }
+            main.post {
+                piUpdateBusy = false
+                p.edit().putLong("pi_update_checked", now).apply()
+                if (latest == null || !latest.matches(Regex("[0-9.]{1,12}"))) {
+                    if (!auto) piUpdateSay("Couldn't reach GitHub to check for updates. " +
+                        "Is this device online?")
+                    return@post
+                }
+                if (!verNewer(latest, have)) {
+                    if (!auto) piUpdateSay("The Pi is up to date (v$have).")
+                    return@post
+                }
+                // Don't nag on auto-checks about a version already declined.
+                if (auto && p.getString("pi_update_skip", "") == latest) return@post
+                confirmPiUpdate(have, latest, auto)
+            }
+        }.start()
+    }
+
+    private fun confirmPiUpdate(have: String, latest: String, auto: Boolean) {
+        android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("Update the Pi to v$latest?")
+            .setMessage("The Pi is on v$have. This downloads the latest Pi software from GitHub " +
+                "(under 1 MB) and installs it on the Pi. The Pi restarts its services and reconnects " +
+                "by itself. You need to be on the Pi's Wi-Fi for the install.")
+            .setPositiveButton("Download & install") { _, _ -> downloadAndPushPiUpdate(latest) }
+            .setNegativeButton("Not now") { _, _ ->
+                if (auto) getSharedPreferences("auxlink", MODE_PRIVATE)
+                    .edit().putString("pi_update_skip", latest).apply()
+            }
+            .show()
+    }
+
+    private fun downloadAndPushPiUpdate(latest: String) {
+        if (piUpdateBusy) return
+        piUpdateBusy = true
+        piUpdateSay("Finding the Pi…")
+        Thread {
+            // 1. Reach the Pi (needs to be on its network, like the setup page).
+            val base = resolvePiBase()
+            if (base == null) {
+                main.post { piUpdateBusy = false
+                    piUpdateSay("Pi not found on the network. Turn on the Pi's Setup Wi-Fi (Tools above) " +
+                        "and join AuxLink-setup, or get on the same Wi-Fi as the Pi, then try again.") }
+                return@Thread
+            }
+            // 2. Download the branch zip from GitHub (this device needs internet).
+            main.post { piUpdateSay("Downloading v$latest from GitHub…") }
+            val zip = try {
+                val c = URL("https://codeload.github.com/$piRepo/zip/refs/heads/$piBranch")
+                    .openConnection() as HttpURLConnection
+                c.connectTimeout = 15000; c.readTimeout = 60000
+                c.inputStream.use { it.readBytes() }
+            } catch (e: Exception) { null }
+            if (zip == null || zip.size < 1000) {
+                main.post { piUpdateBusy = false
+                    piUpdateSay("Download failed. Is this device online? (If you're on the Pi's Setup " +
+                        "Wi-Fi it has no internet - connect to normal Wi-Fi to download, then retry on the " +
+                        "Pi's network.)") }
+                return@Thread
+            }
+            // 3. Push it to the Pi's update endpoint (the setup page uses the same one).
+            main.post { piUpdateSay("Installing on the Pi (${zip.size / 1024} KB)…") }
+            val ok = try {
+                val c = URL("${base}api/update").openConnection() as HttpURLConnection
+                c.requestMethod = "POST"; c.doOutput = true
+                c.connectTimeout = 15000; c.readTimeout = 60000
+                c.setRequestProperty("Content-Type", "application/zip")
+                c.setFixedLengthStreamingMode(zip.size)
+                c.outputStream.use { it.write(zip) }
+                val code = c.responseCode
+                val body = try {
+                    (if (code in 200..299) c.inputStream else c.errorStream)
+                        ?.bufferedReader()?.use { it.readText() }.orEmpty()
+                } catch (e: Exception) { "" }
+                Triple(code in 200..299, code, body)
+            } catch (e: Exception) { Triple(false, 0, e.message ?: "error") }
+            main.post {
+                piUpdateBusy = false
+                when {
+                    ok.first -> piUpdateSay("Update sent. The Pi is installing v$latest and will restart its " +
+                        "services (about a minute), then reconnect. Its version here updates once it's back.")
+                    ok.second == 401 -> piUpdateSay("The Pi's setup page is password-protected, so the app " +
+                        "can't install this way. Use Setup page → Update with the zip instead.")
+                    else -> piUpdateSay("The Pi rejected the update: ${ok.third.take(200)}")
+                }
+            }
+        }.start()
+    }
+
     private fun toolsCard(): View {
         val c = card()
         c.addView(TextView(this).apply {
@@ -720,6 +898,7 @@ class MainActivity : Activity() {
             openSetup()
         })
         c.addView(wifiParkedBlock())
+        c.addView(piUpdateBlock())
         note = TextView(this).apply {
             setTextColor(text1); textSize = 14f; visibility = View.GONE
             background = round(0xFF1F2A3D.toInt(), 10f)
@@ -835,16 +1014,22 @@ class MainActivity : Activity() {
     /** The setup page wherever the Pi is: its setup Wi-Fi (10.42.0.1), else
      *  the same network as this device (auxlink.local, looked up here and
      *  opened by address - browsers often can't find .local names). */
+    /** The Pi's web base URL ("http://host/"), or null if it can't be reached.
+     *  Blocks on the network - call off the main thread. Setup Wi-Fi first
+     *  (10.42.0.1), else the same network as this device (auxlink.local). */
+    private fun resolvePiBase(): String? {
+        fun answers(host: String) = try {
+            Socket().use { it.connect(InetSocketAddress(host, 80), 1500) }; true
+        } catch (e: Exception) { false }
+        if (answers("10.42.0.1")) return "http://10.42.0.1/"
+        val ip = try { InetAddress.getByName("auxlink.local").hostAddress } catch (e: Exception) { null }
+        return if (ip != null && answers(ip)) "http://$ip/" else null
+    }
+
     private fun openSetup() {
         say("Looking for the Pi…")
         Thread {
-            fun answers(host: String) = try {
-                Socket().use { it.connect(InetSocketAddress(host, 80), 1500) }; true
-            } catch (e: Exception) { false }
-            val url = if (answers("10.42.0.1")) "http://10.42.0.1/" else {
-                val ip = try { InetAddress.getByName("auxlink.local").hostAddress } catch (e: Exception) { null }
-                if (ip != null && answers(ip)) "http://$ip/" else null
-            }
+            val url = resolvePiBase()
             main.post {
                 say(if (url != null) "Opening $url" else
                     "Pi not found. Tap Turn on under Setup Wi-Fi, join AuxLink-setup, then try again. " +

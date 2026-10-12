@@ -48,6 +48,7 @@
         android:label="Phone Link"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
+        android:usesCleartextTraffic="true"
         android:allowBackup="false">
 
         <activity
