@@ -212,6 +212,7 @@ class MainActivity : Activity() {
         tabViews.forEachIndexed { k, t -> t.setTextColor(if (k == i) accent else text2) }
         try { getPreferences(MODE_PRIVATE).edit().putInt("tab", i).apply() } catch (e: Exception) {}
         when (i) { 0 -> phone.onShow(); 1 -> msgs.onShow() }
+        if (i != 0) phone.onHide()
     }
 
     @Deprecated("Deprecated in Java")
@@ -226,13 +227,20 @@ class MainActivity : Activity() {
     }
 
     override fun onResume() {
-        super.onResume(); main.post(refresh); if (::pages.isInitialized) showTab(tab)
+        super.onResume(); main.post(refresh)
+        NowPlayingService.appForeground = true
+        if (::pages.isInitialized) showTab(tab)
+        NowPlayingService.instance?.setForeground(true)
         // Daily auto-check (if the switch is on). Waits ~8 s for the Pi's
         // version to arrive first; stays silent unless there's something new.
         if (getSharedPreferences("auxlink", MODE_PRIVATE).getBoolean("pi_auto_update", false))
             main.postDelayed({ checkPiUpdate(auto = true) }, 8000)
     }
-    override fun onPause() { super.onPause(); main.removeCallbacks(refresh) }
+    override fun onPause() {
+        super.onPause(); main.removeCallbacks(refresh)
+        NowPlayingService.appForeground = false
+        NowPlayingService.instance?.setForeground(false)
+    }
 
     // ------------------------------------------------------------ sections
 
@@ -360,7 +368,42 @@ class MainActivity : Activity() {
             when { up < 3600 -> "${up / 60} min"; up < 86400 -> "${up / 3600} h ${up % 3600 / 60} min"
                    else -> "${up / 86400} days" }))
         if (st.optString("host").isNotEmpty()) piRows.addView(piRow("Name", st.optString("host")))
+
+        // Wi-Fi and Pi controls, moved here from Tools.
+        val wifiOn = st.optString("wifi") != "off"
+        piRows.addView(piButtonRow("Wi-Fi", if (wifiOn) "Turn off" else "Turn on", !wifiOn) {
+            if (wifiOn) send("wifi-off", "Turning the Pi's Wi-Fi off.")
+            else send("wifi-on", "Turning Wi-Fi on. It joins a known network, or starts " +
+                "\"AuxLink-setup\" if none is in range (it switches off by itself after 15 min).")
+        })
+        piRows.addView(piButtonRow("Known networks", "Search", false) {
+            send("wifi-known", "Searching for a saved Wi-Fi network to join…")
+        })
+        piRows.addView(piButtonRow("Settings page", "Open", false) { openSetup() })
+        piRows.addView(piButtonRow("Restart the Pi", "Restart", false) {
+            android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle("Restart the Pi?")
+                .setMessage("Music and calls stop for about a minute while the Pi starts again. " +
+                    "It reconnects to the car and this device by itself.")
+                .setPositiveButton("Restart") { _, _ ->
+                    send("reboot", "The Pi is restarting. It'll be back in about a minute.")
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        })
     }
+
+    /** A Pi-card row: a label on the left and an action pill on the right. */
+    private fun piButtonRow(label: String, buttonText: String, primary: Boolean, click: () -> Unit) =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, px(8), 0, 0)
+            addView(TextView(this@MainActivity).apply {
+                text = label; setTextColor(text2); textSize = 14f
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(pillButton(buttonText, primary, click))
+        }
 
     // ------------------------------------------------------------ Bluetooth
 
@@ -891,33 +934,12 @@ class MainActivity : Activity() {
             if (svc == null) say("Phone Link isn't running yet: allow Notification access first.")
             else { svc.testCallBar(); say("Showing a pretend call for 8 seconds.") }
         })
-        c.addView(toolRow("Setup Wi-Fi",
-            "Turns on the Pi's \"AuxLink-setup\" Wi-Fi for 15 minutes, to change its settings.", "Turn on") {
-            send("setup", "Setup Wi-Fi is turning on (up to 30 s). Join \"AuxLink-setup\" " +
-                "(password auxlink-setup, unless you changed it), then tap Open.")
-        })
         c.addView(toolRow("Volume to full",
             "Sets this device's media volume to 100% (use the car's volume). If Android warns about " +
                 "high volume, tap OK.", "Set") {
             val svc = NowPlayingService.instance
             if (svc == null) say("Phone Link isn't running yet: allow Notification access first.")
             else { svc.volumeMax(true); say("Volume set to full. If Android asks, tap OK.") }
-        })
-        c.addView(toolRow("Restart the Pi",
-            "Reboots the Pi: music and calls stop for about a minute while it starts again.", "Restart") {
-            android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-                .setTitle("Restart the Pi?")
-                .setMessage("Music and calls stop for about a minute while the Pi starts again. " +
-                    "It reconnects to the car and this device by itself.")
-                .setPositiveButton("Restart") { _, _ ->
-                    send("reboot", "The Pi is restarting. It'll be back in about a minute.")
-                }
-                .setNegativeButton("Cancel", null)
-                .show()
-        })
-        c.addView(toolRow("Setup page",
-            "Opens the Pi's settings in the browser (on its setup Wi-Fi or your home Wi-Fi).", "Open") {
-            openSetup()
         })
         c.addView(wifiParkedBlock())
         c.addView(piUpdateBlock())

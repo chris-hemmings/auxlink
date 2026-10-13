@@ -745,6 +745,62 @@ def act_wifi_off(body):
     return {"ok": True}
 
 
+def act_wifi_on(body):
+    """App Wi-Fi toggle ON: turn the radio on (NetworkManager auto-joins a
+    known home network), and if none is in range the setup hotspot comes up
+    for a 15-minute window."""
+    STATE["manual_wifi_off"] = False
+    STATE.pop("force_off", None)
+    sh("nmcli", "radio", "wifi", "on")
+    STATE["wifi_radio_off"] = False
+    STATE["button_until"] = time.monotonic() + 15 * 60
+    STATE["boot_window_done"] = False
+    auxconf.event("Wi-Fi on from the app (known networks, then setup)")
+    return {"ok": True}
+
+
+def act_wifi_radio_off(body):
+    """App Wi-Fi toggle OFF: end any setup window and switch the radio off.
+    It stays off until Wi-Fi is turned back on or the car connects (so it can
+    still join a home network on arrival)."""
+    STATE["button_until"] = 0
+    STATE["last_hit"] = 0
+    STATE["force_off"] = True
+    STATE["manual_wifi_off"] = True
+    if STATE.get("ap"):
+        ap_down()
+        STATE["ap"] = False
+    sh("nmcli", "radio", "wifi", "off")
+    STATE["wifi_radio_off"] = True
+    auxconf.event("Wi-Fi off from the app")
+    return {"ok": True}
+
+
+def act_wifi_known(body):
+    """App 'Search known networks': turn the radio on and try to join a saved
+    home network now, without bringing up the setup hotspot."""
+    STATE["manual_wifi_off"] = False
+    sh("nmcli", "radio", "wifi", "on")
+    STATE["wifi_radio_off"] = False
+    if STATE.get("ap"):              # free the radio from the setup hotspot first
+        STATE["force_off"] = True
+        STATE["button_until"] = 0
+        ap_down()
+        STATE["ap"] = False
+        time.sleep(2)
+    joined = None
+    for n in home_networks():
+        rc, _ = sh("nmcli", "connection", "up", n["name"], timeout=40)
+        if rc == 0:
+            joined = n["ssid"]
+            break
+    if joined:
+        auxconf.event(f"Connected to known Wi-Fi '{joined}'")
+        return {"ok": True, "ssid": joined}
+    auxconf.event("No known Wi-Fi network in range")
+    return {"ok": True, "ssid": None}
+
+
 def logs(unit):
     c = auxconf.load()
     if unit == "update":
@@ -895,6 +951,8 @@ ACTIONS = {"pair": act_pair, "pair/cancel": act_pair_cancel, "forget": act_forge
            "term/open": act_term_open, "term/write": act_term_write, "term/read": act_term_read,
            "term/resize": act_term_resize, "term/close": act_term_close,
            "restart": act_restart, "wifi/off": act_wifi_off,
+           "wifi/on": act_wifi_on, "wifi/radio-off": act_wifi_radio_off,
+           "wifi/known": act_wifi_known,
            "wifi/add": act_wifi_add, "wifi/remove": act_wifi_remove,
            "wifi/scan": act_wifi_scan, "wifi/connect": act_wifi_connect,
            "password": act_password, "ssh": act_ssh}
@@ -1091,6 +1149,11 @@ def ap_loop():
                 time.sleep(1)       # a scan is dropping/using the radio; don't touch it
                 continue
             now = time.monotonic()
+            # A manual "Wi-Fi off" from the app holds the radio off until the
+            # car connects (so it can still join a home network on arrival) or
+            # Wi-Fi is turned back on.
+            if STATE.get("manual_wifi_off") and car_connected():
+                STATE["manual_wifi_off"] = False
             minutes = int(c.get("SETUP_WIFI_MINUTES", "10") or 0)
             unconfigured = not c.get("CAR")
             in_use = STATE["ap"] and now - STATE["last_hit"] < 300
@@ -1107,12 +1170,15 @@ def ap_loop():
             # are unaffected. While the car is connected the radio stays on so it
             # joins a home network on arrival; after the car drops it stays on
             # only if it's already on one, else it turns off.
-            if c.get("WIFI_OFF_WHEN_IDLE", "0") == "1" and not want \
-                    and uptime() > 45 and not car_connected() and not wifi_client_connected():
+            manual_off = STATE.get("manual_wifi_off") and not want
+            idle_off = c.get("WIFI_OFF_WHEN_IDLE", "0") == "1" and not want \
+                and uptime() > 45 and not car_connected() and not wifi_client_connected()
+            if manual_off or idle_off:
                 if not STATE.get("wifi_radio_off"):
                     sh("nmcli", "radio", "wifi", "off")
                     STATE["wifi_radio_off"] = True
-                    auxconf.event("Wi-Fi radio off (not needed; saving power)")
+                    auxconf.event("Wi-Fi off (from the app)" if manual_off
+                                  else "Wi-Fi radio off (not needed; saving power)")
                 time.sleep(5)
                 continue
             if STATE.get("wifi_radio_off"):

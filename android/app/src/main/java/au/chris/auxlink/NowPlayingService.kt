@@ -68,6 +68,13 @@ class NowPlayingService : NotificationListenerService() {
         const val NOTIF_CALL = 2
         /** The running service, for the app screen's buttons. */
         @Volatile var instance: NowPlayingService? = null
+        /** True while the app is in the foreground (MainActivity resumed). */
+        @Volatile var appForeground = false
+        /** The Phone screen's inline call panel, when it's open: given the call
+         *  state ("incoming"/"outgoing"/"active"/"idle"), who, and the start
+         *  time. While it's set and the app is in front, the floating call bar
+         *  and notification stay hidden - the call shows in the app instead. */
+        @Volatile var callUi: ((String, String, Long) -> Unit)? = null
     }
 
     /** Send a command to the Pi ({"cmd": name}) over the open link, right
@@ -207,13 +214,20 @@ class NowPlayingService : NotificationListenerService() {
     private fun callCommand(cmd: String) {
         command(cmd) { }
         if (cmd == "decline") {
-            getSystemService(NotificationManager::class.java).cancel(NOTIF_CALL)
-            callBar.hide()
-            callState = "idle"
+            callState = "idle"; callWho = ""
+            renderCall()
         }
     }
 
     private val callBar by lazy { CallBar(this) { callCommand(it) } }
+
+    /** Answer / Hang up from the app's inline call panel. */
+    fun callAction(cmd: String) = callCommand(cmd)
+
+    /** The app's foreground state changed, or its Phone screen opened/closed:
+     *  move the call between the inline panel and the floating bar. */
+    fun setForeground(fg: Boolean) { appForeground = fg; main.post { renderCall() } }
+    fun refreshCallUi() { main.post { renderCall() } }
 
     /** The app screen's "Test call bar": a pretend call for 8 seconds. */
     fun testCallBar() {
@@ -410,12 +424,12 @@ class NowPlayingService : NotificationListenerService() {
         }
     }
 
+    private var callWho = ""
+
     private fun showCall(state: String, name: String, number: String) {
-        val nm = getSystemService(NotificationManager::class.java)
         if (state !in listOf("incoming", "outgoing", "active")) {
-            nm.cancel(NOTIF_CALL)
-            callBar.hide()
-            callState = "idle"
+            callState = "idle"; callWho = ""
+            renderCall()
             return
         }
         if (state == "active" && callState != "active") {
@@ -423,10 +437,31 @@ class NowPlayingService : NotificationListenerService() {
             callSinceWall = System.currentTimeMillis()
         }
         callState = state
+        callWho = name.ifEmpty { number.ifEmpty { if (state == "incoming") "Unknown caller" else "" } }
+        renderCall()
+    }
+
+    /** Put the current call where it belongs: inline on the app's Phone screen
+     *  when the app is open, otherwise the floating bar / notification. */
+    private fun renderCall() {
+        val nm = getSystemService(NotificationManager::class.java)
+        val state = callState
+        if (state != "idle" && appForeground && callUi != null) {
+            callBar.hide()
+            nm.cancel(NOTIF_CALL)
+            callUi?.invoke(state, callWho, callSince)
+            return
+        }
+        callUi?.invoke("idle", "", 0L)       // nothing to show in the app's panel
+        if (state == "idle") {
+            nm.cancel(NOTIF_CALL)
+            callBar.hide()
+            return
+        }
         val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         val answer = PendingIntent.getBroadcast(this, 1, Intent(ACTION_ANSWER).setPackage(packageName), flags)
         val decline = PendingIntent.getBroadcast(this, 2, Intent(ACTION_DECLINE).setPackage(packageName), flags)
-        val who = name.ifEmpty { number.ifEmpty { if (state == "incoming") "Unknown caller" else "" } }
+        val who = callWho
         callBar.show(state, who, callSince)
         if (CallBar.lastProblem.isEmpty()) {
             // The floating bar is up: no notification as well (it would
@@ -453,7 +488,7 @@ class NowPlayingService : NotificationListenerService() {
         val n = Notification.Builder(this, "calls")
             .setSmallIcon(android.R.drawable.sym_call_incoming)
             .setContentTitle("Incoming call")
-            .setContentText(if (name.isNotEmpty() && number.isNotEmpty()) "$name  $number" else who)
+            .setContentText(who)
             .setCategory(Notification.CATEGORY_CALL)
             .setOngoing(true)
             // Keeps the pop-up on screen until answered or declined.

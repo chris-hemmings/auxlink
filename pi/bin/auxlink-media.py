@@ -2018,6 +2018,21 @@ def app_command(player, cmd):
                 f.write(str(time.time()))
         except OSError as e:
             log(f"Cannot write {SETUP_WIFI_FILE}: {e}")
+    elif cmd == "wifi-on":
+        log("App: Wi-Fi on (known networks, then setup)")
+        r = web_api("wifi/on")
+        if r.get("error"):
+            log("wifi-on: " + r["error"])
+    elif cmd == "wifi-off":
+        log("App: Wi-Fi off")
+        r = web_api("wifi/radio-off")
+        if r.get("error"):
+            log("wifi-off: " + r["error"])
+    elif cmd == "wifi-known":
+        log("App: search known Wi-Fi networks")
+        r = web_api("wifi/known")
+        if r.get("error"):
+            log("wifi-known: " + r["error"])
     else:
         log(f"App: unknown command {cmd!r}")
 

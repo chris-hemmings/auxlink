@@ -11,6 +11,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.BaseAdapter
+import android.widget.Chronometer
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.GridLayout
@@ -42,6 +43,16 @@ class PhoneScreen(private val ctx: Context, private val ui: Ui,
     private val dialled: TextView
     private var filtered: List<PhoneData.Contact> = emptyList()
     private val onData = { refresh() }
+
+    // Inline call panel: shows the current call here while the Phone screen is
+    // open, instead of the floating pop-up (see NowPlayingService.callUi).
+    private val callPanel: LinearLayout
+    private val callAvatarBox: FrameLayout
+    private val callPanelName: TextView
+    private val callPanelLabel: TextView
+    private val callPanelTimer: Chronometer
+    private val callPanelButtons: LinearLayout
+    private val onCall: (String, String, Long) -> Unit = { s, w, t -> view.post { onCallUi(s, w, t) } }
 
     init {
         // --- Contacts ---
@@ -106,6 +117,30 @@ class PhoneScreen(private val ctx: Context, private val ui: Ui,
         }
         keypadPane = keypad()
 
+        // --- Inline call panel (hidden until there's a call) ---
+        callAvatarBox = FrameLayout(ctx).apply {
+            layoutParams = LinearLayout.LayoutParams(ui.px(44), ui.px(44)).apply { marginEnd = ui.px(12) }
+        }
+        callPanelName = ui.text("", 17f, ui.text1, true, lines = 1)
+        callPanelLabel = ui.text("", 13f, ui.text2, lines = 1)
+        callPanelTimer = Chronometer(ctx).apply { textSize = 13f; setTextColor(ui.text2) }
+        callPanelButtons = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+        }
+        val callInfo = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(callPanelName); addView(callPanelLabel); addView(callPanelTimer)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        callPanel = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = ui.round(ui.cardBg, 14f)
+            setPadding(ui.px(12), ui.px(12), ui.px(12), ui.px(12))
+            visibility = View.GONE
+            addView(callAvatarBox); addView(callInfo); addView(callPanelButtons)
+        }
+
         val content = FrameLayout(ctx).apply {
             addView(favPane); addView(contactsPane); addView(recentsPane)
             if (!ui.wide) addView(keypadPane)
@@ -118,6 +153,7 @@ class PhoneScreen(private val ctx: Context, private val ui: Ui,
             orientation = LinearLayout.VERTICAL
             setPadding(ui.px(16), ui.px(16), ui.px(16), 0)
             addView(ui.text("Phone", 26f, ui.text1, true), ui.matchWrap(bottom = 12))
+            addView(callPanel, ui.matchWrap(bottom = 12))
             addView(bar, ui.matchWrap(bottom = 12))
             addView(content, ui.fill())
         }
@@ -140,13 +176,62 @@ class PhoneScreen(private val ctx: Context, private val ui: Ui,
         refresh()
     }
 
-    /** The tab was opened: ask the Pi for fresh contacts and calls. */
+    /** The tab was opened: ask the Pi for fresh contacts and calls, and show
+     *  any ongoing call inline here (not as the floating pop-up). */
     fun onShow() {
         NowPlayingService.instance?.request(JSONObject().put("req", "phone"))
+        NowPlayingService.callUi = onCall
+        NowPlayingService.instance?.refreshCallUi()
         refresh()
     }
 
-    fun close() = PhoneData.unlisten(onData)
+    /** Left the Phone tab: hand any ongoing call back to the floating pop-up. */
+    fun onHide() {
+        if (NowPlayingService.callUi === onCall) NowPlayingService.callUi = null
+        callPanelTimer.stop()
+        ui.gone(callPanel, true)
+        NowPlayingService.instance?.refreshCallUi()
+    }
+
+    fun close() { onHide(); PhoneData.unlisten(onData) }
+
+    /** Render the current call in the inline panel (or hide it when idle). */
+    private fun onCallUi(state: String, who: String, since: Long) {
+        if (state == "idle") {
+            callPanelTimer.stop()
+            ui.gone(callPanel, true)
+            return
+        }
+        ui.gone(callPanel, false)
+        callAvatarBox.removeAllViews()
+        callAvatarBox.addView(ui.avatar(who.ifEmpty { "?" }),
+            FrameLayout.LayoutParams(ui.px(44), ui.px(44)))
+        callPanelName.text = who.ifEmpty { "Call" }
+        callPanelButtons.removeAllViews()
+        fun hangUp() = ui.button("Hang up", ui.bad) { NowPlayingService.instance?.callAction("decline") }
+        fun add(b: View) = callPanelButtons.addView(b,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ui.px(44)).apply { marginStart = ui.px(8) })
+        when (state) {
+            "incoming" -> {
+                ui.gone(callPanelLabel, false); ui.gone(callPanelTimer, true)
+                callPanelLabel.text = "Incoming call"; callPanelTimer.stop()
+                add(ui.button("Answer", ui.good) { NowPlayingService.instance?.callAction("answer") })
+                add(hangUp().apply { text = "Decline" })
+            }
+            "outgoing" -> {
+                ui.gone(callPanelLabel, false); ui.gone(callPanelTimer, true)
+                callPanelLabel.text = "Calling…"; callPanelTimer.stop()
+                dialled.text = ""                 // the call is placed: clear the keypad
+                add(hangUp())
+            }
+            "active" -> {
+                ui.gone(callPanelLabel, true); ui.gone(callPanelTimer, false)
+                callPanelTimer.base = since; callPanelTimer.start()
+                dialled.text = ""
+                add(hangUp())
+            }
+        }
+    }
 
     private fun show(i: Int) {
         ui.gone(favPane, i != 0); ui.gone(contactsPane, i != 1); ui.gone(recentsPane, i != 2)
