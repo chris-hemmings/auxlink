@@ -72,7 +72,7 @@ as three separate kinds of release:
 |---|---|
 | **Raspberry Pi 4** (2 GB or more) | Built and tested on a Pi 4. |
 | **microSD card**, 16 GB or more | A good brand (Samsung/SanDisk). |
-| **Power for the Pi in the car** | 5 V / 3 A. A good USB-C car charger or a 12 V to 5 V 3 A converter. Weak supplies cause Bluetooth drop-outs. For the USB-C music source, power the Pi through its GPIO pins or a splitter for reliable use (see 5.1). |
+| **Power for the Pi in the car** | 5 V / 3 A. With the **USB-C music source**, the head unit often powers the Pi reliably over the single USB-C cable that also carries the audio - no separate supply or wiring needed (confirmed on a tested unit); add a supply only if you get drop-outs or restarts (see 5.1). Otherwise (XIAO or Bluetooth source, or a weak host) use a good USB-C car charger or a 12 V to 5 V 3 A converter - weak supplies cause Bluetooth drop-outs. |
 | **2 × USB Bluetooth dongles** (recommended) | **TP-Link UB500** (Realtek RTL8761BU) is what this was built and tested on. Two identical ones are fine. One is for the car, one for your phone. See [Bluetooth dongles](#bluetooth-dongles). |
 | **An Android music device** | Android 8.0 or newer. For the wired source it needs **USB host (OTG)**, which any head unit with a USB port has. |
 | **A car with Bluetooth** | Any car with Bluetooth hands-free calling and Bluetooth music. Track info and the car's buttons need AVRCP, which almost every car has. Album art needs a car that shows cover art for phones (AVRCP 1.6). Built and tested on a Tesla; see [Other cars](#other-cars). |
@@ -81,7 +81,7 @@ as three separate kinds of release:
 | Item | Notes |
 |---|---|
 | **USB-C data cable** | From the Android device's USB port to the **Pi's USB-C port**. Nothing else to buy or wire. |
-| **Separate power for the Pi** (strongly advised) | 5 V into the GPIO pins, or a USB-C power/data splitter (section 5.1). The music device alone can't reliably power the Pi. |
+| **Separate power for the Pi** (only if needed) | Often not needed: many head units supply enough current to power the Pi over the single USB-C cable (confirmed on a tested unit). Add 5 V into the GPIO pins, or a USB-C power/data splitter (section 5.1), only if you get drop-outs or restarts. |
 
 ### Needed for the wired music source (backup)
 | Item | Notes |
@@ -370,22 +370,31 @@ yet it opens on **Devices**; a dot marks a tab that needs attention.
 Pick one on the setup page's **Devices** tab (**Music source**). Calls and the car
 connection are not affected when you switch.
 
+**Preferred order: USB-C first, then the wired XIAO, then Bluetooth.**
+**USB-C** (5.1) is the recommended source - one cable, nothing to wire, best
+quality and the full feature set. The **wired XIAO** (5.2) is the backup if
+USB-C doesn't suit your setup, and **Bluetooth** (5.3) is the last resort.
+
 ### 5.1 USB-C (Pi as a USB sound card) (recommended)
 The Android device plugs straight into the **Pi's USB-C port**, and the Pi
 shows up as a USB sound card (plus a data link and media keys).
 - **Tested and working well in the car:** one cable, no XIAO and no wiring,
   with clean audio, track info, album art and the car's buttons. This is the
   recommended source.
-- **Power warning: it may not work reliably powered by the music device.**
-  Power the Pi externally if you can: 5 V into GPIO **pin 2 or 4**
-  plus **GND (pin 6)**, from a solid 5 V / 3 A supply, or through a **USB-C
-  power/data splitter**. Its USB-C port is now a data port. Powered by the
-  music device alone it may run, but expect drop-outs or restarts (a USB
-  host gives 0.5-1.5 A; the Pi needs up to 3 A).
-- **Keep the music device's 5 V off the Pi:** the Pi's USB-C 5 V and its
-  GPIO 5 V are the same wire, and the device (as USB host) puts 5 V on the
-  cable. Use a splitter whose device side is data-only, or a USB
-  "power blocker" (data-only) adapter between the device and the Pi.
+- **Power: the head unit usually powers the Pi fine over the one cable.**
+  In practice, a head unit that supplies enough current powers the Pi reliably
+  over the **single USB-C cable** that also carries the audio - no separate
+  supply and no wiring (confirmed on a tested unit). Only if you see
+  **drop-outs or restarts** does the device not supply enough (a weak USB host
+  gives 0.5-1.5 A; the Pi can draw up to 3 A): then power the Pi externally -
+  5 V into GPIO **pin 2 or 4** plus **GND (pin 6)** from a solid 5 V / 3 A
+  supply, or a **USB-C power/data splitter** (its USB-C port is now a data port).
+- **Only if you add external power, keep the music device's 5 V off the Pi:**
+  the Pi's USB-C 5 V and its GPIO 5 V are the same wire, and the device (as USB
+  host) puts 5 V on the cable, so two supplies would fight. Use a splitter
+  whose device side is data-only, or a USB "power blocker" (data-only) adapter
+  between the device and the Pi. (Not needed when the device powers the Pi on
+  its own.)
 - After saving, **reboot once**; the page says when this is needed. Saving
   adds `dtoverlay=dwc2,dr_mode=peripheral` to `/boot/firmware/config.txt`
   (and the Pi adds it at boot if it's ever missing, then asks for one more
@@ -407,7 +416,8 @@ shows up as a USB sound card (plus a data link and media keys).
 
 ### 5.2 Wired: XIAO RP2040 (I2S) (backup)
 Proven and reliable, and a good fallback if USB-C doesn't suit your setup
-(for example, you can't power the Pi separately).
+(for example, your head unit can't supply enough power over USB-C to run the
+Pi, and you'd rather not add a separate supply).
 - **Uses:** the XIAO wired as in section 3.
 - **Sound:** the Android device plays into the XIAO, which passes it to the
   Pi over I2S, and the Pi sends it to the car.
