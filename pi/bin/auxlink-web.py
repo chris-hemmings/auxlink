@@ -36,7 +36,7 @@ SYSTEM_UNITS = auxconf.SYSTEM_UNITS + ["auxlink-web"]
 USER_UNITS = auxconf.USER_UNITS + ["obex", "pipewire", "wireplumber"]
 EDITABLE = {
     "CAR_NAME": r"[\w .\-]{1,30}", "PHONE_NAME": r"[\w .\-]{1,30}",
-    "PHONE_ENABLED": r"[01]", "AUTO_PAIRABLE": r"[01]", "PAUSE_FOR_CALLS": r"[01]",
+    "PHONE_ENABLED": r"[01]", "AUTO_PAIRABLE": r"[01]",   # PAUSE_FOR_CALLS hardcoded on
     "CONTACTS_SYNC": r"[01]", "CALL_RESUME_DELAY": r"\d{1,2}(\.\d)?", "CALL_SETTLE": r"\d{1,2}",
     "SETUP_WIFI_SSID": r"[\w\-]{1,32}", "SETUP_WIFI_PASS": r"[^\s'\"]{8,63}",
     "SETUP_WIFI_MINUTES": r"\d{1,3}", "WEB_PASSWORD": r"[^\s'\"]{0,63}", "WIFI_OFF_WHEN_IDLE": r"[01]",
@@ -817,11 +817,14 @@ def act_wifi_remove(body):
     return {"ok": True}
 
 
-def act_wifi_scan(body):
+def _scan_networks():
+    """Return nearby networks, or None if the scan couldn't run. The radio
+    can't scan while it's hosting the setup hotspot, so the caller drops it
+    first (see _bg_scan)."""
     rc, out = sh("nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY", "device", "wifi", "list",
                  "--rescan", "yes", timeout=30)
     if rc != 0:
-        raise ValueError("scan not possible right now (the setup Wi-Fi is using the radio)")
+        return None
     seen = {}
     for line in out.splitlines():
         parts = re.split(r"(?<!\\):", line)
@@ -831,7 +834,46 @@ def act_wifi_scan(body):
         sig = int(parts[1] or 0)
         if ssid not in seen or sig > seen[ssid]["signal"]:
             seen[ssid] = {"ssid": ssid, "signal": sig, "secure": bool(parts[2] and parts[2] != "--")}
-    return {"ok": True, "networks": sorted(seen.values(), key=lambda n: -n["signal"])}
+    return sorted(seen.values(), key=lambda n: -n["signal"])
+
+
+def _bg_scan():
+    """Drop the setup hotspot, scan, store the result. ap_loop brings the
+    hotspot back once STATE['scanning'] clears (the phone rejoins it then)."""
+    nets = []
+    try:
+        time.sleep(1)                      # let the "scanning" reply flush first
+        if STATE.get("ap"):
+            ap_down()
+            STATE["ap"] = False
+            time.sleep(2)
+        nets = _scan_networks() or []
+    except Exception as e:
+        print(f"wifi scan: {e}", flush=True)
+    STATE["scan"] = {"state": "done", "at": time.monotonic(), "networks": nets}
+    STATE["scanning"] = False
+
+
+def act_wifi_scan(body):
+    s = STATE.get("scan") or {}
+    now = time.monotonic()
+    if STATE.get("scanning"):
+        return {"ok": True, "scanning": True}
+    if s.get("state") == "done" and now - s.get("at", 0) < 45:
+        return {"ok": True, "networks": s["networks"]}
+    if not STATE["ap"]:
+        # On home Wi-Fi: scan directly, nothing to drop.
+        nets = _scan_networks()
+        if nets is None:
+            raise ValueError("scan failed")
+        STATE["scan"] = {"state": "done", "at": now, "networks": nets}
+        return {"ok": True, "networks": nets}
+    # Hotspot is up: drop it, scan, restore (the phone briefly loses the
+    # hotspot and rejoins). The page polls back for the result.
+    STATE["scanning"] = True
+    STATE["scan"] = {"state": "running", "at": now, "networks": []}
+    threading.Thread(target=_bg_scan, daemon=True).start()
+    return {"ok": True, "scanning": True}
 
 
 def act_wifi_connect(body):
@@ -1035,6 +1077,9 @@ def ap_loop():
         try:
             c = auxconf.load()
             app_request()
+            if STATE.get("scanning"):
+                time.sleep(1)       # a scan is dropping/using the radio; don't touch it
+                continue
             now = time.monotonic()
             minutes = int(c.get("SETUP_WIFI_MINUTES", "10") or 0)
             unconfigured = not c.get("CAR")
