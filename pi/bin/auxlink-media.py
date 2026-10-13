@@ -2173,6 +2173,28 @@ def main():
             return True
         GLib.timeout_add(300, usbc_mic_poll)
 
+    # Pause the SMO's music when the car has really gone (so Spotify, running
+    # on the always-powered SMO, doesn't keep playing in the background after
+    # you leave). auxlink-reconnect sets /run/auxlink/car-off once the car has
+    # been gone long enough and the vehicle is stationary - the same moment it
+    # drops the phone - and removes it when the car returns. The SMO stays
+    # powered, so the app link is still up to carry the pause.
+    CAR_OFF_FLAG = "/run/auxlink/car-off"
+    car_left = {"flagged": os.path.exists(CAR_OFF_FLAG)}
+
+    def car_off_watch():
+        present = os.path.exists(CAR_OFF_FLAG)
+        if present and not car_left["flagged"]:
+            car_left["flagged"] = True
+            if load_conf().get("PAUSE_ON_CAR_OFF", "1") == "1":
+                log("Car gone; pausing the music so it doesn't play on after you leave")
+                app_send({"media": "pause"})
+        elif not present and car_left["flagged"]:
+            car_left["flagged"] = False
+        return True
+
+    GLib.timeout_add(1000, car_off_watch)
+
     def readable(fd, cond):
         try:
             data = os.read(fd, 1024)
