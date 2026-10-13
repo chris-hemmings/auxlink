@@ -37,7 +37,7 @@ USER_UNITS = auxconf.USER_UNITS + ["obex", "pipewire", "wireplumber"]
 EDITABLE = {
     "CAR_NAME": r"[\w .\-]{1,30}", "PHONE_NAME": r"[\w .\-]{1,30}",
     "PHONE_ENABLED": r"[01]", "AUTO_PAIRABLE": r"[01]", "PAUSE_FOR_CALLS": r"[01]",
-    "CONTACTS_SYNC": r"[01]", "CALL_RESUME_DELAY": r"\d{1,2}(\.\d)?",
+    "CONTACTS_SYNC": r"[01]", "CALL_RESUME_DELAY": r"\d{1,2}(\.\d)?", "CALL_SETTLE": r"\d{1,2}",
     "SETUP_WIFI_SSID": r"[\w\-]{1,32}", "SETUP_WIFI_PASS": r"[^\s'\"]{8,63}",
     "SETUP_WIFI_MINUTES": r"\d{1,3}", "WEB_PASSWORD": r"[^\s'\"]{0,63}",
     "SETUP_BUTTON_GPIO": r"\d{0,2}", "SOURCE_NAME": r"[\w .\-]{1,30}",

@@ -46,11 +46,13 @@ KICK_SEEN=$(stat -c %Y "$KICK_FILE" 2>/dev/null || echo 0)
 RECHECK=""        # why the stream is restarted (play pressed in the car)
 RECHECK_AT=0      # when to do it (0 = not pending)
 CALL_ENDED_AT=0; WAS_CALL=0
-# s after a call before the car's stream restarts (the car leaves call
-# mode; the silent restart that follows covers the rest). Separate from the
-# page's "Resume music after a call", which is when the SOURCE is played
-# again (wired: auxlink-media holds it until this stream runs anyway).
-call_settle() { echo 2; }
+# s after a call / voice search before the car's stream restarts (the car
+# leaves call mode; the silent restart that follows covers the rest). Editable
+# on the setup page (CALL_SETTLE). Separate from the page's "Resume music after
+# a call", which is when the SOURCE is played again (wired: auxlink-media holds
+# it until this stream runs anyway). Too low and the Tesla swallows the first
+# second of music while it's still leaving call mode.
+call_settle() { echo "${CALL_SETTLE:-2}"; }
 LOOP=""; LOOP_SINK_ID=""; LOOP_INPUT=""; LOOP_STARTED=0; UNLINKED=0; GONE=2; NO_CARD=0; NOT_ACTIVE=0; LAST_NUDGE=0
 CONNECTED_AT=0; WAITING_SAID=""; NEXT_STEREO=0; STEREO_BAD=0; STOPPED_FOR=""; CAR_SUSP=0
 XQ_FAILS=0   # SBC-XQ attempts since this script started (never reset by a disconnect)
