@@ -1303,6 +1303,7 @@ def setup_bt_source(bus, om, player):
 # ---------- calls and texts on the music device (the AuxLink app) ----------
 CALL_INFO_FILE = "/run/auxlink/call-info.json"   # written by hfp-relay
 CALL_CMD_FILE = "/run/auxlink/call-cmd"          # read by hfp-relay
+DTMF_FILE = "/run/auxlink/dtmf"                   # queued keypad tones, drained by hfp-relay
 
 
 def app_send(obj):
@@ -1455,6 +1456,8 @@ class PhoneLink:
                 self.send_messages()
             elif "dial" in info:
                 self.dial(str(info["dial"]))
+            elif "dtmf" in info:
+                self.dtmf(str(info["dtmf"]))
             elif "sms" in info:
                 self.sms(info["sms"])
         except Exception as e:      # never break the app link
@@ -1471,6 +1474,21 @@ class PhoneLink:
                 f.write("dial " + number)
         except OSError as e:
             log(f"Cannot write {CALL_CMD_FILE}: {e}")
+
+    def dtmf(self, digits):
+        """Keypad presses during a call (press numbers for menus): queued for
+        hfp-relay, which sends each as a DTMF tone (AT+VTS) to the phone. Append
+        (not overwrite) so a quick sequence isn't lost."""
+        digits = re.sub(r"[^0-9*#A-D]", "", digits.upper())
+        if not digits:
+            return
+        log(f"App: DTMF {digits}")
+        try:
+            os.makedirs(os.path.dirname(DTMF_FILE), exist_ok=True)
+            with open(DTMF_FILE, "a") as f:
+                f.write(digits)
+        except OSError as e:
+            log(f"Cannot write {DTMF_FILE}: {e}")
 
     def sms(self, m):
         to = re.sub(r"[^0-9+*#]", "", str(m.get("to") or ""))
@@ -2223,7 +2241,7 @@ def main():
                         text = r.get("output") or r.get("error") or ""
                         GLib.idle_add(lambda: (app_send({"check": {"fix": fix, "output": text}}), False)[-1])
                     threading.Thread(target=chk, daemon=True).start()
-                elif PHONE["link"] and ("req" in info or "dial" in info or "sms" in info):
+                elif PHONE["link"] and ("req" in info or "dial" in info or "dtmf" in info or "sms" in info):
                     PHONE["link"].handle(info)
                 elif "cmd" in info:
                     app_command(player, str(info["cmd"]))

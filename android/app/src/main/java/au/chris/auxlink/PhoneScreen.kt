@@ -341,7 +341,15 @@ class PhoneScreen(private val ctx: Context, private val ui: Ui,
                 if (letters.isNotEmpty()) addView(ui.text(letters, 10f, ui.text2).apply {
                     gravity = Gravity.CENTER; letterSpacing = 0.15f
                 })
-                setOnClickListener { dialled.append(digit) }
+                setOnClickListener {
+                    // During a connected call the keypad sends DTMF tones (for
+                    // "press 1 for…" menus); otherwise it composes a number.
+                    val svc = NowPlayingService.instance
+                    if (svc != null && svc.callActive() && digit != "+") {
+                        svc.request(JSONObject().put("dtmf", digit))
+                    }
+                    dialled.append(digit)
+                }
                 if (digit == "0") setOnLongClickListener { dialled.append("+"); true }
             }
             grid.addView(key, GridLayout.LayoutParams().apply {

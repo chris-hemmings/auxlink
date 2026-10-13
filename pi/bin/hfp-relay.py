@@ -102,6 +102,7 @@ CALL_STATE_FILE = "/run/auxlink/call"  # "1" during a call, "0" otherwise
 # For the AuxLink app's call notification (auxlink-media passes it on):
 CALL_INFO_FILE = "/run/auxlink/call-info.json"   # {"state", "number"}
 CALL_CMD_FILE = "/run/auxlink/call-cmd"          # "answer" / "decline", from the app
+DTMF_FILE = "/run/auxlink/dtmf"                   # queued keypad tones from the app (in-call)
 # "1" once the car's HFP link is set up (SLC complete): auxlink-audio waits for
 # it after a reconnect before starting music, so the car sees the stream start
 # when it is ready to play it rather than mid-connect.
@@ -468,6 +469,30 @@ class Relay:
             log(f"App: {cmd} the call -> phone {at}")
             self.own_pending += 1
             self.phone.send(at + "\r")
+        return True
+
+    def dtmf_poll(self):
+        """Keypad tones from the app during a call (press numbers for menus):
+        drain the queue and send each digit to the phone as DTMF (AT+VTS). The
+        queue file is renamed first so a press mid-read isn't lost."""
+        tmp = DTMF_FILE + ".tx"
+        try:
+            os.rename(DTMF_FILE, tmp)
+        except OSError:
+            return True                       # nothing queued
+        try:
+            digits = open(tmp).read()
+            os.unlink(tmp)
+        except OSError:
+            return True
+        if not (self.phone and self.phone_slc and self.in_call):
+            log(f"App DTMF {digits!r} ignored: no active call")
+            return True
+        for d in digits:
+            if d in "0123456789*#ABCD":
+                log(f"App: DTMF {d} -> phone AT+VTS={d}")
+                self.own_pending += 1
+                self.phone.send(f"AT+VTS={d}\r")
         return True
 
     def mic_poll(self):
@@ -1140,6 +1165,7 @@ def main():
 
     GLib.timeout_add(200, relay.mic_poll)   # react quickly: the SMO is listening
     GLib.timeout_add(300, relay.call_cmd_poll)   # the app's Answer / Decline
+    GLib.timeout_add(150, relay.dtmf_poll)       # the app's in-call keypad tones
     GLib.timeout_add_seconds(10, tick)
     GLib.timeout_add_seconds(3, lambda: (tick(), False)[1])
     GLib.MainLoop().run()

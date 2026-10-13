@@ -225,6 +225,8 @@ class NowPlayingService : NotificationListenerService() {
         }
     }
     private var callState = "idle"
+    /** A call is connected (so the keypad should send DTMF tones, not dial). */
+    fun callActive(): Boolean = callState == "active"
     private var callSince = 0L      // elapsedRealtime when the call was answered
     private var callSinceWall = 0L  // the same, as a clock time (notification timer)
 
