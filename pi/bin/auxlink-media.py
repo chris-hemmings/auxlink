@@ -343,15 +343,20 @@ class UsbcMic:
         card = self.card()
         if card is None:
             return False
-        try:
-            out = subprocess.run(["amixer", "-c", card, "cget", "name=Playback Rate"],
-                                 capture_output=True, text=True, timeout=2).stdout
-        except (OSError, subprocess.SubprocessError):
-            return False
-        for line in out.splitlines():
-            if ": values=" in line:
-                return line.split("=", 1)[1].strip() not in ("", "0")
-        self.say("USB-C mic: the kernel has no 'Playback Rate' control; can't tell when the source records")
+        # The gadget's "Playback Rate" lives on the PCM interface, not MIXER
+        # (iface defaults to MIXER, where it isn't found). It reads 0 while the
+        # host isn't recording from the gadget mic and the rate (e.g. 48000)
+        # while it is - that is the "SMO opened the mic" signal.
+        for sel in ("iface=PCM,name=Playback Rate", "name=Playback Rate"):
+            try:
+                out = subprocess.run(["amixer", "-c", card, "cget", sel],
+                                     capture_output=True, text=True, timeout=2).stdout
+            except (OSError, subprocess.SubprocessError):
+                return False
+            for line in out.splitlines():
+                if ": values=" in line:
+                    return line.split("=", 1)[1].strip() not in ("", "0")
+        self.say("USB-C mic: no 'Playback Rate' control found; can't tell when the source records")
         return False
 
     def as_user(self, *cmd):
