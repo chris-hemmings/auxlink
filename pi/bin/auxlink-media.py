@@ -116,7 +116,16 @@ POST_CALL_WINDOW = 30.0   # s after a call in which a play waits for the stream
 PLAY_WAIT_MAX = 8.0       # s: play anyway if the stream isn't ready by then
 MIC_REQUEST_FILE = "/run/auxlink/mic"   # read by hfp-relay
 MIC_SOCKET = "/run/auxlink/mic.sock"    # hfp-relay sends the car's mic here
+# The SMO's own audio (its assistant/nav reply), captured here and sent to
+# hfp-relay to play into the car's call audio while the mic is borrowed - so
+# replies are heard (the car won't play media while it thinks it's on a call).
+SOURCE_AUDIO_SOCKET = "/run/auxlink/srcaudio.sock"
 MIC_TIMEOUT = 1.5    # s without a "mic on" refresh from the XIAO = closed
+# Keeping the car's "call" open long enough to hear the reply after you stop
+# talking, then closing it so music comes back:
+REPLY_START_WAIT = 2.5   # s to wait for the reply to begin after recording stops
+REPLY_GRACE = 1.5        # s of silence from the SMO that means the reply is done
+REPLY_MAX = 15.0         # s hard cap on holding the call open for a reply
 OUT_LIMIT = 2048     # bytes queued for the XIAO before mic audio is dropped
 
 
@@ -413,6 +422,108 @@ class UsbcMic:
                 self.proc.stdin.close()
             except OSError:
                 pass
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+            self.proc = None
+
+
+class SourceAudio:
+    """usbc / wired: capture the SMO's own audio output (its assistant/nav
+    reply) at 8 kHz mono and send it to hfp-relay, which plays it into the
+    car's call audio while the mic is borrowed - so the reply is heard. Also
+    tracks whether that audio is still playing, so the mic can linger open
+    until the reply finishes, then let music resume."""
+
+    def __init__(self):
+        self.proc = None
+        self.watch = None
+        self.last_sound = 0.0
+        self.to_car = False       # only feed the car during the reply, not while recording
+        self.tx = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        self.tx.setblocking(False)
+        try:
+            pw = pwd.getpwnam(AUDIO_USER)
+            self.env = ["env", f"XDG_RUNTIME_DIR=/run/user/{pw.pw_uid}"]
+        except KeyError:
+            self.env = None
+
+    def as_user(self, *cmd):
+        return ["runuser", "-u", AUDIO_USER, "--"] + self.env + list(cmd)
+
+    def source(self):
+        want = ("UAC1Gadget", "UAC1_Gadget") if MUSIC_SOURCE == "usbc" else ("xiaoi2s",)
+        try:
+            out = subprocess.run(self.as_user("pactl", "list", "sources"),
+                                 capture_output=True, text=True, timeout=5).stdout
+        except (OSError, subprocess.SubprocessError):
+            return None
+        name = None
+        for line in out.splitlines():
+            s = line.strip()
+            if s.startswith("Name: "):
+                name = s[6:]
+            elif s.startswith("alsa.card_name") and any(w in s for w in want):
+                if name and not name.endswith(".monitor"):
+                    return name
+        return None
+
+    def start(self):
+        if self.proc or self.env is None:
+            return
+        src = self.source()
+        if not src:
+            return
+        try:
+            self.proc = subprocess.Popen(
+                self.as_user("pacat", "--record", "--raw", "--format=s16le", "--rate=8000",
+                             "--channels=1", f"--device={src}", "--latency-msec=60",
+                             "--client-name=auxlink", "--stream-name=reply to car"),
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            os.set_blocking(self.proc.stdout.fileno(), False)
+            self.watch = GLib.io_add_watch(self.proc.stdout.fileno(),
+                                           GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR, self.pump)
+            log(f"Reply audio: {src} -> car call")
+        except OSError as e:
+            log(f"Reply audio: cannot start pacat: {e}")
+            self.proc = None
+
+    def pump(self, fd, cond):
+        if cond & (GLib.IO_HUP | GLib.IO_ERR):
+            self.watch = None
+            return False
+        try:
+            data = os.read(fd, 2048)
+        except BlockingIOError:
+            return True
+        except OSError:
+            data = b""
+        if not data:
+            self.watch = None
+            return False
+        n = len(data) // 2
+        if n:
+            peak = max(abs(v) for v in struct.unpack(f"<{n}h", data[:n * 2]))
+            if peak > 300:
+                self.last_sound = time.time()
+        if self.to_car:
+            try:
+                self.tx.sendto(data, SOURCE_AUDIO_SOCKET)
+            except OSError:
+                pass      # hfp-relay not listening (no car mic open): just drop
+        return True
+
+    def sound_recent(self, grace):
+        return time.time() - self.last_sound < grace
+
+    def stop(self):
+        self.to_car = False
+        if self.watch is not None:
+            GLib.source_remove(self.watch)
+            self.watch = None
+        if self.proc:
             self.proc.terminate()
             try:
                 self.proc.wait(timeout=2)
@@ -2092,8 +2203,11 @@ def main():
         log(f"Car adapter {CAR_ADAPTER} not present yet; waiting for it")
 
     buf = bytearray()
-    mic = {"on": False, "seen": 0.0}
+    mic = {"on": False, "seen": 0.0, "rec_off_at": 0.0}
     usbc_mic = UsbcMic() if MUSIC_SOURCE == "usbc" else None
+    # The reply goes back to the car for every source but Bluetooth (which
+    # feeds the car over its own SCO in hfp-relay).
+    src_audio = SourceAudio() if MUSIC_SOURCE != "bluetooth" else None
 
     def set_mic(on):
         if on:
@@ -2104,11 +2218,30 @@ def main():
         log("SMO mic " + ("opened: borrowing the car's mic" if on else "closed"))
         if usbc_mic:
             usbc_mic.start() if on else usbc_mic.stop()
+        if src_audio:
+            src_audio.start() if on else src_audio.stop()
+        if not on:
+            mic["rec_off_at"] = 0.0
         try:
             with open(MIC_REQUEST_FILE, "w") as f:
                 f.write("1" if on else "0")
         except OSError as e:
             log(f"Cannot write {MIC_REQUEST_FILE}: {e}")
+
+    def recording(on):
+        """The source started/stopped recording. Opening borrows the car mic;
+        stopping does NOT close the call straight away - it opens a short
+        window (mic_reply_window) so the assistant's reply is still carried to
+        the car before music resumes."""
+        if on:
+            set_mic(True)
+            mic["rec_off_at"] = 0.0
+            if src_audio:
+                src_audio.to_car = False     # recording: the car only lends its mic
+        elif mic["on"] and mic["rec_off_at"] == 0.0:
+            mic["rec_off_at"] = time.time()
+            if src_audio:
+                src_audio.to_car = True       # reply window: carry the reply to the car
 
     set_mic(True)   # make sure the file starts out matching...
     set_mic(False)  # ...the closed state
@@ -2121,15 +2254,27 @@ def main():
 
     GLib.timeout_add(250, mic_watchdog)
 
+    def mic_reply_window():
+        # After recording stops, keep the call open while the reply plays
+        # (sound still arriving), up to a cap, then close so music comes back.
+        if mic["on"] and mic["rec_off_at"]:
+            now = time.time()
+            heard = src_audio.sound_recent(REPLY_GRACE) if src_audio else False
+            waiting = now - mic["rec_off_at"] < REPLY_START_WAIT
+            if (heard or waiting) and now - mic["rec_off_at"] < REPLY_MAX:
+                mic["seen"] = now        # hold off the watchdog while the reply plays
+            else:
+                set_mic(False)
+        return True
+
+    GLib.timeout_add(250, mic_reply_window)
+
     if MUSIC_SOURCE == "usbc":
         GLib.timeout_add(1000, UsbcReplug().tick)
 
     if usbc_mic:
         def usbc_mic_poll():
-            if usbc_mic.host_recording():
-                set_mic(True)            # also the refresh the watchdog wants
-            elif mic["on"]:
-                set_mic(False)
+            recording(usbc_mic.host_recording())   # set_mic(True) also refreshes the watchdog
             return True
         GLib.timeout_add(300, usbc_mic_poll)
 
@@ -2155,7 +2300,7 @@ def main():
             if len(buf) - i < 3:
                 break                     # token still arriving
             if buf[i + 1:i + 2] == b"M":
-                set_mic(buf[i + 2:i + 3] == b"1")
+                recording(buf[i + 2:i + 3] == b"1")
             del buf[i:i + 3]
         while b"\n" in buf:
             line, _, rest = bytes(buf).partition(b"\n")

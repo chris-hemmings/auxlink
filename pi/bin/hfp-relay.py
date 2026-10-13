@@ -115,6 +115,11 @@ MIC_DUMP = "/run/auxlink/car-mic.raw"
 # Where the car's mic audio goes for the SMO: auxlink-media listens here
 # and forwards it to the XIAO (which presents it to the SMO as a USB mic).
 MIC_SOCKET = "/run/auxlink/mic.sock"
+# The other direction: the SMO's own audio (its assistant/nav reply) comes in
+# here from auxlink-media (usbc/wired) as 8 kHz mono PCM while the mic is
+# borrowed, and is played into the car's call audio so the reply is heard.
+# (A Bluetooth source feeds the same car_buf over its own SCO instead.)
+SOURCE_AUDIO_SOCKET = "/run/auxlink/srcaudio.sock"
 # "1" while the car's mic is borrowed: the car is in call mode then, so
 # auxlink-audio treats it like a call for the music stream (stop it, then
 # restart it afterwards - else the car stays silent).
@@ -307,6 +312,33 @@ class Relay:
         except OSError:
             pass
         self.write_flag(MIC_ACTIVE_FILE, "0")    # no mic session survives a restart
+        # The SMO's audio (its reply) arrives here from auxlink-media (usbc /
+        # wired) and is played into the car's call audio while the mic is open.
+        self.src_audio_sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        try:
+            os.unlink(SOURCE_AUDIO_SOCKET)
+        except OSError:
+            pass
+        try:
+            os.makedirs(os.path.dirname(SOURCE_AUDIO_SOCKET), exist_ok=True)
+            self.src_audio_sock.bind(SOURCE_AUDIO_SOCKET)
+            os.chmod(SOURCE_AUDIO_SOCKET, 0o666)
+            self.src_audio_sock.setblocking(False)
+            GLib.io_add_watch(self.src_audio_sock.fileno(), GLib.IO_IN, self.src_audio_rx)
+        except OSError as e:
+            log(f"Cannot open {SOURCE_AUDIO_SOCKET}: {e}")
+
+    def src_audio_rx(self, fd, cond):
+        """SMO reply audio -> the car's call speakers, but only while the mic is
+        borrowed and no Bluetooth source is already feeding the downlink."""
+        try:
+            data = self.src_audio_sock.recv(4096)
+        except (BlockingIOError, OSError):
+            return True
+        if data and self.mic_sco is not None and self.src_sco is None:
+            self.car_buf += data
+            del self.car_buf[:max(0, len(self.car_buf) - SOURCE_BUF_MAX)]
+        return True
 
     # ------------------------------------------------------------ car side
     def car_connected(self, sock):
