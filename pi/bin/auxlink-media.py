@@ -88,6 +88,11 @@ CALL_POLL_MS = 250                          # how quickly a call is noticed
 # that after a call (auxlink-audio waits the same), so none is missed.
 RESUME_AFTER_CALL = max(3.0, float(CONF.get("CALL_RESUME_DELAY", "3") or 3))
 PAUSE_FOR_CALLS = CONF.get("PAUSE_FOR_CALLS", "1") == "1"
+# When the car only streams while real sound is present (auxlink-audio's
+# WAIT_FOR_AUDIO), the "wait for the car's stream before playing the source"
+# trick after a call deadlocks: the source waits for the stream, the stream
+# waits for sound, the sound waits for the source. Play the source at once then.
+WAIT_FOR_AUDIO = CONF.get("WAIT_FOR_AUDIO", "0") == "1"
 COVER_CURRENT = "/run/auxlink/cover/current"  # 7-digit handle of the art to show
 # "1" while the SMO plays, "0" when paused/stopped: auxlink-audio runs the car's
 # music stream only while this says 1, so the car sees a pause and a fresh
@@ -742,9 +747,11 @@ class Player(dbus.service.Object):
             return True
         if (want_playing and self.status != "Playing" and self.call_ended_at
                 and time.monotonic() - self.call_ended_at < POST_CALL_WINDOW and STREAM_READY_FILE
-                and MUSIC_SOURCE != "bluetooth"):
+                and MUSIC_SOURCE != "bluetooth" and not WAIT_FOR_AUDIO):
             # (Not for a Bluetooth source: it only streams while it plays, so
-            # its stream can't be ready before it plays.)
+            # its stream can't be ready before it plays. Not with WAIT_FOR_AUDIO
+            # either: the stream can't start until the source plays, so waiting
+            # for it would deadlock - play at once and the stream follows.)
             # Right after a call: tell the car "Playing" now (auxlink-audio
             # starts the stream), but play the source only once that stream
             # is really running - nothing of the song is missed.
