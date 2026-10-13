@@ -378,9 +378,9 @@ USB-C doesn't suit your setup, and **Bluetooth** (5.3) is the last resort.
 ### 5.1 USB-C (Pi as a USB sound card) (recommended)
 The Android device plugs straight into the **Pi's USB-C port**, and the Pi
 shows up as a USB sound card (plus a data link and media keys).
-- **Tested and working well in the car:** one cable, no XIAO and no wiring,
-  with clean audio, track info, album art and the car's buttons. This is the
-  recommended source.
+- **Tested and working well in the car:** one cable, no extra board and no
+  wiring, with clean audio, track info, album art and the car's buttons. This
+  is the recommended source.
 - **Power: the head unit usually powers the Pi fine over the one cable.**
   In practice, a head unit that supplies enough current powers the Pi reliably
   over the **single USB-C cable** that also carries the audio - no separate
@@ -407,12 +407,11 @@ shows up as a USB sound card (plus a data link and media keys).
 - **First play after the Pi starts:** the car often takes that first stream
   silently, so a few seconds in, the Pi runs **Check and fix** by itself
   (once per boot): a short gap, then sound.
-- **Voice search:** the Pi's USB sound card has a mic too, carrying the
-  **car's cabin mic**, the same as the XIAO's.
-- **App link after a reboot:** as with the XIAO, if the app hasn't got its
-  USB link 15 s after the device connects, the Pi briefly re-plugs its USB-C
-  side so Android hands it over (up to three tries). Android asks once for
-  this device too: tick **Always**.
+- **Voice search:** the Pi's USB sound card also presents a mic, carrying the
+  **car's cabin mic**.
+- **App link after a reboot:** if the app hasn't got its USB link 15 s after
+  the device connects, the Pi briefly re-plugs its USB-C side so Android hands
+  it over (up to three tries). Android asks once for this: tick **Always**.
 
 ### 5.2 Wired: XIAO RP2040 (I2S) (backup)
 Proven and reliable, and a good fallback if USB-C doesn't suit your setup
