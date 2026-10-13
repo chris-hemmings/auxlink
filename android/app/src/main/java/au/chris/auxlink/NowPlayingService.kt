@@ -320,7 +320,12 @@ class NowPlayingService : NotificationListenerService() {
             val stream = android.media.AudioManager.STREAM_MUSIC
             val max = am.getStreamMaxVolume(stream)
             if (am.getStreamVolume(stream) >= max) return
-            am.setStreamVolume(stream, max, android.media.AudioManager.FLAG_SHOW_UI)
+            // Silent: no volume-bar popup (flag 0, not FLAG_SHOW_UI). Media
+            // volume needs no permission; with the safe-volume limiter off it
+            // goes straight to max in the background. If the limiter is still on
+            // (other devices), the set is held back and the personAsked=false
+            // branch below pops up our own prompt only then.
+            am.setStreamVolume(stream, max, 0)
             if (personAsked) {
                 // Android's hearing warning is up: once OK is tapped, set the full
                 // volume again (some Android versions drop the held-back request).
