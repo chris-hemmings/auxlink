@@ -53,6 +53,7 @@ class PhoneScreen(private val ctx: Context, private val ui: Ui,
     private val callPanelTimer: Chronometer
     private val callPanelButtons: LinearLayout
     private val onCall: (String, String, Long) -> Unit = { s, w, t -> view.post { onCallUi(s, w, t) } }
+    private var callUiState = "idle"   // last state the panel showed (to spot a call ending)
 
     init {
         // --- Contacts ---
@@ -198,10 +199,13 @@ class PhoneScreen(private val ctx: Context, private val ui: Ui,
     /** Render the current call in the inline panel (or hide it when idle). */
     private fun onCallUi(state: String, who: String, since: Long) {
         if (state == "idle") {
+            if (callUiState != "idle") dialled.text = ""   // a call just ended: clear the keypad
+            callUiState = "idle"
             callPanelTimer.stop()
             ui.gone(callPanel, true)
             return
         }
+        callUiState = state
         ui.gone(callPanel, false)
         callAvatarBox.removeAllViews()
         callAvatarBox.addView(ui.avatar(who.ifEmpty { "?" }),
