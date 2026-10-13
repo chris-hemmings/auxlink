@@ -244,6 +244,7 @@ class PhoneScreen(private val ctx: Context, private val ui: Ui,
             Toast.makeText(ctx, "Not connected to the Pi", Toast.LENGTH_SHORT).show(); return
         }
         svc.request(JSONObject().put("dial", number))
+        dialled.text = ""      // clear the keypad once the call is placed, like a phone
         Toast.makeText(ctx, "Calling " + name.ifEmpty { number } + " on your phone…", Toast.LENGTH_SHORT).show()
     }
 

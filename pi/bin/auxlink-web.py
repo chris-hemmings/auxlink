@@ -1019,6 +1019,16 @@ def wifi_client_connected():
     return False
 
 
+def car_connected():
+    """True while the car's Bluetooth is connected (auxlink-reconnect writes
+    this). Used to keep Wi-Fi on while driving so it joins a home network on
+    arrival; after the car drops, Wi-Fi stays on only if already on one."""
+    try:
+        return open("/run/auxlink/car-connected").read().strip() == "1"
+    except OSError:
+        return False
+
+
 def ap_profile(c):
     if sh("nmcli", "-t", "-f", "NAME", "connection", "show")[1].splitlines().count(AP_NAME):
         return
@@ -1092,11 +1102,13 @@ def ap_loop():
             if STATE.get("boot_window_done") and not unconfigured and now >= STATE["button_until"] and not in_use:
                 want = False
             # Optional power saving: turn the Wi-Fi radio off when nothing needs
-            # it - no setup window, and not joined to a home network. Bluetooth
-            # is a separate radio, so the car and phone are unaffected. The setup
-            # button / boot window brings it back. Stays on while on home Wi-Fi.
+            # it - no setup window, the car isn't connected, and not joined to a
+            # home network. Bluetooth is a separate radio, so the car and phone
+            # are unaffected. While the car is connected the radio stays on so it
+            # joins a home network on arrival; after the car drops it stays on
+            # only if it's already on one, else it turns off.
             if c.get("WIFI_OFF_WHEN_IDLE", "0") == "1" and not want \
-                    and uptime() > 45 and not wifi_client_connected():
+                    and uptime() > 45 and not car_connected() and not wifi_client_connected():
                 if not STATE.get("wifi_radio_off"):
                     sh("nmcli", "radio", "wifi", "off")
                     STATE["wifi_radio_off"] = True

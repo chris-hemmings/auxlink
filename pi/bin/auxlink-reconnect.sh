@@ -19,6 +19,7 @@ car_was=no; phone_was=no; phone_warned=no; car_err=; source_was=no; source_next=
 # before the car has ever connected (e.g. right after boot). The flag file,
 # emptied at boot, tells the phone section to stay disconnected.
 CAR_OFF_FLAG=/run/auxlink/car-off
+CAR_CONN_FLAG=/run/auxlink/car-connected   # "1" while the car is connected (read by auxlink-web)
 MOVING_FILE=/run/auxlink/moving
 car_seen=no; car_down_since=0
 
@@ -89,9 +90,11 @@ while true; do
   if $BT "$CAR_ADAPTER" "$CAR" connected; then
     [ "$car_was" = no ] && echo "Car connected"
     car_was=yes; car_seen=yes; car_down_since=0
+    echo 1 > "$CAR_CONN_FLAG" 2>/dev/null
     # Car is back: let the phone reconnect (the phone section does the connect).
     if [ -f "$CAR_OFF_FLAG" ]; then rm -f "$CAR_OFF_FLAG"; echo "Car back; reconnecting the phone"; fi
   else
+    echo 0 > "$CAR_CONN_FLAG" 2>/dev/null
     now=$(date +%s)
     # Car gone long enough (and it had been connected): drop the phone. Leave a
     # flag so the phone section keeps it down until the car returns.
