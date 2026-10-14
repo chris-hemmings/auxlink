@@ -88,6 +88,8 @@ music device's app as `{"notif": {...}}`.
   preview); tap for full text; Clear.
 - Per-app mute filter on the phone (Tools → Muted apps); remembers seen apps.
 - De-dupe: same pkg+title+text within 45 s is not re-sent.
+- Forwarder skips the phone's SMS app (texts already use the Pi Messages path;
+  forwarding them caused a second banner that didn't open the chat).
 - Forwarder-only mode: phone stops music-device traffic (track/art/USB/BT app
   link / media commands) and only forwards notifications.
 

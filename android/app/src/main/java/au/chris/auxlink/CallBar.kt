@@ -253,6 +253,11 @@ class TextPopup(private val ctx: Context) {
                 addView(bodyView)
             }
 
+            // Children must not steal taps from the banner (overlay windows are picky).
+            iconView.isClickable = false
+            iconView.isFocusable = false
+            textCol.isClickable = false
+            textCol.isFocusable = false
             val box = LinearLayout(ctx).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
@@ -267,6 +272,8 @@ class TextPopup(private val ctx: Context) {
                 addView(textCol, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
                     marginStart = gap
                 })
+                isClickable = true
+                isFocusable = false
                 setOnClickListener { hide(); onTap() }
                 // Slide + fade in.
                 alpha = 0f
@@ -276,7 +283,9 @@ class TextPopup(private val ctx: Context) {
                 (440 * dp).toInt().coerceAtMost(ctx.resources.displayMetrics.widthPixels - (16 * dp).toInt()),
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT
             ).apply {
                 gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL

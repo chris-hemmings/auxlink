@@ -23,6 +23,7 @@ import android.media.session.PlaybackState
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.provider.Telephony
 import android.service.notification.NotificationListenerService
 import android.util.Base64
 import android.util.Log
@@ -652,6 +653,10 @@ class NowPlayingService : NotificationListenerService() {
 
     private fun forwardNotification(sbn: android.service.notification.StatusBarNotification) {
         if (sbn.packageName == packageName) return                 // our own
+        // SMS already arrives on the head unit via the Pi's Messages path
+        // ({"text":…} → showText, tap opens the chat). Forwarding the phone's
+        // SMS notification too would show a second banner that only expands.
+        if (isSmsApp(sbn.packageName)) return
         val n = sbn.notification ?: return
         val flags = n.flags
         if (flags and Notification.FLAG_ONGOING_EVENT != 0) return  // persistent (media, foreground services)
@@ -687,6 +692,20 @@ class NowPlayingService : NotificationListenerService() {
             .put("icon", appIconPng(sbn.packageName))
         val line = JSONObject().put("notif", o).toString()
         notifIo.execute { notifLink?.send(line) }
+    }
+
+    /** True for the phone's SMS/MMS app (handled by MAP → Messages tab, not
+     *  the notification forwarder). Chat apps like WhatsApp are left alone. */
+    private fun isSmsApp(pkg: String): Boolean {
+        val def = try { Telephony.Sms.getDefaultSmsPackage(this) } catch (_: Exception) { null }
+        if (!def.isNullOrEmpty() && pkg == def) return true
+        return pkg == "com.android.mms" ||
+            pkg == "com.google.android.apps.messaging" ||
+            pkg == "com.samsung.android.messaging" ||
+            pkg == "com.android.messaging" ||
+            pkg == "com.coloros.mms" ||
+            pkg == "com.oplus.mms" ||
+            pkg.endsWith(".mms")
     }
 
     /** Small PNG of the app icon, base64 — for the head-unit banner (that
