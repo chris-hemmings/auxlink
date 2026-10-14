@@ -722,15 +722,11 @@ class NowPlayingService : NotificationListenerService() {
             .putExtra(MainActivity.EXTRA_CHAT_NAME, name)
 
     private fun showText(from: String, body: String, number: String) {
-        // Same heads-up banner as mirrored notifications: Messages icon +
-        // label, sender as the title. Floating window when allowed; a
-        // notification only if not. Tapping either opens the conversation.
-        val msgIcon = try {
-            getDrawable(R.drawable.ic_text)?.mutate()?.also {
-                it.setTint(0xFFFFFFFF.toInt())
-            }
-        } catch (_: Exception) { null }
-        if (textPopup.show("Messages", from.ifEmpty { "Text message" }, body, msgIcon) {
+        // Pi Messages path (also what the Tesla sees via MAP): keep the classic
+        // sender + body pop-up. Tap opens the conversation. Do not use the
+        // mirrored-notification banner here — mute the phone's Messages app in
+        // Tools → Muted apps if the forwarder would otherwise double up.
+        if (textPopup.showMessage(from.ifEmpty { "Text message" }, body) {
                 try { startActivity(chatIntent(number, from)) } catch (e: Exception) {}
             }) return
         val tap = PendingIntent.getActivity(this, textId, chatIntent(number, from),

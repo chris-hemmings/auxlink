@@ -159,8 +159,9 @@ class CallBar(private val ctx: Context, private val onCmd: (String) -> Unit) {
 }
 
 /**
- * Heads-up banner for a new text or mirrored phone notification: app icon +
- * app name up top, then title and body. Floats over other apps; tap to open.
+ * Floating heads-up banners. SMS from the Pi uses [showMessage] (simple
+ * sender + body, tap opens the chat). Mirrored phone notifications use [show]
+ * (app icon + name).
  */
 class TextPopup(private val ctx: Context) {
     private val wm = ctx.getSystemService(WindowManager::class.java)
@@ -170,8 +171,66 @@ class TextPopup(private val ctx: Context) {
     private val close = Runnable { hide() }
 
     /**
-     * @param app   source app label ("Messages", "WhatsApp", …)
-     * @param title sender / notification title (may be empty)
+     * Classic SMS pop-up (Pi Messages path → Tesla / Phone Link): sender and
+     * body only. Tap opens the conversation. Kept separate from the richer
+     * mirrored-notification banner so texts keep working as before.
+     */
+    fun showMessage(
+        from: String,
+        body: String,
+        stayMs: Long = 10000,
+        lines: Int = 4,
+        onTap: () -> Unit = {},
+    ): Boolean {
+        if (!Settings.canDrawOverlays(ctx)) return false
+        return try {
+            hide()
+            val pad = (12 * dp).toInt()
+            val box = LinearLayout(ctx).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(pad * 2, pad, pad * 2, pad)
+                background = GradientDrawable().apply {
+                    setColor(0xEE202124.toInt()); cornerRadius = 16 * dp
+                }
+                isClickable = true
+                isFocusable = false
+                addView(TextView(ctx).apply {
+                    text = from; setTextColor(Color.WHITE); textSize = 18f
+                    isClickable = false; isFocusable = false
+                })
+                addView(TextView(ctx).apply {
+                    text = body; setTextColor(Color.WHITE); textSize = 16f; maxLines = lines; alpha = 0.9f
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                    isClickable = false; isFocusable = false
+                })
+                setOnClickListener { hide(); onTap() }
+            }
+            val p = WindowManager.LayoutParams(
+                (420 * dp).toInt().coerceAtMost(ctx.resources.displayMetrics.widthPixels - (16 * dp).toInt()),
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                y = (140 * dp).toInt()   // below the call bar, if there is one
+            }
+            wm.addView(box, p)
+            root = box
+            main.postDelayed(close, stayMs)
+            true
+        } catch (e: Exception) {
+            hide()
+            false
+        }
+    }
+
+    /**
+     * Mirrored phone notification banner: app icon + app name up top, then
+     * title and body. Floats over other apps; tap to expand / open.
+     *
+     * @param app   source app label ("WhatsApp", …)
+     * @param title notification title (may be empty)
      * @param body  preview text
      * @param icon  app icon (bitmap or tinted drawable); optional
      * @return false if the overlay couldn't be shown (caller should fall back

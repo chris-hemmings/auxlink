@@ -986,7 +986,9 @@ class MainActivity : Activity() {
         })
         box.addView(TextView(this).apply {
             text = "Turn this ON only on your PHONE (with the AuxLink app and Notification access): every " +
-                "notification is sent to the car's Alerts tab and as a pop-up. Leave it OFF on the head unit."
+                "notification is sent to the car's Alerts tab and as a pop-up. Leave it OFF on the head unit. " +
+                "SMS already comes through the Pi to the Tesla — mute your Messages app under Muted apps " +
+                "so texts aren't forwarded twice."
             setTextColor(text2); textSize = 13f; setPadding(0, px(2), 0, px(6))
         })
         box.addView(android.widget.Switch(this).apply {
@@ -1059,7 +1061,8 @@ class MainActivity : Activity() {
                 else getSharedPreferences("auxlink", MODE_PRIVATE)
                     .edit().putStringSet("notif_muted_pkgs", muted).apply()
                 say(if (muted.isEmpty()) "All apps will be forwarded."
-                    else "Muted ${muted.size} app${if (muted.size == 1) "" else "s"}.")
+                    else "Muted ${muted.size} app${if (muted.size == 1) "" else "s"}. " +
+                        "(SMS still arrives via the Pi if Messages is muted.)")
             }
             .setNegativeButton("Cancel", null)
             .show()
