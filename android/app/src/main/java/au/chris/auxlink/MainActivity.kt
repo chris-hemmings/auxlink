@@ -83,9 +83,10 @@ class MainActivity : Activity() {
     private lateinit var details: TextView
     private val steps = mutableListOf<Step>()
 
-    // Tabs: Phone, Messages, and this status screen ("Status")
+    // Tabs: Phone, Messages, Status, Alerts (mirrored notifications)
     private lateinit var phone: PhoneScreen
     private lateinit var msgs: MessagesScreen
+    private lateinit var alerts: NotificationsScreen
     private lateinit var pages: List<View>
     private lateinit var tabViews: List<TextView>
     private var tab = 2
@@ -149,16 +150,18 @@ class MainActivity : Activity() {
         val ui = Ui(this)
         phone = PhoneScreen(this, ui) { number, name -> showTab(1); msgs.open(number, name) }
         msgs = MessagesScreen(this, ui)
-        pages = listOf(phone.view, msgs.view, status)
+        alerts = NotificationsScreen(this, ui)
+        // Keep Status at index 2 so saved tabs / poll logic stay stable; Alerts is last.
+        pages = listOf(phone.view, msgs.view, status, alerts.view)
         val content = android.widget.FrameLayout(this).apply { pages.forEach { addView(it) } }
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setBackgroundColor(cardBg)
             setPadding(0, px(6), 0, px(6))
         }
-        tabViews = listOf("✆" to "Phone", "✉" to "Messages", "♪" to "Status").mapIndexed { i, (icon, name) ->
+        tabViews = listOf("✆" to "Phone", "✉" to "Messages", "♪" to "Status", "🔔" to "Alerts").mapIndexed { i, (icon, name) ->
             TextView(this).apply {
-                text = icon + "\n" + name; textSize = 13f; gravity = Gravity.CENTER
+                text = icon + "\n" + name; textSize = 12f; gravity = Gravity.CENTER
                 setPadding(0, px(6), 0, px(6))
                 setOnClickListener { showTab(i) }
                 bar.addView(this, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
@@ -212,7 +215,11 @@ class MainActivity : Activity() {
         pages.forEachIndexed { k, v -> v.visibility = if (k == i) View.VISIBLE else View.GONE }
         tabViews.forEachIndexed { k, t -> t.setTextColor(if (k == i) accent else text2) }
         try { getPreferences(MODE_PRIVATE).edit().putInt("tab", i).apply() } catch (e: Exception) {}
-        when (i) { 0 -> phone.onShow(); 1 -> msgs.onShow() }
+        when (i) {
+            0 -> phone.onShow()
+            1 -> msgs.onShow()
+            3 -> alerts.onShow()
+        }
         if (i != 0) phone.onHide()
     }
 
@@ -223,7 +230,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
-        phone.close(); msgs.destroy()
+        phone.close(); msgs.destroy(); alerts.destroy()
         super.onDestroy()
     }
 
@@ -979,7 +986,7 @@ class MainActivity : Activity() {
         })
         box.addView(TextView(this).apply {
             text = "Turn this ON only on your PHONE (with the AuxLink app and Notification access): every " +
-                "notification is sent to the car's screen as a pop-down. Leave it OFF on the head unit."
+                "notification is sent to the car's Alerts tab and as a pop-up. Leave it OFF on the head unit."
             setTextColor(text2); textSize = 13f; setPadding(0, px(2), 0, px(6))
         })
         box.addView(android.widget.Switch(this).apply {
@@ -992,6 +999,21 @@ class MainActivity : Activity() {
                 say(if (on) "Forwarding on. Make sure Notification access is granted (this phone)."
                     else "Forwarding off.")
             }
+        })
+        box.addView(android.widget.Switch(this).apply {
+            text = "  Forwarder only (not the music device)"; setTextColor(text1); textSize = 14f
+            isChecked = p.getBoolean("notif_forwarder_only", false)
+            setOnCheckedChangeListener { _, on ->
+                val svc = NowPlayingService.instance
+                if (svc != null) svc.setForwarderOnly(on)
+                else p.edit().putBoolean("notif_forwarder_only", on).apply()
+                say(if (on) "This phone will only forward notifications (no track info to the Pi)."
+                    else "Music-device mode on again for this phone.")
+            }
+        })
+        box.addView(TextView(this).apply {
+            text = "Forwarder-only: use on the phone so it doesn't also push now-playing over USB/Bluetooth."
+            setTextColor(text2); textSize = 12f; setPadding(0, px(2), 0, px(4))
         })
         box.addView(LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; setPadding(0, px(6), 0, 0)
@@ -1010,8 +1032,37 @@ class MainActivity : Activity() {
                 NowPlayingService.instance?.let { say(it.notifDiag()) }
                     ?: say("Phone Link isn't running (grant Notification access).")
             })
+            addView(pillButton("Muted apps", false) { muteAppsDialog() })
         })
         return box
+    }
+
+    /** Pick which apps the phone forwarder should mute (not send to the car). */
+    private fun muteAppsDialog() {
+        val svc = NowPlayingService.instance
+        val seen = svc?.seenNotifApps().orEmpty()
+        if (seen.isEmpty()) {
+            say("No apps seen yet. Leave forwarding on for a bit, then open this again.")
+            return
+        }
+        val muted = (svc?.mutedNotifPackages() ?: emptySet()).toMutableSet()
+        val labels = seen.map { it.second + "\n" + it.first }.toTypedArray()
+        val checked = seen.map { it.first in muted }.toBooleanArray()
+        android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("Mute apps (won't forward)")
+            .setMultiChoiceItems(labels, checked) { _, which, isChecked ->
+                val pkg = seen[which].first
+                if (isChecked) muted.add(pkg) else muted.remove(pkg)
+            }
+            .setPositiveButton("Save") { _, _ ->
+                if (svc != null) svc.setMutedNotifPackages(muted)
+                else getSharedPreferences("auxlink", MODE_PRIVATE)
+                    .edit().putStringSet("notif_muted_pkgs", muted).apply()
+                say(if (muted.isEmpty()) "All apps will be forwarded."
+                    else "Muted ${muted.size} app${if (muted.size == 1) "" else "s"}.")
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun detailsCard(): View {
