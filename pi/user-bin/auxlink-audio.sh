@@ -87,6 +87,10 @@ monitor.bluez.rules = [
 # A phone call, or the car's mic borrowed for voice search (the car is in
 # call mode for that too).
 car_busy() { in_call || [ "$(cat /run/auxlink/mic-active 2>/dev/null)" = 1 ]; }
+# The phone's own media has taken over the car audio (auxlink-media decides
+# this): stop the SMO loopback so they don't play at once, but DON'T suspend
+# the car's sink - the phone's own stream is using it.
+phone_media() { [ "$(cat /run/auxlink/phone-media 2>/dev/null)" = 1 ]; }
 stop_loop() { [ -n "$LOOP" ] && kill "$LOOP" 2>/dev/null; LOOP=""; LOOP_SINK_ID=""; }
 linked() {
   local links; links=$(timeout 5 pw-link -l 2>/dev/null)
@@ -300,6 +304,7 @@ while true; do
   fi
   WHY=""
   if car_busy; then WHY="a call"
+  elif phone_media; then WHY="phone media"
   elif [ $(( $(date +%s) - CALL_ENDED_AT )) -lt "$(call_settle)" ]; then WHY="the call just ended"
   elif ! should_stream; then
     [ "${WAIT_FOR_AUDIO:-0}" = 1 ] && WHY="no audio is playing" || WHY="the SMO is paused"
@@ -312,7 +317,7 @@ while true; do
       echo "Stopping the music stream: $WHY"
       stop_loop
       # A phone suspends its stream on pause; the car sees it stop.
-      case "$WHY" in "the car is still connecting"|"the call just ended") ;;
+      case "$WHY" in "the car is still connecting"|"the call just ended"|"phone media") ;;
         *) timeout 5 pactl suspend-sink "$SINK" 1 ;; esac
     fi
     if [ "$WHY" != "$WAITING_SAID" ]; then

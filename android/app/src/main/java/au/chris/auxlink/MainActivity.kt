@@ -369,6 +369,16 @@ class MainActivity : Activity() {
                    else -> "${up / 86400} days" }))
         if (st.optString("host").isNotEmpty()) piRows.addView(piRow("Name", st.optString("host")))
 
+        // Music source (SMO / phone), when a phone is set up.
+        if (st.optBoolean("has_phone")) {
+            piRows.addView(sourceSelector(st.optString("source_override", "auto")))
+            if (st.optString("source_override", "auto") == "auto") {
+                val act = st.optString("source_active", "smo")
+                piRows.addView(piRow("Playing from", if (act == "phone") "the phone" else "the SMO",
+                    if (act == "phone") accent else good))
+            }
+        }
+
         // Wi-Fi and Pi controls, moved here from Tools.
         val wifiOn = st.optString("wifi") != "off"
         piRows.addView(piButtonRow("Wi-Fi", if (wifiOn) "Turn off" else "Turn on", !wifiOn) {
@@ -391,6 +401,25 @@ class MainActivity : Activity() {
                 .setNegativeButton("Cancel", null)
                 .show()
         })
+    }
+
+    /** The Auto / SMO / Phone source picker for the Pi card. */
+    private fun sourceSelector(current: String): View {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; setPadding(0, px(10), 0, 0)
+        }
+        box.addView(TextView(this).apply { text = "Music source"; setTextColor(text2); textSize = 14f })
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; setPadding(0, px(6), 0, 0)
+        }
+        listOf("Auto" to "auto", "SMO" to "smo", "Phone" to "phone").forEachIndexed { i, (label, key) ->
+            val b = pillButton(label, current == key) { send("source-$key", "Music source set to $label.") }
+            b.minWidth = 0; b.minimumWidth = 0
+            b.layoutParams = LinearLayout.LayoutParams(0, px(40), 1f).apply { if (i > 0) marginStart = px(8) }
+            row.addView(b)
+        }
+        box.addView(row)
+        return box
     }
 
     /** A Pi-card row: a label on the left and an action pill on the right. */

@@ -58,6 +58,14 @@ CAR_ADAPTER = CONF.get("CAR_ADAPTER", "").upper()
 #   bluetooth - the source's own AVRCP player (no serial at all)
 MUSIC_SOURCE = CONF.get("MUSIC_SOURCE", "wired")
 SOURCE = CONF.get("SOURCE", "").upper()
+PHONE_ADDR = CONF.get("PHONE", "").upper()  # the phone (Oppo); its media can take over
+# Source arbitration: the SMO is the normal source, but the phone's own media
+# (played on the phone) can take over so it isn't mixed on top of the SMO. The
+# app can force a source instead of the automatic choice.
+PHONE_MEDIA_FLAG = "/run/auxlink/phone-media"   # "1" while the phone owns the car audio
+SOURCE_OVERRIDE = "auto"                        # auto | smo | phone (set from the app)
+SRC_STATE = {"active": "smo", "override": "auto"}
+PHONE_KEYS = None                               # set by the phone monitor in main()
 PORT = {"usbc": "/dev/ttyGS0", "bluetooth": None}.get(MUSIC_SOURCE, CONF.get("SERIAL_PORT", "/dev/serial0"))
 HID_DEV = "/dev/hidg0"
 # MUSIC_SOURCE=bluetooth: the now-playing app (if installed on the source)
@@ -481,6 +489,8 @@ class Player(dbus.service.Object):
         self.track = 1
         self.ignore_smo_until = 0.0   # after we press a key, ignore stale reports briefly
         self.in_call = False
+        self.phone_active = False      # the phone's media owns the car audio (not the SMO)
+        self.smo_was_playing = False   # was the SMO playing when the phone took over?
         self.paused_for_call = False
         self.resume_timer = None
         self.call_ended_at = 0.0      # monotonic time the last call ended
@@ -574,6 +584,8 @@ class Player(dbus.service.Object):
         """Called a few times a second with whether sound is arriving."""
         changed = present != self.present
         self.present = present
+        if self.phone_active:
+            return   # the phone owns the car audio; the SMO's sound doesn't drive it
         if self.in_call or time.monotonic() < self.ignore_smo_until:
             return
         want = self.effective_state()
@@ -625,7 +637,7 @@ class Player(dbus.service.Object):
 
     def write_play_state(self):
         want = "1" if self.status == "Playing" else "0"
-        if (want == "1" and not getattr(self, "boot_fix_done", False)
+        if (want == "1" and not self.phone_active and not getattr(self, "boot_fix_done", False)
                 and not os.path.exists("/run/auxlink/boot-fix-done")):
             self.boot_fix_done = True
             GLib.timeout_add(5000, self.boot_fix)
@@ -712,7 +724,50 @@ class Player(dbus.service.Object):
             smo_key(b"P", "pause (toggle)")
         return False
 
+    def phone_update(self, info):
+        """Drive the car's player from the phone's own AVRCP info while the
+        phone owns the audio (so the car shows the phone's now-playing)."""
+        new = (str(info.get("title") or ""), str(info.get("artist") or ""),
+               str(info.get("album") or ""), int(info.get("dur") or 0) * 1000)
+        track_changed = new != (self.title, self.artist, self.album, self.length_us)
+        self.title, self.artist, self.album, self.length_us = new
+        if "pos" in info:
+            self.position_us = int(info.get("pos") or 0) * 1000
+        state = info.get("state")
+        status_changed = False
+        if state in ("Playing", "Paused", "Stopped") and state != self.status:
+            self.status = state
+            status_changed = True
+        if track_changed or status_changed:
+            self.publish(track_changed)
+            log(f"[phone] {self.title} - {self.artist} [{self.status}]")
+
+    def phone_take(self):
+        """The phone's media takes over from the SMO."""
+        if self.phone_active:
+            return
+        self.smo_was_playing = (self.status == "Playing") or self.present
+        self.phone_active = True
+        log("Phone media took over; the SMO is paused")
+
+    def phone_release(self):
+        """The phone's media stopped: hand the car audio back to the SMO."""
+        if not self.phone_active:
+            return
+        self.phone_active = False
+        # Re-publish whatever the SMO is now (its app keeps reporting state).
+        self.status = self.effective_state()
+        self.publish()
+        log("Phone media released; the SMO has the car audio again")
+
     def smo_update(self, info):
+        if self.phone_active:
+            # The phone owns the car audio: remember the SMO's play intent (for
+            # resume), but don't let its track info / state reach the car.
+            state = info.get("state")
+            if state in ("Playing", "Paused", "Stopped"):
+                self.app_seen = (time.monotonic(), state)
+            return
         new = (str(info.get("title") or ""), str(info.get("artist") or ""),
                str(info.get("album") or ""), int(info.get("dur") or 0) * 1000)
         track_changed = new != (self.title, self.artist, self.album, self.length_us)
@@ -867,6 +922,10 @@ class Player(dbus.service.Object):
             pass
 
     def wheel(self, what):
+        if self.phone_active and PHONE_KEYS:
+            # The phone owns the car audio: the wheel controls the phone.
+            PHONE_KEYS(what)
+            return
         if what in ("play", "pause", "toggle") and time.monotonic() < self.voice_until:
             # The car pauses and plays by itself around the "call" that voice
             # search is shown as; the source's voice app handles its own
@@ -1298,6 +1357,151 @@ def setup_bt_source(bus, om, player):
     poll()
     GLib.timeout_add_seconds(3, poll)
     log(f"Music source: Bluetooth ({SOURCE or 'not paired yet'})")
+
+
+def write_phone_flag(on):
+    try:
+        os.makedirs(os.path.dirname(PHONE_MEDIA_FLAG), exist_ok=True)
+        with open(PHONE_MEDIA_FLAG, "w") as f:
+            f.write("1" if on else "0")
+    except OSError as e:
+        log(f"Cannot write {PHONE_MEDIA_FLAG}: {e}")
+
+
+def write_source_state():
+    try:
+        with open("/run/auxlink/source-state", "w") as f:
+            json.dump(SRC_STATE, f)
+    except OSError:
+        pass
+
+
+def phone_media_monitor(bus, om, player):
+    """Arbitrate the car audio between the SMO and the phone. The SMO is the
+    normal source; when the phone plays its own media it takes over (so it is
+    not just mixed on top of the SMO), the SMO is paused, and the car shows the
+    phone's now-playing. When the phone stops, the SMO takes over again (and is
+    resumed if it was playing before). The app can force a source (auto/smo/
+    phone) instead of this automatic choice. Short phone sounds (notifications)
+    never reach the take-over debounce, so they still just blend as before."""
+    global PHONE_KEYS
+    if not PHONE_ADDR:
+        return
+    dev_part = "/dev_" + PHONE_ADDR.replace(":", "_")
+    st = {"playing": False, "since": 0.0}
+
+    def find_player():
+        for path, ifaces in om.GetManagedObjects().items():
+            if dev_part in str(path) and "org.bluez.MediaPlayer1" in ifaces:
+                return str(path), ifaces["org.bluez.MediaPlayer1"]
+        return None, None
+
+    def transport_active():
+        for path, ifaces in om.GetManagedObjects().items():
+            t = ifaces.get("org.bluez.MediaTransport1")
+            if t and dev_part in str(path):
+                return str(t.get("State", "")) in ("active", "pending")
+        return False
+
+    def raw_playing(props):
+        status = str(props.get("Status", "")) if props else ""
+        if status in ("paused", "stopped"):
+            return False            # the phone said pause: release at once
+        return transport_active() or status == "playing"
+
+    def phone_info(props):
+        track = (props.get("Track", {}) or {}) if props else {}
+        return {"title": str(track.get("Title", "")),
+                "artist": str(track.get("Artist", "")),
+                "album": str(track.get("Album", "")),
+                "dur": int(track.get("Duration", 0) or 0),
+                "pos": int(props.get("Position", 0) or 0) if props else 0,
+                "state": "Playing" if raw_playing(props) else "Paused"}
+
+    def keys(what):
+        path, _ = find_player()
+        if not path:
+            return
+        ctl = dbus.Interface(bus.get_object(BLUEZ, path), "org.bluez.MediaPlayer1")
+        method = {"play": "Play", "pause": "Pause", "next": "Next", "prev": "Previous"}.get(what)
+        if what == "toggle":
+            method = "Pause" if st["playing"] else "Play"
+        if method:
+            try:
+                getattr(ctl, method)()
+            except dbus.DBusException as e:
+                log(f"Phone {method} failed: {e.get_dbus_message()}")
+
+    def set_active(name):
+        if SRC_STATE["active"] != name:
+            SRC_STATE["active"] = name
+            write_source_state()
+
+    def poll_once():
+        c = load_conf()
+        if SRC_STATE["override"] != SOURCE_OVERRIDE:
+            SRC_STATE["override"] = SOURCE_OVERRIDE
+            write_source_state()
+        priority = c.get("PHONE_MEDIA_PRIORITY", "1") == "1"
+        debounce = max(1, int(c.get("PHONE_MEDIA_DEBOUNCE", "3") or 3))
+        now = time.monotonic()
+        path, props = find_player()
+        playing_now = raw_playing(props) if path else False
+        if playing_now:
+            if st["since"] == 0.0:
+                st["since"] = now
+        else:
+            st["since"] = 0.0
+        st["playing"] = playing_now
+        # Take-over needs the phone playing steadily for `debounce` s (so a
+        # notification blip doesn't duck the SMO); release is immediate.
+        stable = playing_now and now - st["since"] >= debounce
+
+        if SOURCE_OVERRIDE == "phone":
+            want_phone = bool(path)
+        elif SOURCE_OVERRIDE == "smo":
+            want_phone = False
+        else:
+            want_phone = priority and (stable or (player.phone_active and playing_now))
+        if player.in_call:
+            want_phone = False
+
+        if want_phone and not player.phone_active:
+            player.phone_take()
+            write_phone_flag(True)
+            set_active("phone")
+            app_send({"media": "pause"})         # stop the SMO's own player (e.g. Spotify)
+        elif not want_phone and player.phone_active:
+            resume = player.smo_was_playing
+            player.phone_release()
+            write_phone_flag(False)
+            set_active("smo")
+            if resume:
+                app_send({"media": "play"})       # the SMO was playing before: resume it
+        if player.phone_active:
+            player.phone_update(phone_info(props))
+        return True
+
+    def poll():
+        try:
+            poll_once()
+        except Exception as e:      # noqa: BLE001
+            log(f"Phone media check failed: {e!r}")
+        return True
+
+    def changed(iface, changes, invalidated, path=None):
+        if iface in ("org.bluez.MediaPlayer1", "org.bluez.MediaTransport1") and dev_part in str(path):
+            poll()
+
+    PHONE_KEYS = keys
+    bus.add_signal_receiver(changed, signal_name="PropertiesChanged",
+                            dbus_interface=dbus.PROPERTIES_IFACE, bus_name=BLUEZ,
+                            path_keyword="path")
+    write_phone_flag(False)
+    write_source_state()
+    poll()
+    GLib.timeout_add_seconds(1, poll)
+    log(f"Phone media arbiter on (phone {PHONE_ADDR or 'not set'})")
 
 
 # ---------- calls and texts on the music device (the AuxLink app) ----------
@@ -1982,6 +2186,9 @@ def pi_status():
     except (OSError, ValueError):
         st["uptime"] = 0
     st["host"] = socket.gethostname()
+    st["source_override"] = SRC_STATE["override"]   # auto | smo | phone
+    st["source_active"] = SRC_STATE["active"]       # smo | phone (what owns the car audio)
+    st["has_phone"] = bool(PHONE_ADDR)
     return st
 
 
@@ -2033,6 +2240,12 @@ def app_command(player, cmd):
         r = web_api("wifi/known")
         if r.get("error"):
             log("wifi-known: " + r["error"])
+    elif cmd in ("source-auto", "source-smo", "source-phone"):
+        global SOURCE_OVERRIDE
+        SOURCE_OVERRIDE = cmd.split("-", 1)[1]
+        SRC_STATE["override"] = SOURCE_OVERRIDE
+        write_source_state()
+        log(f"App: music source set to {SOURCE_OVERRIDE}")
     else:
         log(f"App: unknown command {cmd!r}")
 
@@ -2318,6 +2531,8 @@ def main():
     if PORT:
         if watch_port():
             GLib.timeout_add_seconds(3, watch_port)
+
+    phone_media_monitor(bus, om, player)   # SMO <-> phone source arbitration
 
     if MUSIC_SOURCE == "bluetooth":
         setup_bt_source(bus, om, player)
