@@ -8,6 +8,11 @@ ok()   { printf '  \033[32mOK\033[0m    %s\n' "$*"; }
 bad()  { printf '  \033[31mFAIL\033[0m  %s\n' "$*"; PROBLEM=yes; }
 warn() { printf '  \033[33mWARN\033[0m  %s\n' "$*"; }
 PROBLEM=no
+# While the phone's own media owns the car audio, the SMO path below is idle on
+# purpose - so don't flag it as broken (the phone plays straight to the car).
+PHONE_SRC=no
+[ "$(cat /run/auxlink/phone-media 2>/dev/null)" = 1 ] && PHONE_SRC=yes
+[ $PHONE_SRC = yes ] && echo "Note: the phone's media is the source right now, so the SMO path is idle on purpose (not a fault)."
 
 echo "1. Music source -> Pi input (source: ${MUSIC_SOURCE:-wired})"
 I2S=$(music_input)
@@ -17,6 +22,8 @@ if [ -z "$I2S" ]; then
     usbc) bad "USB-C input not found (reboot after choosing USB-C? source plugged into the Pi's USB-C?)" ;;
     *) bad "XIAO I2S input not found (overlay xiao-i2s-in loaded? arecord -l)" ;;
   esac
+elif [ $PHONE_SRC = yes ]; then
+  ok "SMO input present; idle because the phone's media is the source"
 else
   rm -f /tmp/audio-check.wav
   timeout 2 pw-record --target "$I2S" /tmp/audio-check.wav 2>/dev/null
@@ -49,15 +56,19 @@ if [ "$(timeout 5 pactl get-sink-mute "$SINK" | awk '{print $2}')" = yes ]; then
 else ok "volume $(timeout 5 pactl get-sink-volume "$SINK" | grep -o '[0-9]*%' | head -1) (follows the car)"; fi
 
 echo "5. Links inside the Pi"
-links=$(timeout 5 pw-link -l 2>/dev/null); in_ok=no; out_ok=no
-echo "$links" | grep -A2 "^$I2S:capture_FL" | grep -q "smo_capture:" &&
-  echo "$links" | grep -A2 "^$I2S:capture_FR" | grep -q "smo_capture:" && in_ok=yes
-echo "$links" | grep -A2 "^to_tesla:output_FL" | grep -q "bluez_output" &&
-  echo "$links" | grep -A2 "^to_tesla:output_FR" | grep -q "bluez_output" && out_ok=yes
-[ $in_ok = yes ] && ok "music input -> loopback" || bad "music input not linked to the loopback"
-[ $out_ok = yes ] && ok "loopback -> car" || bad "loopback not linked to the car"
-if [ $FIX = yes ] && { [ $in_ok = no ] || [ $out_ok = no ]; }; then
-  echo "        fixing: restarting auxlink-audio"; systemctl --user restart auxlink-audio; sleep 6; fi
+if [ $PHONE_SRC = yes ]; then
+  ok "SMO loopback idle (the phone is the source; it plays straight to the car)"
+else
+  links=$(timeout 5 pw-link -l 2>/dev/null); in_ok=no; out_ok=no
+  echo "$links" | grep -A2 "^$I2S:capture_FL" | grep -q "smo_capture:" &&
+    echo "$links" | grep -A2 "^$I2S:capture_FR" | grep -q "smo_capture:" && in_ok=yes
+  echo "$links" | grep -A2 "^to_tesla:output_FL" | grep -q "bluez_output" &&
+    echo "$links" | grep -A2 "^to_tesla:output_FR" | grep -q "bluez_output" && out_ok=yes
+  [ $in_ok = yes ] && ok "music input -> loopback" || bad "music input not linked to the loopback"
+  [ $out_ok = yes ] && ok "loopback -> car" || bad "loopback not linked to the car"
+  if [ $FIX = yes ] && { [ $in_ok = no ] || [ $out_ok = no ]; }; then
+    echo "        fixing: restarting auxlink-audio"; systemctl --user restart auxlink-audio; sleep 6; fi
+fi
 
 echo "6. Bluetooth music stream"
 ts=$(car_transport_state)

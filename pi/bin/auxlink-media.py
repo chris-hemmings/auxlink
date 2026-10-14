@@ -2130,17 +2130,24 @@ def audio_flow(player):
                         ("  ·  48 kHz 16-bit stereo sound card" if card else "  ·  sound card missing"),
                         "ok" if state == "configured" and card else "bad"))
     sound = player.present
-    out.append(item("input", "Sound from the music device",
-                    "Arriving" if sound else ("Silent (paused)" if not playing else "Silent, but it should be playing"),
-                    "ok" if sound else ("idle" if not playing else "bad")))
+    if player.phone_active:
+        out.append(item("input", "Sound from the music device",
+                        "The phone's media is the source now — the SMO path is idle on purpose", "ok"))
+    else:
+        out.append(item("input", "Sound from the music device",
+                        "Arriving" if sound else ("Silent (paused)" if not playing else "Silent, but it should be playing"),
+                        "ok" if sound else ("idle" if not playing else "bad")))
     # ---- PROCESSING: the Pi ----
     try:
         loop = subprocess.run(["pgrep", "-f", "pw-loopback.*to_tesla"], capture_output=True).returncode == 0
     except OSError:
         loop = False
-    out.append(item("processing", "Pi audio link",
-                    "Streaming to the car" if loop else ("Stopped (music paused)" if not playing else "Not running"),
-                    "ok" if loop else ("idle" if not playing else "bad")))
+    if player.phone_active:
+        out.append(item("processing", "Pi audio link", "The phone is playing straight to the car", "ok"))
+    else:
+        out.append(item("processing", "Pi audio link",
+                        "Streaming to the car" if loop else ("Stopped (music paused)" if not playing else "Not running"),
+                        "ok" if loop else ("idle" if not playing else "bad")))
     # ---- OUTPUT: Bluetooth to the car ----
     car = CONF.get("CAR", "").upper()
     connected, tstate, codec = False, "", ""
