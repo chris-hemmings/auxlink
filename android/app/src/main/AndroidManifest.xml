@@ -44,13 +44,19 @@
         tools:ignore="ProtectedPermissions" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
-    <!-- So Tools → Apps to forward can list launchable apps (Wear-style)
-         before any notification has been seen. -->
+    <!-- Launchable apps (Apps to forward) + default SMS app (icon on text pop-ups). -->
     <queries>
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
+        <intent>
+            <action android:name="android.intent.action.SENDTO" />
+            <data android:scheme="smsto" />
+        </intent>
+        <package android:name="com.google.android.apps.messaging" />
+        <package android:name="com.samsung.android.messaging" />
+        <package android:name="com.android.mms" />
     </queries>
 
     <application

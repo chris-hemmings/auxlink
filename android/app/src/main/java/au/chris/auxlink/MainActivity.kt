@@ -987,8 +987,8 @@ class MainActivity : Activity() {
         box.addView(TextView(this).apply {
             text = "Turn this ON only on your PHONE (with the AuxLink app and Notification access): every " +
                 "notification is sent to the car's Alerts tab and as a pop-up. Leave it OFF on the head unit. " +
-                "Use Apps to forward (like Wear) to pick apps before any notification arrives — turn Messages " +
-                "off there; SMS already comes through the Pi to the Tesla."
+                "The phone's SMS/Messages app is skipped automatically (SMS already comes via the Pi to the Tesla). " +
+                "Use Apps to forward to mute anything else."
             setTextColor(text2); textSize = 13f; setPadding(0, px(2), 0, px(6))
         })
         box.addView(android.widget.Switch(this).apply {
@@ -1098,7 +1098,7 @@ class MainActivity : Activity() {
                 }
                 android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
                     .setTitle("Apps to forward")
-                    .setMessage("Off = won't mirror. Turn Messages off — SMS already comes via the Pi to the Tesla.")
+                    .setMessage("Off = won't mirror. The SMS/Messages app is skipped automatically.")
                     .setView(scroll)
                     .setPositiveButton("Save") { _, _ ->
                         val svc = NowPlayingService.instance

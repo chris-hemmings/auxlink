@@ -78,9 +78,9 @@ music device's app as `{"notif": {...}}`.
 - App receiver (head unit): `{"notif"}` -> heads-up banner (`TextPopup.show`)
   with app icon + app name + title/body; tap -> `showNotifDetail()` expands.
   SMS from the Pi still uses the classic `TextPopup.showMessage` pop-up (tap
-  opens the chat / Tesla path unchanged). On the phone, Tools → Apps to
-  forward lists all launchable apps (Wear-style) so Messages can be turned
-  off before any notification is seen.
+  opens the chat / Tesla path unchanged, with the default messaging app's
+  icon). The forwarder auto-skips the SMS app (no need to mute Messages).
+  Tools → Apps to forward lists all launchable apps (Wear-style) for the rest.
 - BlueZ did not publish an SDP RFCOMM record for the custom UUID (sdptool
   found nothing; phone "socket failure", no bluetoothd log). Fixed by pinning
   `NOTIF_CHANNEL=22` / `APP_CHANNEL=23` on the Pi and having `BtLink` connect

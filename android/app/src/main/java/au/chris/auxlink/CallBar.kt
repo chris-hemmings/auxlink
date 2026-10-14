@@ -171,13 +171,13 @@ class TextPopup(private val ctx: Context) {
     private val close = Runnable { hide() }
 
     /**
-     * Classic SMS pop-up (Pi Messages path → Tesla / Phone Link): sender and
-     * body only. Tap opens the conversation. Kept separate from the richer
-     * mirrored-notification banner so texts keep working as before.
+     * Classic SMS pop-up (Pi Messages path → Tesla / Phone Link): messaging
+     * app icon, sender, and body. Tap opens the conversation.
      */
     fun showMessage(
         from: String,
         body: String,
+        icon: android.graphics.drawable.Drawable? = null,
         stayMs: Long = 10000,
         lines: Int = 4,
         onTap: () -> Unit = {},
@@ -185,31 +185,78 @@ class TextPopup(private val ctx: Context) {
         if (!Settings.canDrawOverlays(ctx)) return false
         return try {
             hide()
-            val pad = (12 * dp).toInt()
-            val box = LinearLayout(ctx).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(pad * 2, pad, pad * 2, pad)
+            val pad = (14 * dp).toInt()
+            val iconSize = (40 * dp).toInt()
+            val iconView = android.widget.ImageView(ctx).apply {
+                layoutParams = LinearLayout.LayoutParams(iconSize, iconSize)
+                scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
                 background = GradientDrawable().apply {
-                    setColor(0xEE202124.toInt()); cornerRadius = 16 * dp
+                    shape = GradientDrawable.OVAL
+                    setColor(0xFF3C4043.toInt())
                 }
-                isClickable = true
+                isClickable = false
+                isFocusable = false
+                if (icon != null) {
+                    setImageDrawable(icon)
+                    setPadding(0, 0, 0, 0)
+                    clipToOutline = true
+                    outlineProvider = object : android.view.ViewOutlineProvider() {
+                        override fun getOutline(view: View, outline: android.graphics.Outline) {
+                            outline.setOval(0, 0, view.width, view.height)
+                        }
+                    }
+                } else {
+                    val inset = (6 * dp).toInt()
+                    setPadding(inset, inset, inset, inset)
+                    setImageResource(android.R.drawable.sym_action_chat)
+                    imageTintList = android.content.res.ColorStateList.valueOf(Color.WHITE)
+                }
+            }
+            val textCol = LinearLayout(ctx).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_VERTICAL
+                isClickable = false
                 isFocusable = false
                 addView(TextView(ctx).apply {
-                    text = from; setTextColor(Color.WHITE); textSize = 18f
+                    text = from; setTextColor(Color.WHITE); textSize = 17f
+                    typeface = android.graphics.Typeface.DEFAULT_BOLD
+                    maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
                     isClickable = false; isFocusable = false
                 })
                 addView(TextView(ctx).apply {
-                    text = body; setTextColor(Color.WHITE); textSize = 16f; maxLines = lines; alpha = 0.9f
+                    text = body; setTextColor(0xFFE8EAED.toInt()); textSize = 15f
+                    maxLines = lines; alpha = 0.95f
                     ellipsize = android.text.TextUtils.TruncateAt.END
                     isClickable = false; isFocusable = false
+                    setPadding(0, (2 * dp).toInt(), 0, 0)
+                })
+            }
+            val box = LinearLayout(ctx).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(pad, pad, pad, pad)
+                background = GradientDrawable().apply {
+                    setColor(0xF2222124.toInt()); cornerRadius = 20 * dp
+                    setStroke((1 * dp).toInt().coerceAtLeast(1), 0x33FFFFFF)
+                }
+                elevation = 8 * dp
+                isClickable = true
+                isFocusable = false
+                addView(iconView)
+                addView(textCol, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    marginStart = (10 * dp).toInt()
                 })
                 setOnClickListener { hide(); onTap() }
+                alpha = 0f
+                translationY = (-24 * dp)
             }
             val p = WindowManager.LayoutParams(
-                (420 * dp).toInt().coerceAtMost(ctx.resources.displayMetrics.widthPixels - (16 * dp).toInt()),
+                (440 * dp).toInt().coerceAtMost(ctx.resources.displayMetrics.widthPixels - (16 * dp).toInt()),
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT
             ).apply {
                 gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
@@ -217,6 +264,7 @@ class TextPopup(private val ctx: Context) {
             }
             wm.addView(box, p)
             root = box
+            box.animate().alpha(1f).translationY(0f).setDuration(220).start()
             main.postDelayed(close, stayMs)
             true
         } catch (e: Exception) {
