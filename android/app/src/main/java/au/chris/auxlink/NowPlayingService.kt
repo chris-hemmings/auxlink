@@ -11,6 +11,10 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.drawable.BitmapDrawable
+import android.graphics.drawable.Drawable
 import android.hardware.usb.UsbManager
 import android.media.MediaMetadata
 import android.media.session.MediaController
@@ -356,9 +360,13 @@ class NowPlayingService : NotificationListenerService() {
                 // ask in a pop-up of our own that stays until tapped.
                 main.postDelayed({
                     if (am.getStreamVolume(stream) < max) {
-                        textPopup.show("Volume limited by Android",
+                        textPopup.show(
+                            "Phone Link",
+                            "Volume limited by Android",
                             "Android's hearing-safety warning held the volume back. " +
-                                "Tap here, then OK, for full volume.", 60000) { volumeMax(true) }
+                                "Tap here, then OK, for full volume.",
+                            stayMs = 60000,
+                        ) { volumeMax(true) }
                     }
                 }, 2500)
             }
@@ -509,13 +517,14 @@ class NowPlayingService : NotificationListenerService() {
     private val textPopup by lazy { TextPopup(this) }
 
     /** A mirrored phone notification (from the forwarder on the phone, relayed
-     *  by the Pi): a pop-down, tap to see the full text. */
+     *  by the Pi): heads-up banner with the source app's icon + name. */
     private fun showNotif(o: JSONObject) {
         val app = o.optString("app").ifEmpty { "Notification" }
         val title = o.optString("title")
-        val head = if (title.isNotEmpty()) "$app  ·  $title" else app
         val body = o.optString("text").ifEmpty { o.optString("big") }
-        if (textPopup.show(head, body, 9000) { showNotifDetail(o) }) return
+        val icon = decodeNotifIcon(o.optString("icon"))
+        if (textPopup.show(app, title, body, icon, 9000) { showNotifDetail(o) }) return
+        val head = if (title.isNotEmpty()) "$app  ·  $title" else app
         val n = Notification.Builder(this, "texts_popup")
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentTitle(head).setContentText(body)
@@ -528,8 +537,17 @@ class NowPlayingService : NotificationListenerService() {
     private fun showNotifDetail(o: JSONObject) {
         val app = o.optString("app").ifEmpty { "Notification" }
         val title = o.optString("title")
-        val head = if (title.isNotEmpty()) "$app  ·  $title" else app
-        textPopup.show(head, o.optString("big").ifEmpty { o.optString("text") }, 30000, 16) {}
+        val body = o.optString("big").ifEmpty { o.optString("text") }
+        textPopup.show(app, title, body, decodeNotifIcon(o.optString("icon")), 30000, 16) {}
+    }
+
+    private fun decodeNotifIcon(b64: String): Drawable? {
+        if (b64.isEmpty()) return null
+        return try {
+            val bytes = Base64.decode(b64, Base64.DEFAULT)
+            val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return null
+            BitmapDrawable(resources, bmp)
+        } catch (_: Exception) { null }
     }
 
     // ---------- forwarder (on the phone): mirror notifications to the Pi ----------
@@ -563,9 +581,11 @@ class NowPlayingService : NotificationListenerService() {
      *  report whether the Bluetooth write succeeded. */
     fun testNotifForward(cb: (Boolean) -> Unit) {
         if (notifLink == null) notifLink = BtLink(this, BtLink.NOTIF_UUID)
+        notifLink?.retryNow()
         val o = JSONObject().put("app", "AuxLink").put("title", "Test notification")
             .put("text", "If this shows on the car, forwarding works.").put("big", "")
             .put("pkg", packageName).put("when", System.currentTimeMillis())
+            .put("icon", appIconPng(packageName))
         val line = JSONObject().put("notif", o).toString()
         notifIo.execute { val ok = notifLink?.send(line) ?: false; main.post { cb(ok) } }
     }
@@ -590,8 +610,34 @@ class NowPlayingService : NotificationListenerService() {
         } catch (e: Exception) { sbn.packageName }
         val o = JSONObject().put("app", app).put("title", title).put("text", text)
             .put("big", big).put("pkg", sbn.packageName).put("when", sbn.postTime)
+            .put("icon", appIconPng(sbn.packageName))
         val line = JSONObject().put("notif", o).toString()
         notifIo.execute { notifLink?.send(line) }
+    }
+
+    /** Small PNG of the app icon, base64 — for the head-unit banner (that
+     *  device does not have WhatsApp/etc installed). Empty if it fails or
+     *  would be too large for the Bluetooth line. */
+    private fun appIconPng(pkg: String): String {
+        return try {
+            val d = packageManager.getApplicationIcon(pkg)
+            val bmp = drawableToBitmap(d, 72)
+            val out = ByteArrayOutputStream()
+            bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
+            val bytes = out.toByteArray()
+            if (bytes.size > 12_000) "" else Base64.encodeToString(bytes, Base64.NO_WRAP)
+        } catch (_: Exception) { "" }
+    }
+
+    private fun drawableToBitmap(d: Drawable, size: Int): Bitmap {
+        if (d is BitmapDrawable && d.bitmap != null) {
+            return Bitmap.createScaledBitmap(d.bitmap, size, size, true)
+        }
+        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        d.setBounds(0, 0, size, size)
+        d.draw(c)
+        return bmp
     }
 
     /** Opens this conversation in the app's Messages tab. */
@@ -602,9 +648,15 @@ class NowPlayingService : NotificationListenerService() {
             .putExtra(MainActivity.EXTRA_CHAT_NAME, name)
 
     private fun showText(from: String, body: String, number: String) {
-        // Floating window when allowed; a notification only if not. Tapping
-        // either opens the conversation.
-        if (textPopup.show(from.ifEmpty { "Text message" }, body) {
+        // Same heads-up banner as mirrored notifications: Messages icon +
+        // label, sender as the title. Floating window when allowed; a
+        // notification only if not. Tapping either opens the conversation.
+        val msgIcon = try {
+            getDrawable(R.drawable.ic_text)?.mutate()?.also {
+                it.setTint(0xFFFFFFFF.toInt())
+            }
+        } catch (_: Exception) { null }
+        if (textPopup.show("Messages", from.ifEmpty { "Text message" }, body, msgIcon) {
                 try { startActivity(chatIntent(number, from)) } catch (e: Exception) {}
             }) return
         val tap = PendingIntent.getActivity(this, textId, chatIntent(number, from),
