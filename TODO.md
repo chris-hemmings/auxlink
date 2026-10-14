@@ -83,9 +83,13 @@ music device's app as `{"notif": {...}}`.
   `NOTIF_CHANNEL=22` / `APP_CHANNEL=23` on the Pi and having `BtLink` connect
   straight to that channel (bypass SDP).
 
-**Stage 2 (todo):** a Notifications list tab (scrollback); per-app allow/mute
-filter; "forwarder-only" mode so the phone app doesn't also try to be the
-music device; de-dupe repeated notifications.
+**Stage 2 (done):**
+- Alerts tab on the head unit: scrollback of mirrored notifs (icon/app/title/
+  preview); tap for full text; Clear.
+- Per-app mute filter on the phone (Tools → Muted apps); remembers seen apps.
+- De-dupe: same pkg+title+text within 45 s is not re-sent.
+- Forwarder-only mode: phone stops music-device traffic (track/art/USB/BT app
+  link / media commands) and only forwards notifications.
 
 **Stage 3 (todo):** reply/actions (reply to a Teams/WhatsApp message, mark read)
 - doable since the forwarder app is on the phone and holds the Notification

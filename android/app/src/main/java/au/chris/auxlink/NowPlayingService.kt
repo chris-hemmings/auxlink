@@ -189,6 +189,11 @@ class NowPlayingService : NotificationListenerService() {
     private var beats = 0
     private val heartbeat = object : Runnable {
         override fun run() {
+            if (forwarderOnly) {
+                // Phone is only a notification forwarder: no music / Pi status traffic.
+                main.postDelayed(this, 5000)
+                return
+            }
             pickController()          // also resends (clears lastLine, pushes)
             // Nothing playing anywhere: say "still here" anyway, so the XIAO
             // sees the app has its USB link (else it replugs to get it one).
@@ -404,6 +409,7 @@ class NowPlayingService : NotificationListenerService() {
      *  the player's own controls, the way a phone handles them over
      *  Bluetooth (no media-key guessing). */
     private fun media(cmd: String) {
+        if (forwarderOnly) return
         if (controller == null) pickController()
         val c = controller
         if (c == null) {
@@ -517,8 +523,10 @@ class NowPlayingService : NotificationListenerService() {
     private val textPopup by lazy { TextPopup(this) }
 
     /** A mirrored phone notification (from the forwarder on the phone, relayed
-     *  by the Pi): heads-up banner with the source app's icon + name. */
+     *  by the Pi): heads-up banner with the source app's icon + name, and a
+     *  row in the Alerts tab scrollback. */
     private fun showNotif(o: JSONObject) {
+        NotifLog.add(o)
         val app = o.optString("app").ifEmpty { "Notification" }
         val title = o.optString("title")
         val body = o.optString("text").ifEmpty { o.optString("big") }
@@ -552,18 +560,68 @@ class NowPlayingService : NotificationListenerService() {
 
     // ---------- forwarder (on the phone): mirror notifications to the Pi ----------
     @Volatile private var forwardNotifs = false
+    @Volatile private var forwarderOnly = false
     private var notifLink: BtLink? = null
+    /** Recent forwards for de-dupe: key -> elapsedRealtime of last send. */
+    private val recentNotifs = LinkedHashMap<String, Long>()
+    private val DEDUPE_MS = 45_000L
+
+    private fun prefs() = getSharedPreferences("auxlink", MODE_PRIVATE)
 
     /** Turn notification forwarding on/off (set from the app's switch; meant to
      *  be enabled on the phone, not the music head unit). */
     fun setForwardNotifs(on: Boolean) {
         forwardNotifs = on
-        try { getSharedPreferences("auxlink", MODE_PRIVATE).edit().putBoolean("notif_forward", on).apply() } catch (e: Exception) {}
+        try { prefs().edit().putBoolean("notif_forward", on).apply() } catch (e: Exception) {}
         if (on && notifLink == null) notifLink = BtLink(this, BtLink.NOTIF_UUID)
         else if (!on) { notifLink?.close(); notifLink = null }
     }
 
+    /**
+     * Phone-only: stop acting as the music device (no track info / art / media
+     * commands over USB or the app Bluetooth link). Notification forwarding
+     * keeps running on its own link.
+     */
+    fun setForwarderOnly(on: Boolean) {
+        forwarderOnly = on
+        try { prefs().edit().putBoolean("notif_forwarder_only", on).apply() } catch (e: Exception) {}
+        if (on) stopMusicSide() else startMusicSide()
+    }
+
+    fun isForwarderOnly() = forwarderOnly
+
+    /** Muted packages (not forwarded). Empty = forward everything seen. */
+    fun mutedNotifPackages(): Set<String> =
+        try { prefs().getStringSet("notif_muted_pkgs", emptySet())?.toSet() ?: emptySet() }
+        catch (_: Exception) { emptySet() }
+
+    fun setMutedNotifPackages(pkgs: Set<String>) {
+        try { prefs().edit().putStringSet("notif_muted_pkgs", pkgs.toSet()).apply() } catch (_: Exception) {}
+    }
+
+    /** Apps the forwarder has seen: list of (package, label), newest first. */
+    fun seenNotifApps(): List<Pair<String, String>> {
+        val raw = try { prefs().getStringSet("notif_seen_apps", emptySet()) ?: emptySet() }
+        catch (_: Exception) { emptySet() }
+        return raw.mapNotNull {
+            val i = it.indexOf('\t')
+            if (i <= 0) null else it.substring(0, i) to it.substring(i + 1)
+        }.sortedBy { it.second.lowercase() }
+    }
+
+    private fun rememberSeenApp(pkg: String, label: String) {
+        try {
+            val cur = prefs().getStringSet("notif_seen_apps", emptySet())?.toMutableSet() ?: mutableSetOf()
+            cur.removeAll { it.startsWith("$pkg\t") }
+            cur.add("$pkg\t$label")
+            while (cur.size > 80) cur.remove(cur.first())
+            prefs().edit().putStringSet("notif_seen_apps", cur).apply()
+        } catch (_: Exception) {}
+    }
+
     @Volatile private var notifCount = 0
+    @Volatile private var notifSkippedMute = 0
+    @Volatile private var notifSkippedDedupe = 0
 
     override fun onNotificationPosted(sbn: android.service.notification.StatusBarNotification) {
         if (!forwardNotifs) return
@@ -574,7 +632,9 @@ class NowPlayingService : NotificationListenerService() {
     /** A one-line status for the app's screen (so we can tell what's happening
      *  without a logcat): is forwarding on, how many notifications were seen,
      *  and what the last Bluetooth attempt did. */
-    fun notifDiag() = "forwarding=${if (forwardNotifs) "ON" else "off"}, seen=$notifCount, " +
+    fun notifDiag() = "forwarding=${if (forwardNotifs) "ON" else "off"}, " +
+        "only=${if (forwarderOnly) "ON" else "off"}, seen=$notifCount, " +
+        "muted=$notifSkippedMute, dedupe=$notifSkippedDedupe, " +
         "link=${notifLink?.lastResult ?: "(forwarder not started)"}"
 
     /** Send a test notification straight to the Pi (forces a connection), and
@@ -608,6 +668,20 @@ class NowPlayingService : NotificationListenerService() {
         val app = try {
             packageManager.getApplicationLabel(packageManager.getApplicationInfo(sbn.packageName, 0)).toString()
         } catch (e: Exception) { sbn.packageName }
+        rememberSeenApp(sbn.packageName, app)
+        if (sbn.packageName in mutedNotifPackages()) {
+            notifSkippedMute++; return
+        }
+        val dedupeKey = sbn.packageName + "|" + title + "|" + text.take(120)
+        val now = android.os.SystemClock.elapsedRealtime()
+        synchronized(recentNotifs) {
+            recentNotifs.entries.removeAll { now - it.value > DEDUPE_MS }
+            val prev = recentNotifs[dedupeKey]
+            if (prev != null && now - prev < DEDUPE_MS) {
+                notifSkippedDedupe++; return
+            }
+            recentNotifs[dedupeKey] = now
+        }
         val o = JSONObject().put("app", app).put("title", title).put("text", text)
             .put("big", big).put("pkg", sbn.packageName).put("when", sbn.postTime)
             .put("icon", appIconPng(sbn.packageName))
@@ -786,7 +860,8 @@ class NowPlayingService : NotificationListenerService() {
         instance = this
         goForeground()
         try {
-            if (getSharedPreferences("auxlink", MODE_PRIVATE).getBoolean("notif_forward", false))
+            forwarderOnly = prefs().getBoolean("notif_forwarder_only", false)
+            if (prefs().getBoolean("notif_forward", false))
                 setForwardNotifs(true)
         } catch (e: Exception) {}
         link = UsbLink(this) { onPiLine(it) }
@@ -802,12 +877,45 @@ class NowPlayingService : NotificationListenerService() {
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(usbEvents, f, Context.RECEIVER_EXPORTED)
         else @Suppress("UnspecifiedRegisterReceiverFlag") registerReceiver(usbEvents, f)
 
-        sessions = getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
-        val me = ComponentName(this, NowPlayingService::class.java)
-        sessions?.addOnActiveSessionsChangedListener(sessionsChanged, me, main)
+        if (forwarderOnly) {
+            // Notification forwarder only: no media sessions / location / music link traffic.
+            main.post(heartbeat)
+        } else {
+            startMusicSide()
+        }
+    }
+
+    /** Begin following media sessions and talking to the Pi as the music device. */
+    private fun startMusicSide() {
+        if (!::link.isInitialized) return
+        if (sessions == null) {
+            sessions = getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
+            val me = ComponentName(this, NowPlayingService::class.java)
+            sessions?.addOnActiveSessionsChangedListener(sessionsChanged, me, main)
+        }
         startLocationWatch()
         pickController()
+        main.removeCallbacks(heartbeat)
         main.post(heartbeat)
+    }
+
+    /** Stop music-device behaviour (forwarder-only on the phone). */
+    private fun stopMusicSide() {
+        loc.stop()
+        sessions?.removeOnActiveSessionsChangedListener(sessionsChanged)
+        sessions = null
+        controller?.unregisterCallback(callback)
+        controller = null
+        lastLine = ""
+        artSentId = ""
+        if (::link.isInitialized || ::bt.isInitialized) {
+            io.execute {
+                try { if (::link.isInitialized) link.close() } catch (_: Exception) {}
+                try { if (::bt.isInitialized) bt.close() } catch (_: Exception) {}
+            }
+        }
+        linkOpen = false
+        linkKind = ""
     }
 
     private val loc = LocationWatch()
@@ -838,6 +946,7 @@ class NowPlayingService : NotificationListenerService() {
 
     /** USB if one is plugged in (unchanged behaviour), else Bluetooth. Runs on [io]. */
     private fun sendLine(line: String): Boolean {
+        if (forwarderOnly) return false
         val ok = if (link.findDevice() != null) {
             bt.close()
             link.send(line).also { if (it) linkKind = "USB" }
@@ -851,6 +960,7 @@ class NowPlayingService : NotificationListenerService() {
     }
 
     private fun pickController() {
+        if (forwarderOnly) return
         val list = try {
             sessions?.getActiveSessions(ComponentName(this, NowPlayingService::class.java))
         } catch (e: SecurityException) { null } ?: emptyList()
@@ -870,6 +980,7 @@ class NowPlayingService : NotificationListenerService() {
     }
 
     private fun push() {
+        if (forwarderOnly) return
         val c = controller ?: return
         val md = c.metadata
         val ps = c.playbackState
