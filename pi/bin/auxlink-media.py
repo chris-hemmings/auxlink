@@ -67,9 +67,9 @@ PHONE_ADDR = CONF.get("PHONE", "").upper()  # the phone (Oppo); its media can ta
 #   auto   - the phone takes over when it is actually playing, else the SMO
 PHONE_MEDIA_FLAG = "/run/auxlink/phone-media"   # "1" while the phone owns the car audio
 PHONE_MUTE_FLAG = "/run/auxlink/phone-mute"     # "1" to mute the phone's media (Media mode)
-SOURCE_OVERRIDE = CONF.get("SOURCE_OVERRIDE", "media")
+SOURCE_OVERRIDE = CONF.get("SOURCE_OVERRIDE", "both")
 if SOURCE_OVERRIDE not in ("media", "both", "phone", "auto"):
-    SOURCE_OVERRIDE = "media"
+    SOURCE_OVERRIDE = "both"
 SRC_STATE = {"active": "smo", "override": SOURCE_OVERRIDE}
 PHONE_KEYS = None                               # set by the phone monitor in main()
 

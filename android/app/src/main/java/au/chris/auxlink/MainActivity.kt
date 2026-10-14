@@ -372,8 +372,8 @@ class MainActivity : Activity() {
 
         // Music source (SMO / phone), when a phone is set up.
         if (st.optBoolean("has_phone")) {
-            piRows.addView(sourceSelector(st.optString("source_override", "media")))
-            if (st.optString("source_override", "media") == "auto") {
+            piRows.addView(sourceSelector(st.optString("source_override", "both")))
+            if (st.optString("source_override", "both") == "auto") {
                 val act = st.optString("source_active", "smo")
                 piRows.addView(piRow("Playing from", if (act == "phone") "the phone" else "the media player",
                     if (act == "phone") accent else good))
