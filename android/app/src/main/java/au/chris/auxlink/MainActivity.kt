@@ -5,9 +5,11 @@ import android.app.Activity
 import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.RippleDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -78,7 +80,6 @@ class MainActivity : Activity() {
     private var btResultShown: org.json.JSONObject? = null
     private var checking = false
     private var ticks = 0
-    private lateinit var note: TextView
     private lateinit var details: TextView
     private val steps = mutableListOf<Step>()
 
@@ -380,14 +381,14 @@ class MainActivity : Activity() {
         }
 
         // Wi-Fi and Pi controls, moved here from Tools.
-        val wifiOn = st.optString("wifi") != "off"
-        piRows.addView(piButtonRow("Wi-Fi", if (wifiOn) "Turn off" else "Turn on", !wifiOn) {
-            if (wifiOn) send("wifi-off", "Turning the Pi's Wi-Fi off.")
-            else send("wifi-on", "Turning Wi-Fi on. It joins a known network, or starts " +
-                "\"AuxLink-setup\" if none is in range (it switches off by itself after 15 min).")
+        val setupOn = st.optString("wifi") == "setup"
+        piRows.addView(piButtonRow("Setup Wi-Fi", if (setupOn) "Turn off" else "Turn on", !setupOn) {
+            if (setupOn) send("wifi-off", "Turning the setup Wi-Fi off.")
+            else send("wifi-on", "Turning the setup Wi-Fi on — join \"AuxLink-setup\" to open the " +
+                "settings page (it switches off by itself after 15 min).")
         })
         piRows.addView(piButtonRow("Known networks", "Search", false) {
-            send("wifi-known", "Searching for a saved Wi-Fi network to join…")
+            send("wifi-known", "Searching for a saved Wi-Fi network, and turning the setup Wi-Fi off if it joins one…")
         })
         piRows.addView(piButtonRow("Settings page", "Open", false) { openSetup() })
         piRows.addView(piButtonRow("Restart the Pi", "Restart", false) {
@@ -758,7 +759,6 @@ class MainActivity : Activity() {
     // ----------------------------------------------------- Pi software update
     private val piRepo = "chris-hemmings/teslabridge"
     private val piBranch = "main"
-    private var piUpdateStatus: TextView? = null
     @Volatile private var piUpdateBusy = false
 
     /** "Keep the Pi up to date": a switch + a "Check now" button. The switch
@@ -784,21 +784,14 @@ class MainActivity : Activity() {
             if (on) checkPiUpdate(auto = false)
         }
         box.addView(sw)
-        val status = TextView(this).apply {
-            setTextColor(text2); textSize = 13f; setPadding(0, px(4), 0, px(4)); visibility = View.GONE
-        }
-        piUpdateStatus = status
-        box.addView(status)
-        box.addView(Button(this).apply {
-            text = "Check for Pi updates now"
-            setOnClickListener { checkPiUpdate(auto = false) }
+        box.addView(pillButton("Check now", false) { checkPiUpdate(auto = false) }.apply {
+            (layoutParams as LinearLayout.LayoutParams).marginStart = 0
+            (layoutParams as LinearLayout.LayoutParams).topMargin = px(8)
         })
         return box
     }
 
-    private fun piUpdateSay(msg: String) {
-        piUpdateStatus?.let { it.text = msg; it.visibility = View.VISIBLE }
-    }
+    private fun piUpdateSay(msg: String) = say(msg)
 
     /** "1.0.89" > "1.0.9"? Numeric, component by component. */
     private fun verNewer(a: String, b: String): Boolean {
@@ -893,7 +886,7 @@ class MainActivity : Activity() {
                 val linkOk = svc != null && piVer.isNotEmpty() && !verNewer("1.0.90", piVer)
                 if (linkOk && svc != null) {
                     piUpdateSay("Sending v$latest to the Pi over the link…")
-                    svc.pushPiUpdate(zip, latest, { msg -> piUpdateSay(msg) }) { ok, msg ->
+                    svc.pushPiUpdate(zip, latest, { }) { ok, msg ->     // per-chunk progress dropped (would spam toasts)
                         if (msg == "nolink") installPiUpdateOverWifi(zip, latest)
                         else {
                             piUpdateBusy = false
@@ -972,14 +965,6 @@ class MainActivity : Activity() {
         })
         c.addView(wifiParkedBlock())
         c.addView(piUpdateBlock())
-        note = TextView(this).apply {
-            setTextColor(text1); textSize = 14f; visibility = View.GONE
-            background = round(0xFF1F2A3D.toInt(), 10f)
-            setPadding(px(12), px(10), px(12), px(10))
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = px(12) }
-        }
-        c.addView(note)
         return c
     }
 
@@ -1126,7 +1111,9 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun say(msg: String) { note.text = msg; note.visibility = View.VISIBLE }
+    private fun say(msg: String) {
+        Toast.makeText(this, msg, if (msg.length > 60) Toast.LENGTH_LONG else Toast.LENGTH_SHORT).show()
+    }
 
     /** Ask for a permission; if Android won't ask again, open the app's settings. */
     private fun askOrSettings(perm: String) {
@@ -1203,7 +1190,9 @@ class MainActivity : Activity() {
     private fun pillButton(label: String, primary: Boolean, click: () -> Unit) = Button(this).apply {
         text = label; isAllCaps = false; textSize = 14f; typeface = Typeface.DEFAULT_BOLD
         setTextColor(if (primary) Color.WHITE else text1)
-        background = round(if (primary) accent else line, 20f)
+        // A rounded fill with a press ripple, so taps give feedback.
+        val shape = round(if (primary) accent else line, 20f)
+        background = RippleDrawable(ColorStateList.valueOf(0x55FFFFFF), shape, shape)
         minWidth = px(84); minimumWidth = px(84)
         setPadding(px(16), 0, px(16), 0)
         stateListAnimator = null
