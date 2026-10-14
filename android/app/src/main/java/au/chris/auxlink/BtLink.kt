@@ -23,8 +23,8 @@ import java.util.UUID
  * a device without the Pi nearby isn't searched constantly.
  */
 @SuppressLint("MissingPermission")   // every call checks permitted() first
-class BtLink(private val context: Context, private val onLine: ((String) -> Unit)? = null,
-             private val serviceUuid: UUID = APP_UUID) {
+class BtLink(private val context: Context, private val serviceUuid: UUID = APP_UUID,
+             private val onLine: ((String) -> Unit)? = null) {
     companion object {
         val APP_UUID: UUID = UUID.fromString("7e5b1a20-3c4d-4f8e-9a6b-74657362726b")
         /** The Pi's notification-forwarder serial service (phone -> Pi). */

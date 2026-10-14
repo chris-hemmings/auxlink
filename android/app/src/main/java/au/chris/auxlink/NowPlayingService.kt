@@ -538,7 +538,7 @@ class NowPlayingService : NotificationListenerService() {
     fun setForwardNotifs(on: Boolean) {
         forwardNotifs = on
         try { getSharedPreferences("auxlink", MODE_PRIVATE).edit().putBoolean("notif_forward", on).apply() } catch (e: Exception) {}
-        if (on && notifLink == null) notifLink = BtLink(this, null, BtLink.NOTIF_UUID)
+        if (on && notifLink == null) notifLink = BtLink(this, BtLink.NOTIF_UUID)
         else if (!on) { notifLink?.close(); notifLink = null }
     }
 
