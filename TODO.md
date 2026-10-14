@@ -67,7 +67,7 @@ notifications, so a forwarder runs *on the phone*: the AuxLink app in
 dedicated Bluetooth serial service (`NOTIF_UUID`), which relays them to the
 music device's app as `{"notif": {...}}`.
 
-**Stage 1 (done, v1.0.114):**
+**Stage 1 (done, v1.0.114; channel fix v1.0.115):**
 - Pi: `NotifLink` RFCOMM/Profile1 service (`NOTIF_UUID`), always registered;
   accepts the phone only; relays `{"notif"}` lines to the SMO app (`app_send`).
 - App forwarder: `setForwardNotifs()` + `onNotificationPosted()` captures
@@ -77,6 +77,10 @@ music device's app as `{"notif": {...}}`.
   PHONE only). Default off.
 - App receiver (head unit): `{"notif"}` -> `showNotif()` pop-down (reuses
   `TextPopup`), tap -> `showNotifDetail()` expands to the full big-text.
+- BlueZ did not publish an SDP RFCOMM record for the custom UUID (sdptool
+  found nothing; phone "socket failure", no bluetoothd log). Fixed by pinning
+  `NOTIF_CHANNEL=22` / `APP_CHANNEL=23` on the Pi and having `BtLink` connect
+  straight to that channel (bypass SDP).
 
 **Stage 2 (todo):** a Notifications list tab (scrollback); per-app allow/mute
 filter; the small app icon; "forwarder-only" mode so the phone app doesn't also
