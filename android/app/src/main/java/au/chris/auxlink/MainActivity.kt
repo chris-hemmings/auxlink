@@ -380,19 +380,14 @@ class MainActivity : Activity() {
             }
         }
 
-        // Wi-Fi and Pi controls, moved here from Tools.
+        // Wi-Fi + Pi controls. One button forces the setup hotspot on no matter
+        // what (disconnecting any current network); it switches off by itself
+        // after 15 min. Power saving (Wi-Fi off when the car disconnects) is a
+        // Pi setting on the setup page.
         val setupOn = st.optString("wifi") == "setup"
-        piRows.addView(piButtonRow("Setup Wi-Fi", if (setupOn) "Turn off" else "Turn on", !setupOn) {
-            if (setupOn) send("wifi-off", "Turning the setup Wi-Fi off.")
-            else send("wifi-on", "Turning the setup Wi-Fi on — join \"AuxLink-setup\" to open the " +
-                "settings page (it switches off by itself after 15 min).")
-        })
-        piRows.addView(piButtonRow("Known networks", "Search", false) {
-            send("wifi-known", "Searching for a saved Wi-Fi network, and turning the setup Wi-Fi off if it joins one…")
-        })
-        piRows.addView(piButtonRow("Setup hotspot", "Force on", false) {
-            send("wifi-setup", "Disconnecting from the current network and turning the setup Wi-Fi on — " +
-                "join \"AuxLink-setup\".")
+        piRows.addView(piButtonRow("Setup Wi-Fi", "Turn on", !setupOn) {
+            send("wifi-setup", "Disconnecting from any current network and turning the setup Wi-Fi on — " +
+                "join \"AuxLink-setup\" to open the settings page.")
         })
         piRows.addView(piButtonRow("Settings page", "Open", false) { openSetup() })
         piRows.addView(piButtonRow("Restart the Pi", "Restart", false) {

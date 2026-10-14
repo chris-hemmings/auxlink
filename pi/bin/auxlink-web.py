@@ -39,7 +39,7 @@ EDITABLE = {
     "PHONE_ENABLED": r"[01]", "AUTO_PAIRABLE": r"[01]",   # PAUSE_FOR_CALLS hardcoded on
     "CONTACTS_SYNC": r"[01]", "CALL_RESUME_DELAY": r"\d{1,2}(\.\d)?", "CALL_SETTLE": r"\d{1,2}",
     "SETUP_WIFI_SSID": r"[\w\-]{1,32}", "SETUP_WIFI_PASS": r"[^\s'\"]{8,63}",
-    "SETUP_WIFI_MINUTES": r"\d{1,3}", "WEB_PASSWORD": r"[^\s'\"]{0,63}", "WIFI_OFF_WHEN_IDLE": r"[01]",
+    "SETUP_WIFI_MINUTES": r"\d{1,3}", "WEB_PASSWORD": r"[^\s'\"]{0,63}", "WIFI_OFF_ON_CAR_DISCONNECT": r"[01]",
     "SETUP_BUTTON_GPIO": r"\d{0,2}", "SOURCE_NAME": r"[\w .\-]{1,30}",
     # Car behaviour (defaults tuned on a Tesla; other cars may want others)
     "CAR_CALLS": r"[01]", "CAR_MIC_MODE": r"call|vr", "SBC_XQ": r"[01]", "WAIT_FOR_AUDIO": r"[01]", "SMO_VOLUME_MAX": r"[01]", "DEV_TERMINAL": r"[01]", "MESSAGES": r"[01]", "SMO_NOTIFY": r"[01]", "CAR_OFF_DROPS_PHONE": r"[01]", "CAR_OFF_PHONE_DELAY": r"\d{1,4}", "CAR_OFF_REQUIRE_STILL": r"[01]", "PAUSE_ON_CAR_OFF": r"[01]", "PHONE_MEDIA_PRIORITY": r"[01]", "PHONE_MEDIA_DEBOUNCE": r"\d{1,2}",
@@ -1164,11 +1164,6 @@ def ap_loop():
                 time.sleep(1)       # a scan is dropping/using the radio; don't touch it
                 continue
             now = time.monotonic()
-            # A manual "Wi-Fi off" from the app holds the radio off until the
-            # car connects (so it can still join a home network on arrival) or
-            # Wi-Fi is turned back on.
-            if STATE.get("manual_wifi_off") and car_connected():
-                STATE["manual_wifi_off"] = False
             minutes = int(c.get("SETUP_WIFI_MINUTES", "10") or 0)
             unconfigured = not c.get("CAR")
             in_use = STATE["ap"] and now - STATE["last_hit"] < 300
@@ -1179,27 +1174,23 @@ def ap_loop():
                 STATE["boot_window_done"] = True
             if STATE.get("boot_window_done") and not unconfigured and now >= STATE["button_until"] and not in_use:
                 want = False
-            # Optional power saving: turn the Wi-Fi radio off when nothing needs
-            # it - no setup window, the car isn't connected, and not joined to a
-            # home network. Bluetooth is a separate radio, so the car and phone
-            # are unaffected. While the car is connected the radio stays on so it
-            # joins a home network on arrival; after the car drops it stays on
-            # only if it's already on one, else it turns off.
-            manual_off = STATE.get("manual_wifi_off") and not want
-            idle_off = c.get("WIFI_OFF_WHEN_IDLE", "0") == "1" and not want \
-                and uptime() > 45 and not car_connected() and not wifi_client_connected()
-            if manual_off or idle_off:
+            # Optional power saving: turn the Wi-Fi radio off when the car is
+            # disconnected (parked), unless the setup window wants it. It comes
+            # back on while the car is connected - so it joins a home network on
+            # arrival - and during the boot / setup window. Bluetooth is a
+            # separate radio, so the car and phone are unaffected.
+            if c.get("WIFI_OFF_ON_CAR_DISCONNECT", "0") == "1" and not want \
+                    and uptime() > 45 and not car_connected():
                 if not STATE.get("wifi_radio_off"):
                     sh("nmcli", "radio", "wifi", "off")
                     STATE["wifi_radio_off"] = True
-                    auxconf.event("Wi-Fi off (from the app)" if manual_off
-                                  else "Wi-Fi radio off (not needed; saving power)")
+                    auxconf.event("Wi-Fi off (car disconnected)")
                 time.sleep(5)
                 continue
             if STATE.get("wifi_radio_off"):
                 sh("nmcli", "radio", "wifi", "on")
                 STATE["wifi_radio_off"] = False
-                auxconf.event("Wi-Fi radio on")
+                auxconf.event("Wi-Fi on")
             if uptime() > 25:
                 ensure_wlan()
             # Give a normal Wi-Fi network 30 s after boot to connect first,
