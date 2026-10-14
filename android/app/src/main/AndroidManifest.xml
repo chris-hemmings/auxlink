@@ -44,6 +44,15 @@
         tools:ignore="ProtectedPermissions" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
+    <!-- So Tools → Apps to forward can list launchable apps (Wear-style)
+         before any notification has been seen. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
     <application
         android:label="Phone Link"
         android:icon="@mipmap/ic_launcher"

@@ -986,7 +986,9 @@ class MainActivity : Activity() {
         })
         box.addView(TextView(this).apply {
             text = "Turn this ON only on your PHONE (with the AuxLink app and Notification access): every " +
-                "notification is sent to the car's Alerts tab and as a pop-up. Leave it OFF on the head unit."
+                "notification is sent to the car's Alerts tab and as a pop-up. Leave it OFF on the head unit. " +
+                "Use Apps to forward (like Wear) to pick apps before any notification arrives — turn Messages " +
+                "off there; SMS already comes through the Pi to the Tesla."
             setTextColor(text2); textSize = 13f; setPadding(0, px(2), 0, px(6))
         })
         box.addView(android.widget.Switch(this).apply {
@@ -1032,37 +1034,83 @@ class MainActivity : Activity() {
                 NowPlayingService.instance?.let { say(it.notifDiag()) }
                     ?: say("Phone Link isn't running (grant Notification access).")
             })
-            addView(pillButton("Muted apps", false) { muteAppsDialog() })
+            addView(pillButton("Apps to forward", false) { appsToForwardDialog() })
         })
         return box
     }
 
-    /** Pick which apps the phone forwarder should mute (not send to the car). */
-    private fun muteAppsDialog() {
-        val svc = NowPlayingService.instance
-        val seen = svc?.seenNotifApps().orEmpty()
-        if (seen.isEmpty()) {
-            say("No apps seen yet. Leave forwarding on for a bit, then open this again.")
-            return
-        }
-        val muted = (svc?.mutedNotifPackages() ?: emptySet()).toMutableSet()
-        val labels = seen.map { it.second + "\n" + it.first }.toTypedArray()
-        val checked = seen.map { it.first in muted }.toBooleanArray()
-        android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle("Mute apps (won't forward)")
-            .setMultiChoiceItems(labels, checked) { _, which, isChecked ->
-                val pkg = seen[which].first
-                if (isChecked) muted.add(pkg) else muted.remove(pkg)
+    /**
+     * Wear-style picker: every launchable app on this phone, with a switch to
+     * forward its notifications (off = muted). Available before any
+     * notification has been seen — mute Messages here so SMS isn't doubled.
+     */
+    private fun appsToForwardDialog() {
+        say("Loading apps…")
+        val prefs = getSharedPreferences("auxlink", MODE_PRIVATE)
+        Thread {
+            val apps = NowPlayingService.forwardableApps(this)
+            main.post {
+                if (apps.isEmpty()) {
+                    say("Couldn't list apps on this phone.")
+                    return@post
+                }
+                val muted = (NowPlayingService.instance?.mutedNotifPackages()
+                    ?: prefs.getStringSet("notif_muted_pkgs", emptySet()) ?: emptySet()).toMutableSet()
+                val rows = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(px(8), px(4), px(8), px(4))
+                }
+                for (app in apps) {
+                    val sw = android.widget.Switch(this).apply {
+                        isChecked = app.pkg !in muted
+                        setOnCheckedChangeListener { _, on ->
+                            if (on) muted.remove(app.pkg) else muted.add(app.pkg)
+                        }
+                    }
+                    val icon = android.widget.ImageView(this).apply {
+                        layoutParams = LinearLayout.LayoutParams(px(36), px(36)).apply { marginEnd = px(12) }
+                        scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+                        if (app.icon != null) setImageDrawable(app.icon)
+                        else setImageResource(android.R.drawable.sym_def_app_icon)
+                    }
+                    val label = TextView(this).apply {
+                        text = app.label
+                        setTextColor(text1)
+                        textSize = 15f
+                        maxLines = 1
+                        ellipsize = TextUtils.TruncateAt.END
+                    }
+                    rows.addView(LinearLayout(this).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                        setPadding(px(8), px(8), px(8), px(8))
+                        addView(icon)
+                        addView(label, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                        addView(sw)
+                    })
+                }
+                val scroll = ScrollView(this).apply {
+                    addView(rows)
+                    layoutParams = ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        (resources.displayMetrics.heightPixels * 0.55f).toInt()
+                    )
+                }
+                android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                    .setTitle("Apps to forward")
+                    .setMessage("Off = won't mirror. Turn Messages off — SMS already comes via the Pi to the Tesla.")
+                    .setView(scroll)
+                    .setPositiveButton("Save") { _, _ ->
+                        val svc = NowPlayingService.instance
+                        if (svc != null) svc.setMutedNotifPackages(muted)
+                        else prefs.edit().putStringSet("notif_muted_pkgs", muted.toSet()).apply()
+                        say(if (muted.isEmpty()) "All apps will be forwarded."
+                            else "Forwarding all except ${muted.size} muted app${if (muted.size == 1) "" else "s"}.")
+                    }
+                    .setNegativeButton("Cancel", null)
+                    .show()
             }
-            .setPositiveButton("Save") { _, _ ->
-                if (svc != null) svc.setMutedNotifPackages(muted)
-                else getSharedPreferences("auxlink", MODE_PRIVATE)
-                    .edit().putStringSet("notif_muted_pkgs", muted).apply()
-                say(if (muted.isEmpty()) "All apps will be forwarded."
-                    else "Muted ${muted.size} app${if (muted.size == 1) "" else "s"}.")
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
+        }.start()
     }
 
     private fun detailsCard(): View {
