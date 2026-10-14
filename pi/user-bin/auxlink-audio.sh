@@ -337,6 +337,29 @@ while true; do
         *) echo "Not streaming: $WHY" ;; esac
       WAITING_SAID=$WHY
     fi
+    # Phone media plays straight to the car (WirePlumber), not our loopback, so
+    # our usual mono-heal doesn't run. Watch the car's right channel and, if it
+    # drops (the car's suspend/resume mono quirk), nudge the sink so WirePlumber
+    # re-links it in stereo.
+    if [ "$WHY" = "phone media" ] && [ -n "$SINK" ]; then
+      now=$(date +%s)
+      if [ "$now" -ge "${PH_STEREO_AT:-0}" ]; then
+        if stereo_ok "$SINK"; then
+          PH_BAD=0; PH_STEREO_AT=$((now + 4))
+        else
+          PH_BAD=$(( ${PH_BAD:-0} + 1 ))
+          if [ "$PH_BAD" -ge 2 ]; then
+            echo "Phone media: right channel silent at the car; nudging the stream"
+            timeout 5 pactl suspend-sink "$SINK" 1; sleep 0.5; timeout 5 pactl suspend-sink "$SINK" 0
+            PH_BAD=0; PH_STEREO_AT=$((now + 10))
+          else
+            PH_STEREO_AT=$((now + 2))     # confirm quickly
+          fi
+        fi
+      fi
+    else
+      PH_BAD=0
+    fi
     sleep 0.5; continue
   fi
   WAITING_SAID=""
