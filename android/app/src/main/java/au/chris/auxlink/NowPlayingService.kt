@@ -9,6 +9,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -79,6 +80,31 @@ class NowPlayingService : NotificationListenerService() {
          *  time. While it's set and the app is in front, the floating call bar
          *  and notification stay hidden - the call shows in the app instead. */
         @Volatile var callUi: ((String, String, Long) -> Unit)? = null
+
+        data class ForwardApp(val pkg: String, val label: String, val icon: Drawable?)
+
+        /**
+         * Launchable apps on this phone (Wear-style list for “which apps to
+         * forward”), before any notification has been seen. Safe to call off
+         * the main thread.
+         */
+        fun forwardableApps(ctx: Context): List<ForwardApp> {
+            val pm = ctx.packageManager
+            val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+            val found = try {
+                if (Build.VERSION.SDK_INT >= 33)
+                    pm.queryIntentActivities(intent, PackageManager.ResolveInfoFlags.of(0))
+                else
+                    @Suppress("DEPRECATION") pm.queryIntentActivities(intent, 0)
+            } catch (_: Exception) { emptyList() }
+            return found.mapNotNull { ri ->
+                val pkg = ri.activityInfo?.packageName ?: return@mapNotNull null
+                if (pkg == ctx.packageName) return@mapNotNull null
+                val label = try { ri.loadLabel(pm).toString() } catch (_: Exception) { pkg }
+                val icon = try { ri.loadIcon(pm) } catch (_: Exception) { null }
+                ForwardApp(pkg, label, icon)
+            }.distinctBy { it.pkg }.sortedBy { it.label.lowercase() }
+        }
     }
 
     /** Send a command to the Pi ({"cmd": name}) over the open link, right
@@ -599,7 +625,7 @@ class NowPlayingService : NotificationListenerService() {
         try { prefs().edit().putStringSet("notif_muted_pkgs", pkgs.toSet()).apply() } catch (_: Exception) {}
     }
 
-    /** Apps the forwarder has seen: list of (package, label), newest first. */
+    /** Apps the forwarder has seen posting a notification (kept for diagnostics). */
     fun seenNotifApps(): List<Pair<String, String>> {
         val raw = try { prefs().getStringSet("notif_seen_apps", emptySet()) ?: emptySet() }
         catch (_: Exception) { emptySet() }
