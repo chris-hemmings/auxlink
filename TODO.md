@@ -84,8 +84,8 @@ music device's app as `{"notif": {...}}`.
   straight to that channel (bypass SDP).
 
 **Stage 2 (todo):** a Notifications list tab (scrollback); per-app allow/mute
-filter; the small app icon; "forwarder-only" mode so the phone app doesn't also
-try to be the music device; de-dupe repeated notifications.
+filter; "forwarder-only" mode so the phone app doesn't also try to be the
+music device; de-dupe repeated notifications.
 
 **Stage 3 (todo):** reply/actions (reply to a Teams/WhatsApp message, mark read)
 - doable since the forwarder app is on the phone and holds the Notification
