@@ -998,9 +998,12 @@ class MainActivity : Activity() {
             addView(pillButton("Test send", false) {
                 val svc = NowPlayingService.instance
                 if (svc == null) say("Open the app and grant Notification access first.")
-                else svc.testNotifForward { ok ->
-                    say(if (ok) "Test sent to the Pi — look at the car screen."
-                        else "Couldn't reach the Pi over Bluetooth.\n${svc.notifDiag()}")
+                else {
+                    say("Testing… (connecting to the Pi over Bluetooth)")
+                    svc.testNotifForward { ok ->
+                        say(if (ok) "Test sent to the Pi — look at the car screen."
+                            else "Couldn't reach the Pi over Bluetooth.\n${svc.notifDiag()}")
+                    }
                 }
             })
             addView(pillButton("Status", false) {

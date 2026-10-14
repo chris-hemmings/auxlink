@@ -151,6 +151,9 @@ class NowPlayingService : NotificationListenerService() {
     private var lastLine = ""
     // Sends run here, in order, off the main thread (an image takes ~1.5 s).
     private val io = Executors.newSingleThreadExecutor()
+    // The notification forwarder gets its own thread: on the phone the music
+    // link (io) sits blocked on failed connects, which would starve it.
+    private val notifIo = Executors.newSingleThreadExecutor()
     private var artKey = ""          // what the cached image was made from
     private var artLine = ""         // {"art":...} line for the current artwork
     private var artSentId = ""
@@ -564,7 +567,7 @@ class NowPlayingService : NotificationListenerService() {
             .put("text", "If this shows on the car, forwarding works.").put("big", "")
             .put("pkg", packageName).put("when", System.currentTimeMillis())
         val line = JSONObject().put("notif", o).toString()
-        io.execute { val ok = notifLink?.send(line) ?: false; main.post { cb(ok) } }
+        notifIo.execute { val ok = notifLink?.send(line) ?: false; main.post { cb(ok) } }
     }
 
     private fun forwardNotification(sbn: android.service.notification.StatusBarNotification) {
@@ -588,7 +591,7 @@ class NowPlayingService : NotificationListenerService() {
         val o = JSONObject().put("app", app).put("title", title).put("text", text)
             .put("big", big).put("pkg", sbn.packageName).put("when", sbn.postTime)
         val line = JSONObject().put("notif", o).toString()
-        io.execute { notifLink?.send(line) }
+        notifIo.execute { notifLink?.send(line) }
     }
 
     /** Opens this conversation in the app's Messages tab. */
