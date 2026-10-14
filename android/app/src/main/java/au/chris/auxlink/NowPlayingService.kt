@@ -542,9 +542,29 @@ class NowPlayingService : NotificationListenerService() {
         else if (!on) { notifLink?.close(); notifLink = null }
     }
 
+    @Volatile private var notifCount = 0
+
     override fun onNotificationPosted(sbn: android.service.notification.StatusBarNotification) {
         if (!forwardNotifs) return
+        notifCount++
         try { forwardNotification(sbn) } catch (e: Exception) { Log.w(TAG, "forward: ${e.message}") }
+    }
+
+    /** A one-line status for the app's screen (so we can tell what's happening
+     *  without a logcat): is forwarding on, how many notifications were seen,
+     *  and what the last Bluetooth attempt did. */
+    fun notifDiag() = "forwarding=${if (forwardNotifs) "ON" else "off"}, seen=$notifCount, " +
+        "link=${notifLink?.lastResult ?: "(forwarder not started)"}"
+
+    /** Send a test notification straight to the Pi (forces a connection), and
+     *  report whether the Bluetooth write succeeded. */
+    fun testNotifForward(cb: (Boolean) -> Unit) {
+        if (notifLink == null) notifLink = BtLink(this, BtLink.NOTIF_UUID)
+        val o = JSONObject().put("app", "AuxLink").put("title", "Test notification")
+            .put("text", "If this shows on the car, forwarding works.").put("big", "")
+            .put("pkg", packageName).put("when", System.currentTimeMillis())
+        val line = JSONObject().put("notif", o).toString()
+        io.execute { val ok = notifLink?.send(line) ?: false; main.post { cb(ok) } }
     }
 
     private fun forwardNotification(sbn: android.service.notification.StatusBarNotification) {

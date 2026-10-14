@@ -39,6 +39,8 @@ class BtLink(private val context: Context, private val serviceUuid: UUID = APP_U
     private var out: OutputStream? = null
     private var nextTry = 0L
     private var lastGood: String? = null
+    /** This instance's last attempt (not shared like the companion lastTry). */
+    @Volatile var lastResult: String = "(not tried yet)"
     var deviceName: String = ""
         private set
 
@@ -91,7 +93,7 @@ class BtLink(private val context: Context, private val serviceUuid: UUID = APP_U
         nextTry = SystemClock.elapsedRealtime() + RETRY_MS
         val tried = mutableListOf<String>()
         val list = candidates()
-        if (list.isEmpty()) lastTry = "no paired devices (or Bluetooth off)"
+        if (list.isEmpty()) { lastTry = "no paired devices (or Bluetooth off)"; lastResult = lastTry }
         for (dev in list) {
             try {
                 val s = dev.createRfcommSocketToServiceRecord(serviceUuid)
@@ -114,13 +116,13 @@ class BtLink(private val context: Context, private val serviceUuid: UUID = APP_U
                 }
                 deviceName = dev.name ?: dev.address
                 lastGood = dev.address
-                lastTry = "connected to $deviceName"
+                lastTry = "connected to $deviceName"; lastResult = lastTry
                 Log.i(TAG, "Connected to $deviceName over Bluetooth")
                 return true
             } catch (e: Exception) {
                 Log.i(TAG, "${dev.name}: ${e.message}")
                 tried += "${dev.name ?: dev.address}: ${e.message}"
-                lastTry = tried.joinToString("\n")
+                lastTry = tried.joinToString("\n"); lastResult = lastTry
             }
         }
         return false

@@ -993,6 +993,21 @@ class MainActivity : Activity() {
                     else "Forwarding off.")
             }
         })
+        box.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; setPadding(0, px(6), 0, 0)
+            addView(pillButton("Test send", false) {
+                val svc = NowPlayingService.instance
+                if (svc == null) say("Open the app and grant Notification access first.")
+                else svc.testNotifForward { ok ->
+                    say(if (ok) "Test sent to the Pi — look at the car screen."
+                        else "Couldn't reach the Pi over Bluetooth.\n${svc.notifDiag()}")
+                }
+            })
+            addView(pillButton("Status", false) {
+                NowPlayingService.instance?.let { say(it.notifDiag()) }
+                    ?: say("Phone Link isn't running (grant Notification access).")
+            })
+        })
         return box
     }
 
