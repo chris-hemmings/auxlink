@@ -2240,6 +2240,11 @@ def app_command(player, cmd):
         r = web_api("wifi/known")
         if r.get("error"):
             log("wifi-known: " + r["error"])
+    elif cmd == "wifi-setup":
+        log("App: force the setup Wi-Fi on")
+        r = web_api("wifi/setup-force")
+        if r.get("error"):
+            log("wifi-setup: " + r["error"])
     elif cmd in ("source-auto", "source-smo", "source-phone"):
         global SOURCE_OVERRIDE
         SOURCE_OVERRIDE = cmd.split("-", 1)[1]

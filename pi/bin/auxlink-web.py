@@ -776,6 +776,21 @@ def act_wifi_radio_off(body):
     return {"ok": True}
 
 
+def act_wifi_setup_force(body):
+    """App 'Setup hotspot now': disconnect any home Wi-Fi and bring the setup
+    hotspot up, even when on a home network (one radio can't do both at once)."""
+    STATE["manual_wifi_off"] = False
+    STATE.pop("force_off", None)
+    sh("nmcli", "radio", "wifi", "on")
+    STATE["wifi_radio_off"] = False
+    sh("nmcli", "device", "disconnect", "wlan0", timeout=20)   # free the radio from a home network
+    STATE["button_until"] = time.monotonic() + 15 * 60
+    STATE["boot_window_done"] = False
+    STATE["ap"] = ap_up(auxconf.load())
+    auxconf.event("Setup Wi-Fi forced on from the app (home Wi-Fi disconnected)")
+    return {"ok": True, "ap": STATE["ap"]}
+
+
 def act_wifi_known(body):
     """App 'Search known networks': turn the radio on and try to join a saved
     home network now, without bringing up the setup hotspot."""
@@ -952,7 +967,7 @@ ACTIONS = {"pair": act_pair, "pair/cancel": act_pair_cancel, "forget": act_forge
            "term/resize": act_term_resize, "term/close": act_term_close,
            "restart": act_restart, "wifi/off": act_wifi_off,
            "wifi/on": act_wifi_on, "wifi/radio-off": act_wifi_radio_off,
-           "wifi/known": act_wifi_known,
+           "wifi/known": act_wifi_known, "wifi/setup-force": act_wifi_setup_force,
            "wifi/add": act_wifi_add, "wifi/remove": act_wifi_remove,
            "wifi/scan": act_wifi_scan, "wifi/connect": act_wifi_connect,
            "password": act_password, "ssh": act_ssh}

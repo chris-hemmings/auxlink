@@ -390,6 +390,10 @@ class MainActivity : Activity() {
         piRows.addView(piButtonRow("Known networks", "Search", false) {
             send("wifi-known", "Searching for a saved Wi-Fi network, and turning the setup Wi-Fi off if it joins one…")
         })
+        piRows.addView(piButtonRow("Setup hotspot", "Force on", false) {
+            send("wifi-setup", "Disconnecting from the current network and turning the setup Wi-Fi on — " +
+                "join \"AuxLink-setup\".")
+        })
         piRows.addView(piButtonRow("Settings page", "Open", false) { openSetup() })
         piRows.addView(piButtonRow("Restart the Pi", "Restart", false) {
             android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
