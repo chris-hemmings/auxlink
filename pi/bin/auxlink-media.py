@@ -1396,18 +1396,13 @@ def phone_media_monitor(bus, om, player):
                 return str(path), ifaces["org.bluez.MediaPlayer1"]
         return None, None
 
-    def transport_active():
-        for path, ifaces in om.GetManagedObjects().items():
-            t = ifaces.get("org.bluez.MediaTransport1")
-            if t and dev_part in str(path):
-                return str(t.get("State", "")) in ("active", "pending")
-        return False
-
     def raw_playing(props):
-        status = str(props.get("Status", "")) if props else ""
-        if status in ("paused", "stopped"):
-            return False            # the phone said pause: release at once
-        return transport_active() or status == "playing"
+        # Only a real media player that is actively PLAYING counts - never the
+        # A2DP transport merely being "active", which Android holds open for
+        # several seconds after even a short notification sound (that was
+        # falsely ducking the SMO). A notification doesn't set the player to
+        # "playing", so this ignores it.
+        return bool(props) and str(props.get("Status", "")) == "playing"
 
     def phone_info(props):
         track = (props.get("Track", {}) or {}) if props else {}
