@@ -59,6 +59,7 @@ CAR_ADAPTER = CONF.get("CAR_ADAPTER", "").upper()
 MUSIC_SOURCE = CONF.get("MUSIC_SOURCE", "wired")
 SOURCE = CONF.get("SOURCE", "").upper()
 PHONE_ADDR = CONF.get("PHONE", "").upper()  # the phone (Oppo); its media can take over
+PHONE_ADAPTER = CONF.get("PHONE_ADAPTER", "").upper()  # adapter the phone is paired with
 # Source arbitration. Modes (SOURCE_OVERRIDE, set from the app, saved to the
 # config so it survives a restart):
 #   media  - the SMO; the phone's music is muted but its notifications blend
@@ -2374,36 +2375,95 @@ class AppLink(dbus.service.Object):
         APP_LINK["sock"] = APP_LINK["watch"] = None
 
 
-class NotifLink(dbus.service.Object):
-    """Bluetooth serial service the AuxLink app connects to in forwarder mode
-    (on the phone) to mirror the phone's notifications. Each JSON line it sends
-    is relayed to the music device's app as {"notif": {...}}."""
+# Linux Bluetooth socket options (see <bluetooth/bluetooth.h>).
+_SOL_BLUETOOTH = 274
+_BT_SECURITY = 4
+_BT_SECURITY_LOW = 1
 
-    def __init__(self, bus, relay):
-        super().__init__(bus, NOTIF_PATH)
+
+class NotifLink:
+    """Raw RFCOMM listener for the phone's notification forwarder.
+
+    BlueZ ProfileManager often registers a custom 128-bit UUID without actually
+    listening on RFCOMM (no SDP channel either), so the phone's connect never
+    reaches us. Bind the channel ourselves on the phone adapter instead; the
+    app connects to NOTIF_CHANNEL directly and skips SDP.
+    """
+
+    def __init__(self, relay):
         self.relay = relay
+        self.server = None
+        self.server_watch = None
         self.sock = None
         self.watch = None
         self.buf = bytearray()
 
-    @dbus.service.method("org.bluez.Profile1", in_signature="", out_signature="")
-    def Release(self):
-        pass
+    def start(self):
+        adapter = PHONE_ADAPTER
+        if not adapter:
+            log("Notification forwarder: no PHONE_ADAPTER configured; not listening")
+            return False
+        try:
+            s = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            # Allow a bonded phone to open the channel without extra auth prompts.
+            try:
+                s.setsockopt(_SOL_BLUETOOTH, _BT_SECURITY,
+                             struct.pack("BB", _BT_SECURITY_LOW, 0))
+            except OSError:
+                pass
+            s.bind((adapter, NOTIF_CHANNEL))
+            s.listen(1)
+            s.setblocking(False)
+        except OSError as e:
+            log(f"Notification forwarder: cannot listen on {adapter} channel "
+                f"{NOTIF_CHANNEL}: {e}")
+            try:
+                s.close()
+            except Exception:
+                pass
+            return False
+        self.server = s
+        self.server_watch = GLib.io_add_watch(
+            s.fileno(), GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR, self.accept)
+        log(f"Notification forwarder listening on {adapter} RFCOMM channel "
+            f"{NOTIF_CHANNEL}")
+        return True
 
-    @dbus.service.method("org.bluez.Profile1", in_signature="oha{sv}", out_signature="")
-    def NewConnection(self, device, fd, props):
-        addr = str(device).rsplit("dev_", 1)[-1].replace("_", ":").upper()
-        sock = socket.socket(fileno=fd.take())
-        if PHONE_ADDR and addr != PHONE_ADDR:
+    def accept(self, fd, cond):
+        if self.server is None:
+            return False
+        if cond & (GLib.IO_HUP | GLib.IO_ERR) and not (cond & GLib.IO_IN):
+            log("Notification forwarder listener error; will not accept more")
+            return False
+        try:
+            client, info = self.server.accept()
+        except BlockingIOError:
+            return True
+        except OSError as e:
+            log(f"Notification forwarder accept failed: {e}")
+            return True
+        addr = (info[0] if info else "").upper()
+        if PHONE_ADDR and addr and addr != PHONE_ADDR:
             log(f"Notification forwarder link from {addr} refused (not the phone)")
-            sock.close()
-            return
-        self.drop()
-        sock.setblocking(False)
-        self.sock = sock
+            try:
+                client.close()
+            except OSError:
+                pass
+            return True
+        self.drop_client()
+        try:
+            client.setsockopt(_SOL_BLUETOOTH, _BT_SECURITY,
+                              struct.pack("BB", _BT_SECURITY_LOW, 0))
+        except OSError:
+            pass
+        client.setblocking(False)
+        self.sock = client
         self.buf = bytearray()
-        self.watch = GLib.io_add_watch(sock.fileno(), GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR, self.event)
-        log(f"Notification forwarder connected ({addr})")
+        self.watch = GLib.io_add_watch(
+            client.fileno(), GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR, self.event)
+        log(f"Notification forwarder connected ({addr or 'unknown'})")
+        return True
 
     def event(self, fd, cond):
         data = b""
@@ -2415,7 +2475,7 @@ class NotifLink(dbus.service.Object):
             except OSError:
                 data = b""
         if not data:
-            self.drop()
+            self.drop_client()
             log("Notification forwarder disconnected")
             return False
         self.buf += data
@@ -2433,11 +2493,7 @@ class NotifLink(dbus.service.Object):
                 self.relay({"notif": info["notif"]})
         return True
 
-    @dbus.service.method("org.bluez.Profile1", in_signature="o", out_signature="")
-    def RequestDisconnection(self, device):
-        self.drop()
-
-    def drop(self):
+    def drop_client(self):
         if self.watch:
             GLib.source_remove(self.watch)
         if self.sock is not None:
@@ -2673,23 +2729,11 @@ def main():
 
     phone_media_monitor(bus, om, player)   # SMO <-> phone source arbitration
 
-    # Notification forwarder service (the phone's AuxLink app connects here to
-    # mirror its notifications). Always on, regardless of the music source.
-    # Pin a fixed RFCOMM channel so BlueZ actually listens and publishes SDP;
-    # auth is relaxed so a bonded phone can open the channel directly.
-    notif_link = NotifLink(bus, app_send)
-    try:
-        dbus.Interface(bus.get_object(BLUEZ, "/org/bluez"), "org.bluez.ProfileManager1") \
-            .RegisterProfile(NOTIF_PATH, NOTIF_UUID, dbus.Dictionary({
-                "Name": "auxlink notifications",
-                "Role": "server",
-                "Channel": dbus.UInt16(NOTIF_CHANNEL),
-                "RequireAuthentication": dbus.Boolean(False),
-                "RequireAuthorization": dbus.Boolean(False),
-            }, signature="sv"))
-        log(f"Notification forwarder service registered (RFCOMM channel {NOTIF_CHANNEL})")
-    except dbus.DBusException as e:
-        log(f"Cannot register the notification service: {e.get_dbus_message()}")
+    # Notification forwarder: listen ourselves on the phone adapter's RFCOMM
+    # channel. BlueZ ProfileManager does not reliably publish/listen for this
+    # custom UUID, so the app connects to NOTIF_CHANNEL directly.
+    notif_link = NotifLink(app_send)
+    notif_link.start()
 
     if MUSIC_SOURCE == "bluetooth":
         setup_bt_source(bus, om, player)

@@ -77,10 +77,11 @@ music device's app as `{"notif": {...}}`.
   PHONE only). Default off.
 - App receiver (head unit): `{"notif"}` -> `showNotif()` pop-down (reuses
   `TextPopup`), tap -> `showNotifDetail()` expands to the full big-text.
-- BlueZ did not publish an SDP RFCOMM record for the custom UUID (sdptool
-  found nothing; phone "socket failure", no bluetoothd log). Fixed by pinning
-  `NOTIF_CHANNEL=22` / `APP_CHANNEL=23` on the Pi and having `BtLink` connect
-  straight to that channel (bypass SDP).
+- BlueZ ProfileManager did not publish/listen for the custom UUID (sdptool
+  found nothing; phone "socket failure", no bluetoothd log). The Pi now opens
+  a raw RFCOMM listener on `PHONE_ADAPTER` channel 22; `BtLink` connects to
+  that channel directly (insecure first). App "Test send" also bypasses the
+  20 s retry backoff.
 
 **Stage 2 (todo):** a Notifications list tab (scrollback); per-app allow/mute
 filter; the small app icon; "forwarder-only" mode so the phone app doesn't also

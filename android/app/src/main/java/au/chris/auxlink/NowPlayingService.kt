@@ -563,6 +563,8 @@ class NowPlayingService : NotificationListenerService() {
      *  report whether the Bluetooth write succeeded. */
     fun testNotifForward(cb: (Boolean) -> Unit) {
         if (notifLink == null) notifLink = BtLink(this, BtLink.NOTIF_UUID)
+        // Don't sit behind the 20 s backoff — the button means try now.
+        notifLink?.retryNow()
         val o = JSONObject().put("app", "AuxLink").put("title", "Test notification")
             .put("text", "If this shows on the car, forwarding works.").put("big", "")
             .put("pkg", packageName).put("when", System.currentTimeMillis())

@@ -23,8 +23,8 @@ import java.util.UUID
  * a device without the Pi nearby isn't searched constantly.
  *
  * Also used by the notification forwarder ([NOTIF_UUID]) on the phone.
- * Both services listen on fixed RFCOMM channels on the Pi; we prefer those
- * so a missing/broken SDP record cannot block the connect.
+ * The Pi listens on a fixed RFCOMM channel; we connect to that channel
+ * directly and skip SDP (BlueZ often fails to advertise custom UUIDs).
  */
 @SuppressLint("MissingPermission")   // every call checks permitted() first
 class BtLink(private val context: Context, private val serviceUuid: UUID = APP_UUID,
@@ -101,28 +101,33 @@ class BtLink(private val context: Context, private val serviceUuid: UUID = APP_U
     }
 
     /**
-     * Open an RFCOMM socket. Prefer the Pi's fixed channel (no SDP) — BlueZ
-     * often registers custom UUID profiles without a usable SDP record, which
-     * makes [BluetoothDevice.createRfcommSocketToServiceRecord] fail before
-     * anything reaches the Pi. Fall back to UUID discovery, then the insecure
-     * fixed-channel API, for older stacks.
+     * Open an RFCOMM socket on the Pi's fixed channel (no SDP). Try insecure
+     * first — several phone stacks (incl. ColorOS) accept that more readily
+     * for a custom channel — then secure, then UUID SDP as a last resort.
      */
     private fun openSocket(dev: BluetoothDevice): BluetoothSocket {
+        val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
+        try { adapter?.cancelDiscovery() } catch (_: Exception) {}
+
         val channel = channelFor(serviceUuid)
         val errors = mutableListOf<String>()
         if (channel != null) {
-            try {
-                return fixedChannelSocket(dev, channel, insecure = false).also { it.connect() }
-            } catch (e: Exception) {
-                errors += "ch$channel: ${e.message}"
-                Log.i(TAG, "${dev.name}: fixed channel $channel failed: ${e.message}")
+            for (insecure in listOf(true, false)) {
+                val label = if (insecure) "ch$channel/insec" else "ch$channel"
+                try {
+                    val s = fixedChannelSocket(dev, channel, insecure)
+                    s.connect()
+                    return s
+                } catch (e: Exception) {
+                    errors += "$label: ${e.message}"
+                    Log.i(TAG, "${dev.name}: $label failed: ${e.message}")
+                }
             }
-            try {
-                return fixedChannelSocket(dev, channel, insecure = true).also { it.connect() }
-            } catch (e: Exception) {
-                errors += "ch$channel/insec: ${e.message}"
-                Log.i(TAG, "${dev.name}: insecure channel $channel failed: ${e.message}")
-            }
+        }
+        try {
+            return dev.createInsecureRfcommSocketToServiceRecord(serviceUuid).also { it.connect() }
+        } catch (e: Exception) {
+            errors += "uuid/insec: ${e.message}"
         }
         try {
             return dev.createRfcommSocketToServiceRecord(serviceUuid).also { it.connect() }
@@ -142,7 +147,17 @@ class BtLink(private val context: Context, private val serviceUuid: UUID = APP_U
 
     @Synchronized
     fun open(): Boolean {
-        if (!permitted() || SystemClock.elapsedRealtime() < nextTry) return false
+        if (!permitted()) {
+            lastResult = "no Bluetooth permission"; lastTry = lastResult
+            return false
+        }
+        if (SystemClock.elapsedRealtime() < nextTry) {
+            val wait = ((nextTry - SystemClock.elapsedRealtime()) / 1000).toInt()
+            // Keep the previous error visible; note we're backing off.
+            if (!lastResult.contains("retry in"))
+                lastResult = "${lastResult.ifBlank { "(not tried yet)" }} (retry in ${wait}s)"
+            return false
+        }
         nextTry = SystemClock.elapsedRealtime() + RETRY_MS
         val tried = mutableListOf<String>()
         val list = candidates()
