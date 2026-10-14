@@ -110,6 +110,12 @@ APP_LINK = {"sock": None, "watch": None}
 # mode (on the phone) to mirror the phone's notifications to the music device.
 NOTIF_UUID = "7e5b1a20-3c4d-4f8e-9a6b-6e6f74696679"   # "...notify"
 NOTIF_PATH = "/auxlink/notif_link"
+# Fixed RFCOMM channels (HFP already uses 7 and 13). BlueZ will not publish a
+# discoverable SDP record for a custom 128-bit UUID unless Channel is set, and
+# the phone then cannot resolve createRfcommSocketToServiceRecord — so the app
+# also connects straight to these channels and skips SDP entirely.
+NOTIF_CHANNEL = 22
+APP_CHANNEL = 23
 AUDIO_USER = CONF.get("AUDIO_USER", "chris")
 KEY_USAGE = {b"P": 0x00CD, b"N": 0x00B5, b"B": 0x00B6, b"S": 0x00B7, b"+": 0x00E9, b"-": 0x00EA,
              b">": 0x00B0, b"|": 0x00B1}   # Play, Pause (USB-C: no toggling into the wrong state)
@@ -2669,16 +2675,19 @@ def main():
 
     # Notification forwarder service (the phone's AuxLink app connects here to
     # mirror its notifications). Always on, regardless of the music source.
+    # Pin a fixed RFCOMM channel so BlueZ actually listens and publishes SDP;
+    # auth is relaxed so a bonded phone can open the channel directly.
     notif_link = NotifLink(bus, app_send)
     try:
         dbus.Interface(bus.get_object(BLUEZ, "/org/bluez"), "org.bluez.ProfileManager1") \
             .RegisterProfile(NOTIF_PATH, NOTIF_UUID, dbus.Dictionary({
                 "Name": "auxlink notifications",
                 "Role": "server",
-                "RequireAuthentication": dbus.Boolean(True),
+                "Channel": dbus.UInt16(NOTIF_CHANNEL),
+                "RequireAuthentication": dbus.Boolean(False),
                 "RequireAuthorization": dbus.Boolean(False),
             }, signature="sv"))
-        log("Notification forwarder service registered")
+        log(f"Notification forwarder service registered (RFCOMM channel {NOTIF_CHANNEL})")
     except dbus.DBusException as e:
         log(f"Cannot register the notification service: {e.get_dbus_message()}")
 
@@ -2690,10 +2699,11 @@ def main():
                 .RegisterProfile(APP_PATH, APP_UUID, dbus.Dictionary({
                     "Name": "auxlink now playing",
                     "Role": "server",
-                    "RequireAuthentication": dbus.Boolean(True),
+                    "Channel": dbus.UInt16(APP_CHANNEL),
+                    "RequireAuthentication": dbus.Boolean(False),
                     "RequireAuthorization": dbus.Boolean(False),
                 }, signature="sv"))
-            log("Now-playing app service registered (Bluetooth)")
+            log(f"Now-playing app service registered (Bluetooth, RFCOMM channel {APP_CHANNEL})")
         except dbus.DBusException as e:
             log(f"Cannot register the now-playing app service: {e.get_dbus_message()}")
 

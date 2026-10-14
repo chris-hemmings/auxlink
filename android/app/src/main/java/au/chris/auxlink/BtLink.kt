@@ -21,6 +21,10 @@ import java.util.UUID
  * and sends the same lines as [UsbLink]. Only used when there is no USB link.
  * Opens lazily, and after a failure waits [RETRY_MS] before trying again so
  * a device without the Pi nearby isn't searched constantly.
+ *
+ * Also used by the notification forwarder ([NOTIF_UUID]) on the phone.
+ * Both services listen on fixed RFCOMM channels on the Pi; we prefer those
+ * so a missing/broken SDP record cannot block the connect.
  */
 @SuppressLint("MissingPermission")   // every call checks permitted() first
 class BtLink(private val context: Context, private val serviceUuid: UUID = APP_UUID,
@@ -29,10 +33,19 @@ class BtLink(private val context: Context, private val serviceUuid: UUID = APP_U
         val APP_UUID: UUID = UUID.fromString("7e5b1a20-3c4d-4f8e-9a6b-74657362726b")
         /** The Pi's notification-forwarder serial service (phone -> Pi). */
         val NOTIF_UUID: UUID = UUID.fromString("7e5b1a20-3c4d-4f8e-9a6b-6e6f74696679")
+        /** Must match NOTIF_CHANNEL / APP_CHANNEL in auxlink-media.py. */
+        const val NOTIF_CHANNEL = 22
+        const val APP_CHANNEL = 23
         private const val RETRY_MS = 20_000L
         private const val TAG = "SmoBtLink"
         /** What the last attempt did, shown on the app's screen. */
         @Volatile var lastTry: String = "(not tried yet)"
+
+        private fun channelFor(uuid: UUID): Int? = when (uuid) {
+            NOTIF_UUID -> NOTIF_CHANNEL
+            APP_UUID -> APP_CHANNEL
+            else -> null
+        }
     }
 
     private var sock: BluetoothSocket? = null
@@ -87,6 +100,46 @@ class BtLink(private val context: Context, private val serviceUuid: UUID = APP_U
             bonded).distinctBy { it.address }
     }
 
+    /**
+     * Open an RFCOMM socket. Prefer the Pi's fixed channel (no SDP) — BlueZ
+     * often registers custom UUID profiles without a usable SDP record, which
+     * makes [BluetoothDevice.createRfcommSocketToServiceRecord] fail before
+     * anything reaches the Pi. Fall back to UUID discovery, then the insecure
+     * fixed-channel API, for older stacks.
+     */
+    private fun openSocket(dev: BluetoothDevice): BluetoothSocket {
+        val channel = channelFor(serviceUuid)
+        val errors = mutableListOf<String>()
+        if (channel != null) {
+            try {
+                return fixedChannelSocket(dev, channel, insecure = false).also { it.connect() }
+            } catch (e: Exception) {
+                errors += "ch$channel: ${e.message}"
+                Log.i(TAG, "${dev.name}: fixed channel $channel failed: ${e.message}")
+            }
+            try {
+                return fixedChannelSocket(dev, channel, insecure = true).also { it.connect() }
+            } catch (e: Exception) {
+                errors += "ch$channel/insec: ${e.message}"
+                Log.i(TAG, "${dev.name}: insecure channel $channel failed: ${e.message}")
+            }
+        }
+        try {
+            return dev.createRfcommSocketToServiceRecord(serviceUuid).also { it.connect() }
+        } catch (e: Exception) {
+            errors += "uuid: ${e.message}"
+            throw Exception(errors.joinToString("; "), e)
+        }
+    }
+
+    /** Hidden BluetoothDevice.create[Insecure]RfcommSocket(int channel). */
+    private fun fixedChannelSocket(dev: BluetoothDevice, channel: Int, insecure: Boolean): BluetoothSocket {
+        val name = if (insecure) "createInsecureRfcommSocket" else "createRfcommSocket"
+        val m = dev.javaClass.getMethod(name, Int::class.javaPrimitiveType)
+        @Suppress("UNCHECKED_CAST")
+        return m.invoke(dev, channel) as BluetoothSocket
+    }
+
     @Synchronized
     fun open(): Boolean {
         if (!permitted() || SystemClock.elapsedRealtime() < nextTry) return false
@@ -96,8 +149,7 @@ class BtLink(private val context: Context, private val serviceUuid: UUID = APP_U
         if (list.isEmpty()) { lastTry = "no paired devices (or Bluetooth off)"; lastResult = lastTry }
         for (dev in list) {
             try {
-                val s = dev.createRfcommSocketToServiceRecord(serviceUuid)
-                s.connect()
+                val s = openSocket(dev)
                 sock = s
                 out = s.outputStream
                 if (onLine != null) {
@@ -116,8 +168,9 @@ class BtLink(private val context: Context, private val serviceUuid: UUID = APP_U
                 }
                 deviceName = dev.name ?: dev.address
                 lastGood = dev.address
-                lastTry = "connected to $deviceName"; lastResult = lastTry
-                Log.i(TAG, "Connected to $deviceName over Bluetooth")
+                val via = channelFor(serviceUuid)?.let { "ch$it" } ?: "uuid"
+                lastTry = "connected to $deviceName ($via)"; lastResult = lastTry
+                Log.i(TAG, "Connected to $deviceName over Bluetooth ($via)")
                 return true
             } catch (e: Exception) {
                 Log.i(TAG, "${dev.name}: ${e.message}")
