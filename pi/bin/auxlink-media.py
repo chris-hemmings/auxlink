@@ -106,6 +106,10 @@ HID_DEV = "/dev/hidg0"
 APP_UUID = "7e5b1a20-3c4d-4f8e-9a6b-74657362726b"
 APP_PATH = "/auxlink/app_link"
 APP_LINK = {"sock": None, "watch": None}
+# A second Bluetooth serial service the AuxLink app connects to in "forwarder"
+# mode (on the phone) to mirror the phone's notifications to the music device.
+NOTIF_UUID = "7e5b1a20-3c4d-4f8e-9a6b-6e6f74696679"   # "...notify"
+NOTIF_PATH = "/auxlink/notif_link"
 AUDIO_USER = CONF.get("AUDIO_USER", "chris")
 KEY_USAGE = {b"P": 0x00CD, b"N": 0x00B5, b"B": 0x00B6, b"S": 0x00B7, b"+": 0x00E9, b"-": 0x00EA,
              b">": 0x00B0, b"|": 0x00B1}   # Play, Pause (USB-C: no toggling into the wrong state)
@@ -2364,6 +2368,80 @@ class AppLink(dbus.service.Object):
         APP_LINK["sock"] = APP_LINK["watch"] = None
 
 
+class NotifLink(dbus.service.Object):
+    """Bluetooth serial service the AuxLink app connects to in forwarder mode
+    (on the phone) to mirror the phone's notifications. Each JSON line it sends
+    is relayed to the music device's app as {"notif": {...}}."""
+
+    def __init__(self, bus, relay):
+        super().__init__(bus, NOTIF_PATH)
+        self.relay = relay
+        self.sock = None
+        self.watch = None
+        self.buf = bytearray()
+
+    @dbus.service.method("org.bluez.Profile1", in_signature="", out_signature="")
+    def Release(self):
+        pass
+
+    @dbus.service.method("org.bluez.Profile1", in_signature="oha{sv}", out_signature="")
+    def NewConnection(self, device, fd, props):
+        addr = str(device).rsplit("dev_", 1)[-1].replace("_", ":").upper()
+        sock = socket.socket(fileno=fd.take())
+        if PHONE_ADDR and addr != PHONE_ADDR:
+            log(f"Notification forwarder link from {addr} refused (not the phone)")
+            sock.close()
+            return
+        self.drop()
+        sock.setblocking(False)
+        self.sock = sock
+        self.buf = bytearray()
+        self.watch = GLib.io_add_watch(sock.fileno(), GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR, self.event)
+        log(f"Notification forwarder connected ({addr})")
+
+    def event(self, fd, cond):
+        data = b""
+        if cond & GLib.IO_IN:
+            try:
+                data = self.sock.recv(4096)
+            except BlockingIOError:
+                return True
+            except OSError:
+                data = b""
+        if not data:
+            self.drop()
+            log("Notification forwarder disconnected")
+            return False
+        self.buf += data
+        while b"\n" in self.buf:
+            line, _, rest = bytes(self.buf).partition(b"\n")
+            self.buf = bytearray(rest)
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                info = json.loads(line.decode("utf-8", "replace"))
+            except ValueError:
+                continue
+            if isinstance(info, dict) and "notif" in info:
+                self.relay({"notif": info["notif"]})
+        return True
+
+    @dbus.service.method("org.bluez.Profile1", in_signature="o", out_signature="")
+    def RequestDisconnection(self, device):
+        self.drop()
+
+    def drop(self):
+        if self.watch:
+            GLib.source_remove(self.watch)
+        if self.sock is not None:
+            try:
+                self.sock.close()
+            except OSError:
+                pass
+        self.sock = self.watch = None
+
+
 def main():
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
     bus = dbus.SystemBus()
@@ -2588,6 +2666,21 @@ def main():
             GLib.timeout_add_seconds(3, watch_port)
 
     phone_media_monitor(bus, om, player)   # SMO <-> phone source arbitration
+
+    # Notification forwarder service (the phone's AuxLink app connects here to
+    # mirror its notifications). Always on, regardless of the music source.
+    notif_link = NotifLink(bus, app_send)
+    try:
+        dbus.Interface(bus.get_object(BLUEZ, "/org/bluez"), "org.bluez.ProfileManager1") \
+            .RegisterProfile(NOTIF_PATH, NOTIF_UUID, dbus.Dictionary({
+                "Name": "auxlink notifications",
+                "Role": "server",
+                "RequireAuthentication": dbus.Boolean(True),
+                "RequireAuthorization": dbus.Boolean(False),
+            }, signature="sv"))
+        log("Notification forwarder service registered")
+    except dbus.DBusException as e:
+        log(f"Cannot register the notification service: {e.get_dbus_message()}")
 
     if MUSIC_SOURCE == "bluetooth":
         setup_bt_source(bus, om, player)

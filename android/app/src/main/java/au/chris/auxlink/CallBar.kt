@@ -167,7 +167,7 @@ class TextPopup(private val ctx: Context) {
     private val close = Runnable { hide() }
 
     /** False if it couldn't be shown (then use a notification). */
-    fun show(from: String, body: String, stayMs: Long = 10000, onTap: () -> Unit = {}): Boolean {
+    fun show(from: String, body: String, stayMs: Long = 10000, lines: Int = 4, onTap: () -> Unit = {}): Boolean {
         if (!Settings.canDrawOverlays(ctx)) return false
         return try {
             hide()
@@ -182,7 +182,8 @@ class TextPopup(private val ctx: Context) {
                     text = from; setTextColor(Color.WHITE); textSize = 18f
                 })
                 addView(TextView(ctx).apply {
-                    text = body; setTextColor(Color.WHITE); textSize = 16f; maxLines = 4; alpha = 0.9f
+                    text = body; setTextColor(Color.WHITE); textSize = 16f; maxLines = lines; alpha = 0.9f
+                    ellipsize = android.text.TextUtils.TruncateAt.END
                 })
                 setOnClickListener { hide(); onTap() }
             }

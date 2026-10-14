@@ -962,9 +962,38 @@ class MainActivity : Activity() {
             if (svc == null) say("Phone Link isn't running yet: allow Notification access first.")
             else { svc.volumeMax(true); say("Volume set to full. If Android asks, tap OK.") }
         })
+        c.addView(notifForwardBlock())
         c.addView(wifiParkedBlock())
         c.addView(piUpdateBlock())
         return c
+    }
+
+    /** Turn this device into a notification forwarder (enable on your PHONE):
+     *  every notification is mirrored to the AuxLink head unit over Bluetooth. */
+    private fun notifForwardBlock(): View {
+        val p = getSharedPreferences("auxlink", MODE_PRIVATE)
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, px(10), 0, 0) }
+        box.addView(TextView(this).apply {
+            text = "Mirror this phone's notifications"; setTextColor(text1); textSize = 15f
+            typeface = Typeface.DEFAULT_BOLD
+        })
+        box.addView(TextView(this).apply {
+            text = "Turn this ON only on your PHONE (with the AuxLink app and Notification access): every " +
+                "notification is sent to the car's screen as a pop-down. Leave it OFF on the head unit."
+            setTextColor(text2); textSize = 13f; setPadding(0, px(2), 0, px(6))
+        })
+        box.addView(android.widget.Switch(this).apply {
+            text = "  Forward my notifications to AuxLink"; setTextColor(text1); textSize = 14f
+            isChecked = p.getBoolean("notif_forward", false)
+            setOnCheckedChangeListener { _, on ->
+                val svc = NowPlayingService.instance
+                if (svc != null) svc.setForwardNotifs(on)
+                else p.edit().putBoolean("notif_forward", on).apply()
+                say(if (on) "Forwarding on. Make sure Notification access is granted (this phone)."
+                    else "Forwarding off.")
+            }
+        })
+        return box
     }
 
     private fun detailsCard(): View {

@@ -23,9 +23,12 @@ import java.util.UUID
  * a device without the Pi nearby isn't searched constantly.
  */
 @SuppressLint("MissingPermission")   // every call checks permitted() first
-class BtLink(private val context: Context, private val onLine: ((String) -> Unit)? = null) {
+class BtLink(private val context: Context, private val onLine: ((String) -> Unit)? = null,
+             private val serviceUuid: UUID = APP_UUID) {
     companion object {
         val APP_UUID: UUID = UUID.fromString("7e5b1a20-3c4d-4f8e-9a6b-74657362726b")
+        /** The Pi's notification-forwarder serial service (phone -> Pi). */
+        val NOTIF_UUID: UUID = UUID.fromString("7e5b1a20-3c4d-4f8e-9a6b-6e6f74696679")
         private const val RETRY_MS = 20_000L
         private const val TAG = "SmoBtLink"
         /** What the last attempt did, shown on the app's screen. */
@@ -71,7 +74,7 @@ class BtLink(private val context: Context, private val onLine: ((String) -> Unit
             ?: return emptyList()
         if (!bt.isEnabled) return emptyList()
         val bonded = bt.bondedDevices?.toList() ?: return emptyList()
-        val target = ParcelUuid(APP_UUID)
+        val target = ParcelUuid(serviceUuid)
         fun named(d: BluetoothDevice): Boolean {
             val names = listOfNotNull(d.name, if (Build.VERSION.SDK_INT >= 30) d.alias else null)
             return names.any { it.contains("auxlink", true) || it.contains("teslabridge", true) }
@@ -91,7 +94,7 @@ class BtLink(private val context: Context, private val onLine: ((String) -> Unit
         if (list.isEmpty()) lastTry = "no paired devices (or Bluetooth off)"
         for (dev in list) {
             try {
-                val s = dev.createRfcommSocketToServiceRecord(APP_UUID)
+                val s = dev.createRfcommSocketToServiceRecord(serviceUuid)
                 s.connect()
                 sock = s
                 out = s.outputStream

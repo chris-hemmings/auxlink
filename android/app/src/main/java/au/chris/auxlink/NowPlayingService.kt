@@ -281,6 +281,7 @@ class NowPlayingService : NotificationListenerService() {
                     j.has("text") -> j.optJSONObject("text")?.let {
                         showText(it.optString("from"), it.optString("body"), it.optString("number"))
                     }
+                    j.has("notif") -> j.optJSONObject("notif")?.let { showNotif(it) }
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "notification failed: ${e.message}")
@@ -504,6 +505,72 @@ class NowPlayingService : NotificationListenerService() {
 
     private val textPopup by lazy { TextPopup(this) }
 
+    /** A mirrored phone notification (from the forwarder on the phone, relayed
+     *  by the Pi): a pop-down, tap to see the full text. */
+    private fun showNotif(o: JSONObject) {
+        val app = o.optString("app").ifEmpty { "Notification" }
+        val title = o.optString("title")
+        val head = if (title.isNotEmpty()) "$app  ·  $title" else app
+        val body = o.optString("text").ifEmpty { o.optString("big") }
+        if (textPopup.show(head, body, 9000) { showNotifDetail(o) }) return
+        val n = Notification.Builder(this, "texts_popup")
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle(head).setContentText(body)
+            .setStyle(Notification.BigTextStyle().bigText(o.optString("big").ifEmpty { body }))
+            .setAutoCancel(true).build()
+        getSystemService(NotificationManager::class.java).notify(textId++, n)
+        if (textId > 150) textId = 100
+    }
+
+    private fun showNotifDetail(o: JSONObject) {
+        val app = o.optString("app").ifEmpty { "Notification" }
+        val title = o.optString("title")
+        val head = if (title.isNotEmpty()) "$app  ·  $title" else app
+        textPopup.show(head, o.optString("big").ifEmpty { o.optString("text") }, 30000, 16) {}
+    }
+
+    // ---------- forwarder (on the phone): mirror notifications to the Pi ----------
+    @Volatile private var forwardNotifs = false
+    private var notifLink: BtLink? = null
+
+    /** Turn notification forwarding on/off (set from the app's switch; meant to
+     *  be enabled on the phone, not the music head unit). */
+    fun setForwardNotifs(on: Boolean) {
+        forwardNotifs = on
+        try { getSharedPreferences("auxlink", MODE_PRIVATE).edit().putBoolean("notif_forward", on).apply() } catch (e: Exception) {}
+        if (on && notifLink == null) notifLink = BtLink(this, null, BtLink.NOTIF_UUID)
+        else if (!on) { notifLink?.close(); notifLink = null }
+    }
+
+    override fun onNotificationPosted(sbn: android.service.notification.StatusBarNotification) {
+        if (!forwardNotifs) return
+        try { forwardNotification(sbn) } catch (e: Exception) { Log.w(TAG, "forward: ${e.message}") }
+    }
+
+    private fun forwardNotification(sbn: android.service.notification.StatusBarNotification) {
+        if (sbn.packageName == packageName) return                 // our own
+        val n = sbn.notification ?: return
+        val flags = n.flags
+        if (flags and Notification.FLAG_ONGOING_EVENT != 0) return  // persistent (media, foreground services)
+        if (flags and Notification.FLAG_GROUP_SUMMARY != 0) return  // the group header, not a real message
+        val cat = n.category
+        if (cat == Notification.CATEGORY_CALL || cat == Notification.CATEGORY_TRANSPORT) return  // calls/media handled elsewhere
+        val ex = n.extras ?: return
+        val title = ex.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
+        val text = ex.getCharSequence(Notification.EXTRA_TEXT)?.toString().orEmpty()
+        val big = ex.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()
+            ?: ex.getCharSequenceArray(Notification.EXTRA_TEXT_LINES)?.joinToString("\n") { it.toString() }
+            ?: text
+        if (title.isEmpty() && text.isEmpty()) return
+        val app = try {
+            packageManager.getApplicationLabel(packageManager.getApplicationInfo(sbn.packageName, 0)).toString()
+        } catch (e: Exception) { sbn.packageName }
+        val o = JSONObject().put("app", app).put("title", title).put("text", text)
+            .put("big", big).put("pkg", sbn.packageName).put("when", sbn.postTime)
+        val line = JSONObject().put("notif", o).toString()
+        io.execute { notifLink?.send(line) }
+    }
+
     /** Opens this conversation in the app's Messages tab. */
     private fun chatIntent(number: String, name: String) =
         Intent(this, MainActivity::class.java)
@@ -643,6 +710,10 @@ class NowPlayingService : NotificationListenerService() {
         keepVolumeWarningOff()
         instance = this
         goForeground()
+        try {
+            if (getSharedPreferences("auxlink", MODE_PRIVATE).getBoolean("notif_forward", false))
+                setForwardNotifs(true)
+        } catch (e: Exception) {}
         link = UsbLink(this) { onPiLine(it) }
         bt = BtLink(this) { onPiLine(it) }
         val actions = IntentFilter().apply { addAction(ACTION_ANSWER); addAction(ACTION_DECLINE) }

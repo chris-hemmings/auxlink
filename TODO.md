@@ -55,3 +55,33 @@ controller side of AVRCP 1.6 cover art.
 The fetch machinery (`sdp_bip_psm`, `auxlink-bip.py`, `BtArt`) already exists for
 a Bluetooth *music source*; it has just never been wired to the phone, and the
 controller-side handle (#1) is the blocker.
+
+## Phone notification mirroring (in progress)
+
+Mirror every notification from the phone to the AuxLink head unit, shown as a
+pop-down with a timeout; tap to expand to the full text.
+
+**Transport:** Android exposes no standard Bluetooth profile for app
+notifications, so a forwarder runs *on the phone*: the AuxLink app in
+"forwarder" mode captures notifications and sends them to the Pi over a
+dedicated Bluetooth serial service (`NOTIF_UUID`), which relays them to the
+music device's app as `{"notif": {...}}`.
+
+**Stage 1 (done, v1.0.114):**
+- Pi: `NotifLink` RFCOMM/Profile1 service (`NOTIF_UUID`), always registered;
+  accepts the phone only; relays `{"notif"}` lines to the SMO app (`app_send`).
+- App forwarder: `setForwardNotifs()` + `onNotificationPosted()` captures
+  app/title/text/big-text and sends over `BtLink(NOTIF_UUID)`. Skips the app's
+  own, ongoing/foreground, group summaries, and call/media categories. A switch
+  in Tools ("Mirror this phone's notifications") turns it on (enable on the
+  PHONE only). Default off.
+- App receiver (head unit): `{"notif"}` -> `showNotif()` pop-down (reuses
+  `TextPopup`), tap -> `showNotifDetail()` expands to the full big-text.
+
+**Stage 2 (todo):** a Notifications list tab (scrollback); per-app allow/mute
+filter; the small app icon; "forwarder-only" mode so the phone app doesn't also
+try to be the music device; de-dupe repeated notifications.
+
+**Stage 3 (todo):** reply/actions (reply to a Teams/WhatsApp message, mark read)
+- doable since the forwarder app is on the phone and holds the Notification
+actions, relayed back over `NOTIF_UUID`.
