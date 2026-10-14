@@ -1478,7 +1478,7 @@ def phone_media_monitor(bus, om, player):
             SRC_STATE["override"] = SOURCE_OVERRIDE
             write_source_state()
         priority = c.get("PHONE_MEDIA_PRIORITY", "1") == "1"
-        debounce = max(1, int(c.get("PHONE_MEDIA_DEBOUNCE", "3") or 3))
+        debounce = max(0, int(c.get("PHONE_MEDIA_DEBOUNCE", "1") or 0))
         now = time.monotonic()
         path, props = find_player()
         playing_now = raw_playing(props) if path else False
@@ -1488,8 +1488,8 @@ def phone_media_monitor(bus, om, player):
         else:
             st["since"] = 0.0
         st["playing"] = playing_now
-        # Take-over needs the phone playing steadily for `debounce` s (so a
-        # notification blip doesn't duck the SMO); release is immediate.
+        # Take-over needs the phone's AVRCP "playing" held for `debounce` s
+        # (just cushions a flicker; 0 = instant). Release is immediate.
         stable = playing_now and now - st["since"] >= debounce
 
         # want_phone: the phone owns the car audio (SMO paused). mute_phone: the
