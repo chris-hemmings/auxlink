@@ -61,7 +61,7 @@ SOURCE = CONF.get("SOURCE", "").upper()
 PHONE_ADDR = CONF.get("PHONE", "").upper()  # the phone (Oppo); its media can take over
 # Source arbitration. Modes (SOURCE_OVERRIDE, set from the app, saved to the
 # config so it survives a restart):
-#   media  - the SMO only; the phone's media is muted (the default)
+#   media  - the SMO; the phone's music is muted but its notifications blend
 #   both   - the SMO and the phone's media mixed together (the old behaviour)
 #   phone  - the phone's media only; the SMO is paused
 #   auto   - the phone takes over when it is actually playing, else the SMO
@@ -1501,8 +1501,9 @@ def phone_media_monitor(bus, om, player):
         elif SOURCE_OVERRIDE == "auto":
             want_phone = priority and (stable or (player.phone_active and playing_now))
             mute_phone = False                          # notifications still blend
-        else:                                           # media (default): SMO only
-            want_phone, mute_phone = False, True
+        else:                                           # media: SMO only, but let
+            want_phone = False                          # phone notifications blend -
+            mute_phone = playing_now                    # mute only its actual music
         if player.in_call:
             want_phone, mute_phone = False, False
 
