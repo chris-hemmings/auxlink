@@ -372,8 +372,8 @@ class MainActivity : Activity() {
 
         // Music source (SMO / phone), when a phone is set up.
         if (st.optBoolean("has_phone")) {
-            piRows.addView(sourceSelector(st.optString("source_override", "auto")))
-            if (st.optString("source_override", "auto") == "auto") {
+            piRows.addView(sourceSelector(st.optString("source_override", "media")))
+            if (st.optString("source_override", "media") == "auto") {
                 val act = st.optString("source_active", "smo")
                 piRows.addView(piRow("Playing from", if (act == "phone") "the phone" else "the media player",
                     if (act == "phone") accent else good))
@@ -412,7 +412,7 @@ class MainActivity : Activity() {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; setPadding(0, px(6), 0, 0)
         }
-        listOf("Auto" to "auto", "Media" to "smo", "Phone" to "phone").forEachIndexed { i, (label, key) ->
+        listOf("Media" to "media", "Phone" to "phone", "Both" to "both", "Auto" to "auto").forEachIndexed { i, (label, key) ->
             val b = pillButton(label, current == key) { send("source-$key", "Music source set to $label.") }
             b.minWidth = 0; b.minimumWidth = 0
             b.layoutParams = LinearLayout.LayoutParams(0, px(40), 1f).apply { if (i > 0) marginStart = px(8) }

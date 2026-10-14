@@ -190,6 +190,18 @@ trap 'stop_loop; unmute_input' EXIT
 while true; do
   . /etc/auxlink.conf; CARD=bluez_card.${CAR//:/_}; CAR_RE=${CAR//:/[:_]}
   wp_rule
+  # Media mode: mute the phone's A2DP media so it doesn't blend into the car
+  # (auxlink-media sets /run/auxlink/phone-mute). Re-applied each loop so it
+  # survives the phone reconnecting (a fresh node comes up unmuted). Only the
+  # phone's media source; its call audio (HFP) is separate and unaffected.
+  if [ -n "$PHONE" ]; then
+    want_mute=$(cat /run/auxlink/phone-mute 2>/dev/null || echo 0)
+    pnode=$(pactl list sources short 2>/dev/null | awk -v m="bluez_input.${PHONE//:/_}" 'index($2,m)==1{print $2; exit}')
+    if [ -n "$pnode" ]; then
+      cur=$(pactl get-source-mute "$pnode" 2>/dev/null | awk '{print ($2=="yes")?1:0}')
+      [ -n "$cur" ] && [ "$cur" != "$want_mute" ] && pactl set-source-mute "$pnode" "$want_mute" 2>/dev/null
+    fi
+  fi
   # Track the call here, first: a Bluetooth source's stream is closed during
   # a call, and the end must be timed from the call, not from its return.
   if car_busy; then WAS_CALL=1

@@ -59,13 +59,44 @@ CAR_ADAPTER = CONF.get("CAR_ADAPTER", "").upper()
 MUSIC_SOURCE = CONF.get("MUSIC_SOURCE", "wired")
 SOURCE = CONF.get("SOURCE", "").upper()
 PHONE_ADDR = CONF.get("PHONE", "").upper()  # the phone (Oppo); its media can take over
-# Source arbitration: the SMO is the normal source, but the phone's own media
-# (played on the phone) can take over so it isn't mixed on top of the SMO. The
-# app can force a source instead of the automatic choice.
+# Source arbitration. Modes (SOURCE_OVERRIDE, set from the app, saved to the
+# config so it survives a restart):
+#   media  - the SMO only; the phone's media is muted (the default)
+#   both   - the SMO and the phone's media mixed together (the old behaviour)
+#   phone  - the phone's media only; the SMO is paused
+#   auto   - the phone takes over when it is actually playing, else the SMO
 PHONE_MEDIA_FLAG = "/run/auxlink/phone-media"   # "1" while the phone owns the car audio
-SOURCE_OVERRIDE = "auto"                        # auto | smo | phone (set from the app)
-SRC_STATE = {"active": "smo", "override": "auto"}
+PHONE_MUTE_FLAG = "/run/auxlink/phone-mute"     # "1" to mute the phone's media (Media mode)
+SOURCE_OVERRIDE = CONF.get("SOURCE_OVERRIDE", "media")
+if SOURCE_OVERRIDE not in ("media", "both", "phone", "auto"):
+    SOURCE_OVERRIDE = "media"
+SRC_STATE = {"active": "smo", "override": SOURCE_OVERRIDE}
 PHONE_KEYS = None                               # set by the phone monitor in main()
+
+
+def persist_override(value):
+    """Save SOURCE_OVERRIDE to /etc/auxlink.conf so it survives a restart."""
+    path = "/etc/auxlink.conf"
+    try:
+        lines = open(path).read().splitlines()
+    except OSError:
+        return
+    out, done = [], False
+    for line in lines:
+        s = line.strip()
+        if s and not s.startswith("#") and s.split("=", 1)[0].strip() == "SOURCE_OVERRIDE":
+            out.append(f"SOURCE_OVERRIDE={value}"); done = True
+        else:
+            out.append(line)
+    if not done:
+        out.append(f"SOURCE_OVERRIDE={value}")
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            f.write("\n".join(out) + "\n")
+        os.replace(tmp, path)
+    except OSError as e:
+        log(f"Cannot save SOURCE_OVERRIDE: {e}")
 PORT = {"usbc": "/dev/ttyGS0", "bluetooth": None}.get(MUSIC_SOURCE, CONF.get("SERIAL_PORT", "/dev/serial0"))
 HID_DEV = "/dev/hidg0"
 # MUSIC_SOURCE=bluetooth: the now-playing app (if installed on the source)
@@ -1368,6 +1399,15 @@ def write_phone_flag(on):
         log(f"Cannot write {PHONE_MEDIA_FLAG}: {e}")
 
 
+def write_phone_mute(on):
+    try:
+        os.makedirs(os.path.dirname(PHONE_MUTE_FLAG), exist_ok=True)
+        with open(PHONE_MUTE_FLAG, "w") as f:
+            f.write("1" if on else "0")
+    except OSError as e:
+        log(f"Cannot write {PHONE_MUTE_FLAG}: {e}")
+
+
 def write_source_state():
     try:
         with open("/run/auxlink/source-state", "w") as f:
@@ -1452,14 +1492,19 @@ def phone_media_monitor(bus, om, player):
         # notification blip doesn't duck the SMO); release is immediate.
         stable = playing_now and now - st["since"] >= debounce
 
+        # want_phone: the phone owns the car audio (SMO paused). mute_phone: the
+        # phone's media is silenced so it doesn't blend into the SMO.
         if SOURCE_OVERRIDE == "phone":
-            want_phone = bool(path)
-        elif SOURCE_OVERRIDE == "smo":
-            want_phone = False
-        else:
+            want_phone, mute_phone = bool(path), False
+        elif SOURCE_OVERRIDE == "both":
+            want_phone, mute_phone = False, False       # mix both, like it used to
+        elif SOURCE_OVERRIDE == "auto":
             want_phone = priority and (stable or (player.phone_active and playing_now))
+            mute_phone = False                          # notifications still blend
+        else:                                           # media (default): SMO only
+            want_phone, mute_phone = False, True
         if player.in_call:
-            want_phone = False
+            want_phone, mute_phone = False, False
 
         if want_phone and not player.phone_active:
             player.phone_take()
@@ -1473,6 +1518,7 @@ def phone_media_monitor(bus, om, player):
             set_active("smo")
             if resume:
                 app_send({"media": "play"})       # the SMO was playing before: resume it
+        write_phone_mute(mute_phone)
         if player.phone_active:
             player.phone_update(phone_info(props))
         return True
@@ -2240,11 +2286,12 @@ def app_command(player, cmd):
         r = web_api("wifi/setup-force")
         if r.get("error"):
             log("wifi-setup: " + r["error"])
-    elif cmd in ("source-auto", "source-smo", "source-phone"):
+    elif cmd in ("source-auto", "source-media", "source-phone", "source-both"):
         global SOURCE_OVERRIDE
         SOURCE_OVERRIDE = cmd.split("-", 1)[1]
         SRC_STATE["override"] = SOURCE_OVERRIDE
         write_source_state()
+        persist_override(SOURCE_OVERRIDE)
         log(f"App: music source set to {SOURCE_OVERRIDE}")
     else:
         log(f"App: unknown command {cmd!r}")
