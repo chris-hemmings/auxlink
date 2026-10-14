@@ -71,20 +71,21 @@ music device's app as `{"notif": {...}}`.
 - Pi: `NotifLink` RFCOMM/Profile1 service (`NOTIF_UUID`), always registered;
   accepts the phone only; relays `{"notif"}` lines to the SMO app (`app_send`).
 - App forwarder: `setForwardNotifs()` + `onNotificationPosted()` captures
-  app/title/text/big-text and sends over `BtLink(NOTIF_UUID)`. Skips the app's
-  own, ongoing/foreground, group summaries, and call/media categories. A switch
-  in Tools ("Mirror this phone's notifications") turns it on (enable on the
-  PHONE only). Default off.
-- App receiver (head unit): `{"notif"}` -> `showNotif()` pop-down (reuses
-  `TextPopup`), tap -> `showNotifDetail()` expands to the full big-text.
+  app/title/text/big-text and a small PNG of the app icon, sends over
+  `BtLink(NOTIF_UUID)`. Skips the app's own, ongoing/foreground, group
+  summaries, and call/media categories. A switch in Tools ("Mirror this
+  phone's notifications") turns it on (enable on the PHONE only). Default off.
+- App receiver (head unit): `{"notif"}` -> heads-up banner (`TextPopup`) with
+  app icon + app name + title/body; tap -> `showNotifDetail()` expands.
+  SMS popups use the same banner (Messages icon + sender as title).
 - BlueZ did not publish an SDP RFCOMM record for the custom UUID (sdptool
   found nothing; phone "socket failure", no bluetoothd log). Fixed by pinning
   `NOTIF_CHANNEL=22` / `APP_CHANNEL=23` on the Pi and having `BtLink` connect
   straight to that channel (bypass SDP).
 
 **Stage 2 (todo):** a Notifications list tab (scrollback); per-app allow/mute
-filter; the small app icon; "forwarder-only" mode so the phone app doesn't also
-try to be the music device; de-dupe repeated notifications.
+filter; "forwarder-only" mode so the phone app doesn't also try to be the
+music device; de-dupe repeated notifications.
 
 **Stage 3 (todo):** reply/actions (reply to a Teams/WhatsApp message, mark read)
 - doable since the forwarder app is on the phone and holds the Notification
