@@ -4,6 +4,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.app.RemoteInput
 import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
@@ -22,12 +23,15 @@ import android.media.session.MediaController
 import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
 import android.os.Build
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.Telephony
 import android.service.notification.NotificationListenerService
 import android.util.Base64
 import android.util.Log
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.Executors
@@ -558,7 +562,13 @@ class NowPlayingService : NotificationListenerService() {
         val title = o.optString("title")
         val body = o.optString("text").ifEmpty { o.optString("big") }
         val icon = decodeNotifIcon(o.optString("icon"))
-        if (textPopup.show(app, title, body, icon, 9000) { showNotifDetail(o) }) return
+        val actions = NotifLog.parseActions(o)
+        val nid = o.optString("nid")
+        val onAction = { act: NotifLog.Action, text: String? ->
+            sendNotifAction(nid, act.id, text.orEmpty())
+        }
+        if (textPopup.show(app, title, body, icon, 9000, 4, actions, onAction,
+                onTap = { showNotifDetail(o) })) return
         val head = if (title.isNotEmpty()) "$app  ·  $title" else app
         val n = Notification.Builder(this, "texts_popup")
             .setSmallIcon(android.R.drawable.ic_dialog_info)
@@ -573,7 +583,19 @@ class NowPlayingService : NotificationListenerService() {
         val app = o.optString("app").ifEmpty { "Notification" }
         val title = o.optString("title")
         val body = o.optString("big").ifEmpty { o.optString("text") }
-        textPopup.show(app, title, body, decodeNotifIcon(o.optString("icon")), 30000, 16) {}
+        val actions = NotifLog.parseActions(o)
+        val nid = o.optString("nid")
+        textPopup.show(app, title, body, decodeNotifIcon(o.optString("icon")), 30000, 16, actions,
+            onAction = { act, text -> sendNotifAction(nid, act.id, text.orEmpty()) })
+    }
+
+    /** Head unit → Pi → phone: fire a Notification.Action (reply / mark read). */
+    fun sendNotifAction(nid: String, actionId: String, text: String = "") {
+        if (nid.isEmpty() || actionId.isEmpty()) return
+        val o = JSONObject().put("nid", nid).put("id", actionId)
+        if (text.isNotEmpty()) o.put("text", text)
+        val line = JSONObject().put("notif_action", o).toString()
+        io.execute { sendLine(line) }
     }
 
     private fun decodeNotifIcon(b64: String): Drawable? {
@@ -592,6 +614,15 @@ class NowPlayingService : NotificationListenerService() {
     /** Recent forwards for de-dupe: key -> elapsedRealtime of last send. */
     private val recentNotifs = LinkedHashMap<String, Long>()
     private val DEDUPE_MS = 45_000L
+    /** Pending Notification.Action intents keyed by "nid|actionId". */
+    private data class HeldNotifAction(
+        val pending: PendingIntent,
+        val remoteInput: RemoteInput?,
+        val expiresAt: Long,
+    )
+    private val heldActions = LinkedHashMap<String, HeldNotifAction>()
+    private val ACTION_TTL_MS = 15 * 60_000L
+    private val MAX_HELD_ACTIONS = 80
 
     private fun prefs() = getSharedPreferences("auxlink", MODE_PRIVATE)
 
@@ -600,8 +631,103 @@ class NowPlayingService : NotificationListenerService() {
     fun setForwardNotifs(on: Boolean) {
         forwardNotifs = on
         try { prefs().edit().putBoolean("notif_forward", on).apply() } catch (e: Exception) {}
-        if (on && notifLink == null) notifLink = BtLink(this, BtLink.NOTIF_UUID)
-        else if (!on) { notifLink?.close(); notifLink = null }
+        if (on && notifLink == null) {
+            notifLink = BtLink(this, BtLink.NOTIF_UUID) { line -> onNotifLinkLine(line) }
+        } else if (!on) {
+            notifLink?.close(); notifLink = null
+            synchronized(heldActions) { heldActions.clear() }
+        }
+    }
+
+    /** Lines from the Pi on the notification RFCOMM (Stage 3 actions). */
+    private fun onNotifLinkLine(line: String) {
+        val j = try { JSONObject(line) } catch (_: Exception) { return }
+        val a = j.optJSONObject("notif_action") ?: return
+        val nid = a.optString("nid")
+        val id = a.optString("id")
+        val text = a.optString("text")
+        notifIo.execute { fireNotifAction(nid, id, text) }
+    }
+
+    private fun fireNotifAction(nid: String, id: String, text: String) {
+        if (nid.isEmpty() || id.isEmpty()) return
+        val key = "$nid|$id"
+        val held = synchronized(heldActions) {
+            pruneHeldActionsLocked()
+            heldActions.remove(key)
+        } ?: run {
+            Log.w(TAG, "notif_action unknown/expired: $key")
+            return
+        }
+        try {
+            val ri = held.remoteInput
+            if (ri != null) {
+                if (text.isEmpty()) {
+                    Log.w(TAG, "notif_action reply missing text: $key")
+                    return
+                }
+                val intent = Intent()
+                val results = Bundle().apply { putCharSequence(ri.resultKey, text) }
+                RemoteInput.addResultsToIntent(arrayOf(ri), intent, results)
+                held.pending.send(this, 0, intent)
+            } else {
+                held.pending.send()
+            }
+            Log.i(TAG, "Fired notif action $key")
+        } catch (e: Exception) {
+            Log.w(TAG, "notif_action failed: ${e.message}")
+        }
+    }
+
+    private fun pruneHeldActionsLocked() {
+        val now = SystemClock.elapsedRealtime()
+        heldActions.entries.removeAll { now > it.value.expiresAt }
+        while (heldActions.size > MAX_HELD_ACTIONS) {
+            val first = heldActions.keys.firstOrNull() ?: break
+            heldActions.remove(first)
+        }
+    }
+
+    /** Pack reply / mark-read actions and keep their PendingIntents for later. */
+    private fun packNotifActions(sbn: android.service.notification.StatusBarNotification, n: Notification): JSONArray {
+        val raw = mutableListOf<Notification.Action>()
+        n.actions?.let { raw.addAll(it) }
+        try {
+            for (a in Notification.WearableExtender(n).actions) {
+                if (raw.none { it.title == a.title && it.actionIntent == a.actionIntent }) raw += a
+            }
+        } catch (_: Exception) {}
+        fun isReply(a: Notification.Action): Boolean {
+            if (Build.VERSION.SDK_INT >= 28 &&
+                a.semanticAction == Notification.Action.SEMANTIC_ACTION_REPLY) return true
+            return a.remoteInputs?.any { it.allowFreeFormInput } == true
+        }
+        fun isMarkRead(a: Notification.Action): Boolean =
+            Build.VERSION.SDK_INT >= 28 &&
+                a.semanticAction == Notification.Action.SEMANTIC_ACTION_MARK_AS_READ
+        fun rank(a: Notification.Action) = when {
+            isReply(a) -> 0
+            isMarkRead(a) -> 1
+            else -> 2
+        }
+        val chosen = raw.filter { it.actionIntent != null && !it.title.isNullOrBlank() }
+            .sortedBy { rank(it) }
+            .take(3)
+        val arr = JSONArray()
+        val nid = sbn.key
+        val expires = SystemClock.elapsedRealtime() + ACTION_TTL_MS
+        synchronized(heldActions) {
+            pruneHeldActionsLocked()
+            chosen.forEachIndexed { i, action ->
+                val id = i.toString()
+                val reply = isReply(action)
+                val ri = action.remoteInputs?.firstOrNull { it.allowFreeFormInput }
+                heldActions["$nid|$id"] = HeldNotifAction(action.actionIntent!!, if (reply) ri else null, expires)
+                arr.put(JSONObject().put("id", id).put("label", action.title.toString())
+                    .put("reply", reply))
+            }
+        }
+        return arr
     }
 
     /**
@@ -667,11 +793,13 @@ class NowPlayingService : NotificationListenerService() {
     /** Send a test notification straight to the Pi (forces a connection), and
      *  report whether the Bluetooth write succeeded. */
     fun testNotifForward(cb: (Boolean) -> Unit) {
-        if (notifLink == null) notifLink = BtLink(this, BtLink.NOTIF_UUID)
+        if (notifLink == null)
+            notifLink = BtLink(this, BtLink.NOTIF_UUID) { line -> onNotifLinkLine(line) }
         notifLink?.retryNow()
         val o = JSONObject().put("app", "AuxLink").put("title", "Test notification")
             .put("text", "If this shows on the car, forwarding works.").put("big", "")
             .put("pkg", packageName).put("when", System.currentTimeMillis())
+            .put("nid", "test").put("actions", JSONArray())
             .put("icon", appIconPng(packageName))
         val line = JSONObject().put("notif", o).toString()
         notifIo.execute { val ok = notifLink?.send(line) ?: false; main.post { cb(ok) } }
@@ -703,7 +831,7 @@ class NowPlayingService : NotificationListenerService() {
             notifSkippedMute++; return
         }
         val dedupeKey = sbn.packageName + "|" + title + "|" + text.take(120)
-        val now = android.os.SystemClock.elapsedRealtime()
+        val now = SystemClock.elapsedRealtime()
         synchronized(recentNotifs) {
             recentNotifs.entries.removeAll { now - it.value > DEDUPE_MS }
             val prev = recentNotifs[dedupeKey]
@@ -712,8 +840,10 @@ class NowPlayingService : NotificationListenerService() {
             }
             recentNotifs[dedupeKey] = now
         }
+        val actions = packNotifActions(sbn, n)
         val o = JSONObject().put("app", app).put("title", title).put("text", text)
             .put("big", big).put("pkg", sbn.packageName).put("when", sbn.postTime)
+            .put("nid", sbn.key).put("actions", actions)
             .put("icon", appIconPng(sbn.packageName))
         val line = JSONObject().put("notif", o).toString()
         notifIo.execute { notifLink?.send(line) }
@@ -1003,7 +1133,13 @@ class NowPlayingService : NotificationListenerService() {
         controller?.unregisterCallback(callback)
         try { unregisterReceiver(usbEvents) } catch (_: Exception) {}
         try { unregisterReceiver(callButtons) } catch (_: Exception) {}
-        io.execute { link.close(); bt.close() }
+        io.execute {
+            try { link.close() } catch (_: Exception) {}
+            try { bt.close() } catch (_: Exception) {}
+            try { notifLink?.close() } catch (_: Exception) {}
+        }
+        notifLink = null
+        synchronized(heldActions) { heldActions.clear() }
     }
 
     /** USB if one is plugged in (unchanged behaviour), else Bluetooth. Runs on [io]. */

@@ -106,6 +106,8 @@ HID_DEV = "/dev/hidg0"
 APP_UUID = "7e5b1a20-3c4d-4f8e-9a6b-74657362726b"
 APP_PATH = "/auxlink/app_link"
 APP_LINK = {"sock": None, "watch": None}
+# Phone's notification-forwarder RFCOMM (NotifLink instance once registered).
+NOTIF_LINK = {"link": None}
 # A second Bluetooth serial service the AuxLink app connects to in "forwarder"
 # mode (on the phone) to mirror the phone's notifications to the music device.
 NOTIF_UUID = "7e5b1a20-3c4d-4f8e-9a6b-6e6f74696679"   # "...notify"
@@ -2377,7 +2379,11 @@ class AppLink(dbus.service.Object):
 class NotifLink(dbus.service.Object):
     """Bluetooth serial service the AuxLink app connects to in forwarder mode
     (on the phone) to mirror the phone's notifications. Each JSON line it sends
-    is relayed to the music device's app as {"notif": {...}}."""
+    is relayed to the music device's app as {"notif": {...}}.
+
+    Stage 3: the music device can send {"notif_action": {...}} back; we write
+    that line to the phone so the forwarder can fire the Notification.Action
+    (reply / mark read) on the original notification."""
 
     def __init__(self, bus, relay):
         super().__init__(bus, NOTIF_PATH)
@@ -2432,6 +2438,19 @@ class NotifLink(dbus.service.Object):
             if isinstance(info, dict) and "notif" in info:
                 self.relay({"notif": info["notif"]})
         return True
+
+    def to_phone(self, obj):
+        """Send one JSON line to the phone forwarder (reply / mark-read)."""
+        if self.sock is None:
+            log("notif_action: phone forwarder not connected")
+            return False
+        try:
+            self.sock.sendall((json.dumps(obj, separators=(",", ":")) + "\n").encode("utf-8"))
+            return True
+        except OSError as e:
+            log(f"notif_action send failed: {e}")
+            self.drop()
+            return False
 
     @dbus.service.method("org.bluez.Profile1", in_signature="o", out_signature="")
     def RequestDisconnection(self, device):
@@ -2630,6 +2649,13 @@ def main():
                         text = r.get("output") or r.get("error") or ""
                         GLib.idle_add(lambda: (app_send({"check": {"fix": fix, "output": text}}), False)[-1])
                     threading.Thread(target=chk, daemon=True).start()
+                elif "notif_action" in info:
+                    # Head unit → phone: fire a Notification.Action (reply / mark read).
+                    link = NOTIF_LINK.get("link")
+                    if link is not None:
+                        link.to_phone({"notif_action": info["notif_action"]})
+                    else:
+                        log("notif_action: forwarder service not registered")
                 elif PHONE["link"] and ("req" in info or "dial" in info or "dtmf" in info or "sms" in info):
                     PHONE["link"].handle(info)
                 elif "cmd" in info:
@@ -2678,6 +2704,7 @@ def main():
     # Pin a fixed RFCOMM channel so BlueZ actually listens and publishes SDP;
     # auth is relaxed so a bonded phone can open the channel directly.
     notif_link = NotifLink(bus, app_send)
+    NOTIF_LINK["link"] = notif_link
     try:
         dbus.Interface(bus.get_object(BLUEZ, "/org/bluez"), "org.bluez.ProfileManager1") \
             .RegisterProfile(NOTIF_PATH, NOTIF_UUID, dbus.Dictionary({
