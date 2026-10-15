@@ -94,11 +94,9 @@ music device's app as `{"notif": {...}}`.
 - Forwarder-only mode: phone stops music-device traffic; UI hides Phone /
   Messages / Status and keeps Alerts.
 
-**Stage 3 (done, Pi v1.0.116):** reply/actions
-- Phone forwarder packs up to 3 `Notification.Action`s (prefer Reply /
-  Mark as read, including WearableExtender) with `nid` + action ids, and
-  holds their `PendingIntent`s (+ `RemoteInput`) for ~15 minutes.
-- Pi relays `{"notif_action":{"nid","id","text"?}}` from the head unit back
-  over `NOTIF_UUID` to the phone (`NotifLink.to_phone`).
-- Head-unit banner and Alerts detail show action pills; Reply opens a
-  short text field and fires the phone-side RemoteInput.
+**Stage 3 (app done; Pi relay rolled back in v1.0.117):** reply/actions
+- App still packs actions / shows Reply pills (from #10).
+- Pi `notif_action` relay was reverted in **v1.0.117** (back to the 1.0.115
+  media script) while USB-C audio on the SMO is investigated — install
+  `auxlink-pi-update-1.0.117.zip` (or `1.0.115.zip`) to match.
+- Re-land the Pi half of Stage 3 once audio is confirmed healthy.
