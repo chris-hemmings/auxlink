@@ -108,6 +108,16 @@
             android:windowSoftInputMode="stateVisible|adjustResize"
             android:label="Reply" />
 
+        <!-- Mute duration chooser for mirrored alerts. -->
+        <activity
+            android:name=".OverlayMuteActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.DeviceDefault.Dialog"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:label="Mute" />
+
         <service
             android:name=".NowPlayingService"
             android:exported="true"

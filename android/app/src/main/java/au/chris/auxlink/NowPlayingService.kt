@@ -77,7 +77,19 @@ class NowPlayingService : NotificationListenerService() {
         fun connected() = linkOpen || System.currentTimeMillis() - lastTraffic < 15000
         const val ACTION_ANSWER = "au.chris.auxlink.ANSWER"
         const val ACTION_DECLINE = "au.chris.auxlink.DECLINE"
+        const val ACTION_SHADE_ACT = "au.chris.auxlink.SHADE_ACT"
+        const val ACTION_SHADE_MUTE = "au.chris.auxlink.SHADE_MUTE"
+        const val ACTION_SHADE_REPLY = "au.chris.auxlink.SHADE_REPLY"
+        const val EXTRA_SHADE_ID = "shade_id"
+        const val EXTRA_NID = "nid"
+        const val EXTRA_ACTION_ID = "action_id"
+        const val EXTRA_PKG = "pkg"
+        const val EXTRA_APP = "app"
+        const val EXTRA_ACTION_LABEL = "action_label"
         const val NOTIF_CALL = 2
+        /** Shade notification ids for mirrored alerts (1000–1999). */
+        private const val SHADE_ID_BASE = 1000
+        private const val SHADE_ID_MAX = 1999
         /** The running service, for the app screen's buttons. */
         @Volatile var instance: NowPlayingService? = null
         /** True while the app is in the foreground (MainActivity resumed). */
@@ -319,7 +331,33 @@ class NowPlayingService : NotificationListenerService() {
     // ---------- calls and texts from the Pi (shown on this device) ----------
     private val callButtons = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
-            callCommand(if (i.action == ACTION_ANSWER) "answer" else "decline")
+            when (i.action) {
+                ACTION_ANSWER -> callCommand("answer")
+                ACTION_DECLINE -> callCommand("decline")
+                ACTION_SHADE_MUTE -> {
+                    val pkg = i.getStringExtra(EXTRA_PKG).orEmpty()
+                    val app = i.getStringExtra(EXTRA_APP).orEmpty()
+                    val shadeId = i.getIntExtra(EXTRA_SHADE_ID, -1)
+                    if (pkg.isNotEmpty()) OverlayMuteActivity.start(this@NowPlayingService, pkg, app, shadeId)
+                }
+                ACTION_SHADE_ACT -> {
+                    val nid = i.getStringExtra(EXTRA_NID).orEmpty()
+                    val id = i.getStringExtra(EXTRA_ACTION_ID).orEmpty()
+                    val shadeId = i.getIntExtra(EXTRA_SHADE_ID, -1)
+                    sendNotifAction(nid, id)
+                    if (shadeId > 0) getSystemService(NotificationManager::class.java).cancel(shadeId)
+                }
+                ACTION_SHADE_REPLY -> {
+                    val nid = i.getStringExtra(EXTRA_NID).orEmpty()
+                    val id = i.getStringExtra(EXTRA_ACTION_ID).orEmpty()
+                    val label = i.getStringExtra(EXTRA_ACTION_LABEL).orEmpty().ifBlank { "Reply" }
+                    val shadeId = i.getIntExtra(EXTRA_SHADE_ID, -1)
+                    OverlayReplyActivity.start(this@NowPlayingService, label) { text ->
+                        sendNotifAction(nid, id, text)
+                        if (shadeId > 0) getSystemService(NotificationManager::class.java).cancel(shadeId)
+                    }
+                }
+            }
         }
     }
 
@@ -371,6 +409,14 @@ class NowPlayingService : NotificationListenerService() {
             "texts_popup", "Text messages", NotificationManager.IMPORTANCE_HIGH))
         nm.createNotificationChannel(NotificationChannel(
             "call_ongoing", "Call in progress", NotificationManager.IMPORTANCE_LOW))
+        // Quiet shade entry after the floating banner — no second heads-up.
+        nm.createNotificationChannel(NotificationChannel(
+            "mirrored", "Mirrored alerts", NotificationManager.IMPORTANCE_DEFAULT
+        ).apply {
+            description = "Phone notifications kept in the shade after the banner"
+            setSound(null, null)
+            enableVibration(false)
+        })
     }
 
     /** A line from the Pi: {"call": state, "number", "name"} or {"text": {...}}. */
@@ -627,13 +673,19 @@ class NowPlayingService : NotificationListenerService() {
     }
 
     private var textId = 100
+    private var shadeIdSeq = SHADE_ID_BASE
 
     private val textPopup by lazy { TextPopup(this) }
 
     /** A mirrored phone notification (from the forwarder on the phone, relayed
-     *  by the Pi): heads-up banner with the source app's icon + name, and a
-     *  row in the Alerts tab scrollback. */
+     *  by the Pi): floating banner + a lasting shade notification (actions /
+     *  Mute) so you can act later without opening Phone Link. */
     private fun showNotif(o: JSONObject) {
+        val pkg = o.optString("pkg")
+        if (pkg.isNotEmpty() && CarNotifMute.isMuted(this, pkg)) {
+            Log.i(TAG, "car-muted notif from $pkg — skipped")
+            return
+        }
         NotifLog.add(o)
         val app = o.optString("app").ifEmpty { "Notification" }
         val title = o.optString("title")
@@ -644,16 +696,74 @@ class NowPlayingService : NotificationListenerService() {
         val onAction = { act: NotifLog.Action, text: String? ->
             sendNotifAction(nid, act.id, text.orEmpty())
         }
-        if (textPopup.show(app, title, body, icon, 9000, 4, actions, onAction,
-                onTap = { showNotifDetail(o) })) return
+        val onMute = {
+            OverlayMuteActivity.start(this, pkg, app)
+        }
+        // Always keep a shade entry (quiet) so it remains after the banner goes.
+        postShadeNotif(o)
+        textPopup.show(app, title, body, icon, 9000, 4, actions, onAction, onMute,
+            onTap = { showNotifDetail(o) })
+    }
+
+    /** Quiet notification in the system shade with phone actions + Mute. */
+    private fun postShadeNotif(o: JSONObject) {
+        channels()
+        val app = o.optString("app").ifEmpty { "Notification" }
+        val title = o.optString("title")
+        val body = o.optString("text").ifEmpty { o.optString("big") }
+        val big = o.optString("big").ifEmpty { body }
+        val pkg = o.optString("pkg")
+        val nid = o.optString("nid")
+        val actions = NotifLog.parseActions(o)
+        val shadeId = shadeIdSeq++
+        if (shadeIdSeq > SHADE_ID_MAX) shadeIdSeq = SHADE_ID_BASE
+        val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        val open = PendingIntent.getActivity(
+            this, shadeId,
+            Intent(this, MainActivity::class.java)
+                .putExtra("open_alerts", true)
+                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            flags
+        )
         val head = if (title.isNotEmpty()) "$app  ·  $title" else app
-        val n = Notification.Builder(this, "texts_popup")
+        val b = Notification.Builder(this, "mirrored")
             .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setContentTitle(head).setContentText(body)
-            .setStyle(Notification.BigTextStyle().bigText(o.optString("big").ifEmpty { body }))
-            .setAutoCancel(true).build()
-        getSystemService(NotificationManager::class.java).notify(textId++, n)
-        if (textId > 150) textId = 100
+            .setContentTitle(head)
+            .setContentText(body)
+            .setStyle(Notification.BigTextStyle().bigText(big))
+            .setContentIntent(open)
+            .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
+            .setCategory(Notification.CATEGORY_MESSAGE)
+        val icon = decodeNotifIcon(o.optString("icon"))
+        if (icon is BitmapDrawable && icon.bitmap != null && Build.VERSION.SDK_INT >= 23) {
+            b.setLargeIcon(icon.bitmap)
+        }
+        // Up to 2 phone actions + Mute (Android shows ~3 actions).
+        for (act in actions.take(2)) {
+            val intent = Intent(
+                if (act.reply) ACTION_SHADE_REPLY else ACTION_SHADE_ACT
+            ).setPackage(packageName)
+                .putExtra(EXTRA_SHADE_ID, shadeId)
+                .putExtra(EXTRA_NID, nid)
+                .putExtra(EXTRA_ACTION_ID, act.id)
+                .putExtra(EXTRA_ACTION_LABEL, act.label)
+            val pi = PendingIntent.getBroadcast(this, shadeId * 10 + act.id.hashCode(), intent, flags)
+            b.addAction(Notification.Action.Builder(
+                null as android.graphics.drawable.Icon?, act.label, pi
+            ).build())
+        }
+        if (pkg.isNotEmpty()) {
+            val muteIntent = Intent(ACTION_SHADE_MUTE).setPackage(packageName)
+                .putExtra(EXTRA_SHADE_ID, shadeId)
+                .putExtra(EXTRA_PKG, pkg)
+                .putExtra(EXTRA_APP, app)
+            val mutePi = PendingIntent.getBroadcast(this, shadeId * 10 + 9, muteIntent, flags)
+            b.addAction(Notification.Action.Builder(
+                null as android.graphics.drawable.Icon?, "Mute", mutePi
+            ).build())
+        }
+        getSystemService(NotificationManager::class.java).notify(shadeId, b.build())
     }
 
     private fun showNotifDetail(o: JSONObject) {
@@ -662,8 +772,10 @@ class NowPlayingService : NotificationListenerService() {
         val body = o.optString("big").ifEmpty { o.optString("text") }
         val actions = NotifLog.parseActions(o)
         val nid = o.optString("nid")
+        val pkg = o.optString("pkg")
         textPopup.show(app, title, body, decodeNotifIcon(o.optString("icon")), 30000, 16, actions,
-            onAction = { act, text -> sendNotifAction(nid, act.id, text.orEmpty()) })
+            onAction = { act, text -> sendNotifAction(nid, act.id, text.orEmpty()) },
+            onMute = { OverlayMuteActivity.start(this, pkg, app) })
     }
 
     /** Head unit → Pi → phone: fire a Notification.Action (reply / mark read). */
@@ -672,6 +784,15 @@ class NowPlayingService : NotificationListenerService() {
         val o = JSONObject().put("nid", nid).put("id", actionId)
         if (text.isNotEmpty()) o.put("text", text)
         val line = JSONObject().put("notif_action", o).toString()
+        io.execute { sendLine(line) }
+    }
+
+    /** Head unit → Pi → phone: permanently mute [pkg] in the forwarder. */
+    fun sendNotifMute(pkg: String, appLabel: String = "") {
+        if (pkg.isEmpty()) return
+        val o = JSONObject().put("pkg", pkg)
+        if (appLabel.isNotEmpty()) o.put("app", appLabel)
+        val line = JSONObject().put("notif_mute", o).toString()
         io.execute { sendLine(line) }
     }
 
@@ -716,9 +837,20 @@ class NowPlayingService : NotificationListenerService() {
         }
     }
 
-    /** Lines from the Pi on the notification RFCOMM (Stage 3 actions). */
+    /** Lines from the Pi on the notification RFCOMM (Stage 3 actions / mute). */
     private fun onNotifLinkLine(line: String) {
         val j = try { JSONObject(line) } catch (_: Exception) { return }
+        val mute = j.optJSONObject("notif_mute")
+        if (mute != null) {
+            val pkg = mute.optString("pkg")
+            if (pkg.isNotEmpty()) {
+                val set = mutedNotifPackages().toMutableSet()
+                set.add(pkg)
+                setMutedNotifPackages(set)
+                Log.i(TAG, "Always-mute from head unit: $pkg")
+            }
+            return
+        }
         val a = j.optJSONObject("notif_action") ?: return
         val nid = a.optString("nid")
         val id = a.optString("id")
@@ -1159,7 +1291,11 @@ class NowPlayingService : NotificationListenerService() {
         } catch (e: Exception) {}
         link = UsbLink(this) { onPiLine(it) }
         bt = BtLink(this) { onPiLine(it) }
-        val actions = IntentFilter().apply { addAction(ACTION_ANSWER); addAction(ACTION_DECLINE) }
+        CarNotifMute.onBoot(this)
+        val actions = IntentFilter().apply {
+            addAction(ACTION_ANSWER); addAction(ACTION_DECLINE)
+            addAction(ACTION_SHADE_ACT); addAction(ACTION_SHADE_MUTE); addAction(ACTION_SHADE_REPLY)
+        }
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(callButtons, actions, Context.RECEIVER_NOT_EXPORTED)
         else @Suppress("UnspecifiedRegisterReceiverFlag") registerReceiver(callButtons, actions)
         val f = IntentFilter().apply {

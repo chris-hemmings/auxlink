@@ -283,6 +283,7 @@ class TextPopup(private val ctx: Context) {
      * @param icon  app icon (bitmap or tinted drawable); optional
      * @param actions reply / mark-read buttons from the phone notification
      * @param onAction (action, replyText?) — replyText set only for reply sends
+     * @param onMute optional Mute control (head-unit mute chooser)
      * @return false if the overlay couldn't be shown (caller should fall back
      *         to a notification)
      */
@@ -295,6 +296,7 @@ class TextPopup(private val ctx: Context) {
         lines: Int = 4,
         actions: List<NotifLog.Action> = emptyList(),
         onAction: (NotifLog.Action, String?) -> Unit = { _, _ -> },
+        onMute: (() -> Unit)? = null,
         onTap: () -> Unit = {},
     ): Boolean {
         if (!Settings.canDrawOverlays(ctx)) return false
@@ -384,12 +386,13 @@ class TextPopup(private val ctx: Context) {
                 }
                 elevation = 8 * dp
                 addView(head)
-                if (actions.isNotEmpty()) {
+                if (actions.isNotEmpty() || onMute != null) {
                     addView(LinearLayout(ctx).apply {
                         orientation = LinearLayout.HORIZONTAL
                         gravity = Gravity.END
                         setPadding(0, (10 * dp).toInt(), 0, 0)
-                        for (act in actions.take(3)) {
+                        // Room for Mute + up to 2 phone actions on a small banner.
+                        for (act in actions.take(if (onMute != null) 2 else 3)) {
                             addView(actionPill(act.label) {
                                 main.removeCallbacks(close)
                                 if (act.reply) {
@@ -404,6 +407,13 @@ class TextPopup(private val ctx: Context) {
                                     hide()
                                     onAction(act, null)
                                 }
+                            })
+                        }
+                        if (onMute != null) {
+                            addView(actionPill("Mute") {
+                                main.removeCallbacks(close)
+                                hide()
+                                onMute.invoke()
                             })
                         }
                     })
