@@ -27,6 +27,8 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.net.Uri
+import android.provider.Settings
 import android.provider.Telephony
 import android.service.notification.NotificationListenerService
 import android.util.Base64
@@ -239,6 +241,9 @@ class NowPlayingService : NotificationListenerService() {
                 main.postDelayed(this, 5000)
                 return
             }
+            // First beat after start: remember overlay state for loss detection.
+            if (beats == 0) overlayWasOn = try { Settings.canDrawOverlays(this@NowPlayingService) }
+            catch (_: Exception) { null }
             pickController()          // also resends (clears lastLine, pushes)
             // Nothing playing anywhere: say "still here" anyway, so the XIAO
             // sees the app has its USB link (else it replugs to get it one).
@@ -250,11 +255,64 @@ class NowPlayingService : NotificationListenerService() {
             // Keep Android's safe-volume warning suppressed: a car (A2DP)
             // reconnect can re-arm it mid-drive, so re-assert it every ~60 s.
             if (beats % 12 == 0) keepVolumeWarningOff()
+            // SMO / head units sometimes clear "Display over other apps" —
+            // notice quickly and offer a one-tap fix.
+            if (beats % 2 == 0) checkOverlayPermission()
             // This device's time zone and clock for the Pi (which has neither
             // in the car): at the start, then every 5 minutes.
             if (beats++ % 60 == 0) request(JSONObject().put("clock", JSONObject()
                 .put("tz", java.util.TimeZone.getDefault().id).put("now", System.currentTimeMillis())))
             main.postDelayed(this, 5000)
+        }
+    }
+
+    private var overlayWasOn: Boolean? = null
+    private var lastOverlayNudgeMs = 0L
+    private val NOTIF_OVERLAY = 7
+
+    /** If "Display over other apps" flips off, nudge with a high-priority
+     *  notification (call / text banners need it). */
+    private fun checkOverlayPermission() {
+        if (forwarderOnly) return
+        val on = try { Settings.canDrawOverlays(this) } catch (_: Exception) { return }
+        val was = overlayWasOn
+        overlayWasOn = on
+        val nm = getSystemService(NotificationManager::class.java)
+        if (on) {
+            nm.cancel(NOTIF_OVERLAY)
+            return
+        }
+        // Only nag when it was on before (true regression), or we have never
+        // seen it on this process and setup still needs it.
+        val lost = was == true
+        if (!lost && was != null) return
+        val now = System.currentTimeMillis()
+        if (now - lastOverlayNudgeMs < 30 * 60 * 1000L && !lost) return
+        lastOverlayNudgeMs = now
+        try {
+            nm.createNotificationChannel(NotificationChannel(
+                "permissions", "Permissions", NotificationManager.IMPORTANCE_HIGH
+            ).apply { description = "When a required permission is turned off" })
+            val open = PendingIntent.getActivity(
+                this, 7,
+                Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            val n = Notification.Builder(this, "permissions")
+                .setSmallIcon(android.R.drawable.ic_dialog_alert)
+                .setContentTitle(
+                    if (lost) "Display over other apps was turned off"
+                    else "Allow Display over other apps"
+                )
+                .setContentText("Needed for call and text pop-ups over music. Tap to turn it back on.")
+                .setContentIntent(open)
+                .setAutoCancel(true)
+                .setOnlyAlertOnce(true)
+                .build()
+            nm.notify(NOTIF_OVERLAY, n)
+            if (lost) Log.w(TAG, "Display over other apps revoked — nudged user")
+        } catch (e: Exception) {
+            Log.w(TAG, "overlay nudge failed: ${e.message}")
         }
     }
 

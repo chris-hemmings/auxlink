@@ -97,6 +97,17 @@
                 android:resource="@xml/device_filter" />
         </activity>
 
+        <!-- Reply from a banner: normal Activity (not a focusable overlay). -->
+        <activity
+            android:name=".OverlayReplyActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.DeviceDefault.Dialog"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:windowSoftInputMode="stateVisible|adjustResize"
+            android:label="Reply" />
+
         <service
             android:name=".NowPlayingService"
             android:exported="true"
