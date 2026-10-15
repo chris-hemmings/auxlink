@@ -24,6 +24,10 @@ music device:
   (conversations and replies) that use your phone through the Pi, so the
   music device needs no SIM; plus pop-ups for calls (Answer / Hang up) and
   texts.
+- **Mirrored notifications** from your Android phone (WhatsApp, Mail, etc.)
+  can show on the music device as heads-up banners and shade alerts, with
+  reply / mark-read and Mute where the app supports them. SMS stays on the
+  normal Messages / car MAP path so it is not doubled.
 - **Voice search** on the Android device can use the **car's microphone**,
   with every music source.
 - Everything is set up from a **web page** on the Pi. Nothing is hard-coded,
@@ -50,10 +54,13 @@ as three separate kinds of release:
 
 | Release | File | What it is |
 |---|---|---|
-| **AuxLink Pi image** | `auxlink-pi-X.img.xz` | The whole Pi: Raspberry Pi OS Lite with AuxLink installed. One file, flashed with Raspberry Pi Imager. |
-| | `auxlink-pi-update-X.zip` | Updates a running Pi from its setup page. |
-| **Phone Link app** (AuxLink app) | `auxlink-v1.0.N.apk` | The Android app "Phone Link" for the music device: now playing, album art, Phone and Messages tabs, car buttons. Install with Obtainium. |
+| **AuxLink Pi image** | `auxlink-pi-2.0.N.img.xz` | The whole Pi: Raspberry Pi OS Lite with AuxLink installed. One file, flashed with Raspberry Pi Imager. |
+| | `auxlink-pi-update-2.0.N.zip` | Updates a running Pi from its setup page. |
+| **Phone Link app** (AuxLink app) | `auxlink-v2.0.N.apk` | The Android app "Phone Link" for the music device **and** (optionally) your phone as a notification forwarder. Install with Obtainium. |
 | **AuxLink XIAO firmware** | `auxlink-xiao-X.uf2` | Firmware for the Seeed XIAO RP2040 (wired backup source only). |
+
+1.x releases are kept on GitHub for rollback; newer 2.x builds of each kind
+replace older 2.x ones.
 
 ### Source
 
@@ -89,6 +96,21 @@ as three separate kinds of release:
 | **Seeed Studio XIAO RP2040** | The small board that the Android device sees as a USB sound card. |
 | **USB-C cable** | From the Android device's USB port to the XIAO. It also powers the XIAO. |
 | **7 jumper wires** (female-female) or solder | XIAO to the Pi's GPIO header: D0, D1, D2, D3, D6, D7 and GND (section 3.2). Keep the I2S wires short (under ~15 cm). |
+
+### Needed for mirrored phone notifications (optional)
+Install **Phone Link on your phone** as well as on the music device. The phone
+forwards selected apps over Bluetooth to the Pi; the music device shows them.
+
+| Item | Notes |
+|---|---|
+| **Android phone** paired to the Pi | Same phone AuxLink already uses for calls/texts. Bluetooth to the Pi must be up (the phone adapter). |
+| **Phone Link on the phone** | Same APK as the head unit. Role **Phone** (or Auto). Turn on **Mirror this phone's notifications**. |
+| **Phone Link on the music device** | Role **Head unit** (or Auto). USB-C to the Pi (recommended) so banners can arrive. |
+| **Permissions on the phone** | **Notification access** (required — this *does* read notification content for forwarding), **Nearby devices / Bluetooth**, run in background. |
+| **Permissions on the music device** | **Display over other apps** for the floating banner; without it, alerts still land in the shade / Alerts tab. |
+
+SMS/Messages is skipped automatically (already handled by the car / Messages
+tab). See [section 6.5](#65-mirror-phone-notifications-to-the-music-device).
 
 ### Optional
 - **Push button** between GPIO26 (pin 37) and GND (pin 34). Hold it 3 s to
@@ -473,8 +495,12 @@ No XIAO and no wiring.
 
 ## 6. The Android music device and the Phone Link app
 
-**Phone Link** (formerly "AuxLink app") runs on the music device. It has
-three tabs:
+**Phone Link** (formerly "AuxLink app") runs on the **music device**, and
+optionally on your **phone** to mirror notifications. On first run you can
+pick a role (**Phone** / **Head unit** / **Auto**); Auto guesses from USB and
+forwarder settings.
+
+On the music device it has:
 
 - **Phone:** **Favourites** (your phone's starred contacts), **Contacts**
   (searchable), **Recents** (missed calls in red) and a **Keypad**. Tap a
@@ -485,13 +511,19 @@ three tabs:
   quick replies such as "On my way" and "Driving, I'll call you soon") sent
   by your phone. Each sent text shows "Sending…", then its time, or why it
   wasn't sent. Needs **Text messages in the car** on (Pi Settings tab).
+- **Alerts:** mirrored notifications from the phone (when forwarding is on),
+  with Mark-read / reply where the app offers them, Mute, and a scrollback
+  list. On a head-unit role the forwarder controls are hidden; on a phone
+  role this tab holds the forwarder switches.
 - **Status:** the connection to the Pi, what's playing, **The Pi** (Wi-Fi
   network and signal, IP address, setup page address, software version,
   uptime), a setup checklist that says why each permission is needed, and
   **Tools** (below).
 
 Phone and Messages work with the **USB-C** source (and need the Pi update
-from the same time; the Pi's version shows on the Status tab).
+from the same time; the Pi's version shows on the Status tab). Mirrored
+Alerts also need USB-C (or Bluetooth app link) so the Pi can reach the music
+device.
 
 It also reads what is playing on the device and sends it to the Pi, which
 shows it in the car:
@@ -525,18 +557,19 @@ straight from GitHub releases.
    You can turn on background update checks in Obtainium's settings.
 
 ### 6.2 Or install by hand
-Download the latest `auxlink-v1.0.N.apk` (an "AuxLink app" release) from the
+Download the latest `auxlink-v2.0.N.apk` (an "AuxLink app" release) from the
 [Releases page](https://github.com/chris-hemmings/auxlink/releases) on
 the device and open it. To update, install the newer APK over the top; it is
-signed with the same key, and permissions and settings are kept.
+signed with the same key, and permissions and settings are kept. Install the
+same APK on your **phone** if you want notification mirroring (6.5).
 
-### 6.3 Set the app up (once)
-Open **Phone Link**: the **Status** tab's **Setup** list shows what's left
-to do, with an **Allow** button for each and a line saying why.
+### 6.3 Set the app up on the music device (once)
+Open **Phone Link**: pick **Head unit** (or Auto), then use the **Status**
+tab's **Setup** list — each line has an **Allow** button and why it is needed.
 
 1. **Notification access** (required): tap **Open** and turn on **Phone
-   Link**. This is how Android lets it see what is playing; it does not read
-   your notifications' content.
+   Link**. On the music device this is how Android lets it see what is
+   playing; it does not forward your shade notifications from this device.
    - If the switch is **greyed out** ("restricted setting"), go to
      **Settings → Apps → Phone Link → ⋮ (top right) → Allow restricted
      settings**, then try again. Android 13+ does this for apps installed
@@ -545,7 +578,7 @@ to do, with an **Allow** button for each and a line saying why.
 3. **Microphone:** nothing is recorded, but without it Android's USB prompt
    has no **Always** option and comes back at every plug-in.
 4. **Notifications** (Android 13+) and **Call and text pop-ups** ("Display
-   over other apps"): for the call and text pop-ups below.
+   over other apps"): for call / text / mirrored-alert banners.
 5. Connect the device to the Pi's USB-C (or plug in the XIAO). Android asks
    **"Open Phone Link (USB) when this device is connected?"** Tick
    **Always** and tap **OK**.
@@ -569,10 +602,14 @@ It keeps a quiet "Phone Link connected" notification, which stops Android
 and clock every few minutes, so message times and logs are right even
 without internet in the car.
 
-**Tools** (Status tab):
+**Tools** (Status / Tools — music tools are hidden in Phone role):
 - **Fix sound:** the car shows music playing but it's silent. The Pi
   restarts the music stream to the car, like **Check and fix**. Pausing and
   pressing play again in the car within a few seconds does the same.
+- **Re-plug USB-C:** force the Pi to re-enumerate its USB-C gadget (stuck
+  "Wired" but silent).
+- **Alert banner position:** presets or drag a test banner; the position is
+  saved for call / text / mirrored alerts.
 - **Test the call pop-up:** a pretend call for 8 seconds.
 - **Setup Wi-Fi:** the Pi turns on **AuxLink-setup** for 15 minutes (not if
   it's on your home Wi-Fi; its page is then on the home network).
@@ -594,7 +631,7 @@ allowed:
   open that conversation on the Messages tab.
 - Without the pop-up permission they show as normal notifications instead.
 
-### 6.4 Other requirements for the device
+### 6.4 Other requirements for the music device
 - **Android 8.0 or newer.**
 - **USB host / OTG** for the wired source (the XIAO).
 - For the **USB-C source**, the device must be able to output audio to a USB
@@ -606,16 +643,63 @@ allowed:
   goes mono or quiet, check the player's output device (e.g. Spotify's device
   picker) didn't switch to the device's own speaker.
 
+### 6.5 Mirror phone notifications to the music device
+Android has no car Bluetooth profile for arbitrary app notifications, so
+Phone Link on the **phone** forwards them to the Pi over a dedicated
+Bluetooth serial link; the Pi relays them to Phone Link on the **music
+device**.
+
+**On the phone**
+1. Install the same Phone Link APK (Obtainium or hand install).
+2. Choose role **Phone** (or Auto).
+3. **Status → Setup:** allow **Notification access** (here it *does* read
+   notification content to forward it), **Nearby devices / Bluetooth**, and
+   **Run in the background**.
+4. Open the **Alerts** tab:
+   - Turn on **Mirror this phone's notifications**.
+   - Optionally **Forwarder only** (hides Phone / Messages / Status — useful
+     if this install is only for forwarding; long-press Alerts to turn it off).
+   - **Apps to forward:** Wear-style list of launchable apps; switch off any
+     you don't want. SMS/Messages is skipped automatically.
+   - **Test send** / **Link status:** confirm the phone can reach the Pi
+     (`link=connected to …`). After the phone or Pi reconnects Bluetooth,
+     wait a few seconds then test again — the notif link is separate from
+     the phone's normal HFP connection.
+
+**On the music device (head unit)**
+1. Role **Head unit** (or Auto). Stay connected over USB-C to the Pi.
+2. Allow **Display over other apps** for the floating banner.
+3. When a mirrored alert arrives: short banner (drag to reposition), then a
+   quiet shade notification with actions. **Mute** can silence that app for
+   30 minutes, until next boot, or always (always is sent back to the phone's
+   forwarder). The **Alerts** tab keeps a scrollback with Mark-read / reply
+   when the original notification offered those actions.
+
+**Pi**
+- No extra setup page switch: the notification forwarder service is always
+  registered. The phone must be the configured **Phone** in AuxLink (wrong
+  Bluetooth address is refused).
+- Keep Pi and app on current 2.x builds so reconnect after Bluetooth/USB
+  drops stays quick.
+
+**Not forwarded:** ongoing / media / call categories, group summaries, the
+Phone Link app's own notifications, and the default SMS app (use Messages /
+the car instead).
+
 ---
 
 ## 7. Updating
 
 - **The Pi:**
-  - **From the web page:** go to the **Updates** tab, choose `auxlink-pi-update-X.zip`
-    from the latest "AuxLink Pi image" release (or GitHub's "Download ZIP" of
-    this repository) and tap **Install update**.
-    No reboot is needed, and the car and phone stay connected. The installed
-    version shows at the top of the page and on Phone Link's Status tab.
+  - **From the web page:** go to the **Updates** tab, choose
+    `auxlink-pi-update-2.0.N.zip` from the latest "AuxLink Pi image" release
+    (or GitHub's "Download ZIP" of this repository) and tap **Install
+    update**. No reboot is needed, and the car and phone stay connected. The
+    installed version shows at the top of the page and on Phone Link's Status
+    tab.
+  - **From Phone Link (music device):** Status can check GitHub and push an
+    update over USB-C (progress sheet for download → send → install). Needs
+    the device online for the download and linked to the Pi.
   - When an update changes the Bluetooth patches (album art, favourites), it
     also rebuilds the Pi's Bluetooth program **in the background** (15-20
     min, needs internet; Recent events shows progress and retries on the next
@@ -624,8 +708,9 @@ allowed:
   - **Over SSH:** `git clone` (or `git pull`) this repository, then
     `cd auxlink/pi && sudo ./update.sh`.
   - Or flash the newest image again (it starts unpaired).
-- **The app:** Obtainium (or install the newer APK). Features that need both
-  (e.g. Phone and Messages) say so; update the Pi too.
+- **The app:** Obtainium (or install the newer APK) on the **music device**
+  and on the **phone** if you use notification mirroring. Features that need
+  both sides (Phone / Messages / Alerts) say so; update the Pi too.
 - **The XIAO:** only when there's a new "AuxLink XIAO firmware" release.
   Easiest: the setup page's **Updates** tab (**XIAO firmware**). Hold **B**, plug the
   XIAO into one of the Pi's USB ports, choose the `.uf2` and tap **Flash
@@ -690,6 +775,7 @@ awake (Tesla: **Controls → Electrical → Keep Accessory Power On**), or tap
 | Car keeps switching **Sync Messages** off | Update the Pi (1.0.81+), turn it back on in the car's Bluetooth settings. |
 | Message times wrong (e.g. hours off) | Update the Pi (1.0.79+) and the app: the Pi then takes its time zone and clock from the music device. |
 | Phone Link doesn't show a new version | In Obtainium, pull down to check; check its URL is `https://github.com/chris-hemmings/auxlink`. Or install the APK by hand (6.2). |
+| Mirrored notifications don't show on the head unit | On the **phone**: Alerts → mirroring on, Notification access on, **Test send** / **Link status** says connected. On the **head unit**: USB-C linked, Display over other apps for banners (shade still works without it). Both on current 2.x app; Pi 2.x. After Bluetooth reconnect wait a few seconds — the notif RFCOMM is separate from HFP. |
 | Pop-ups for calls/texts don't appear | Phone Link → Status → Setup: allow **Call and text pop-ups**; then **Tools → Test the call pop-up**. |
 | Logs over SSH | `journalctl -u auxlink-media -u hfp-relay -u auxlink-pairing -f` and `journalctl --user -u auxlink-audio -f` |
 
@@ -712,15 +798,16 @@ RGB-LED status code that the XIAO also uses.
 
 **Releases** are built by GitHub Actions (Actions tab → workflow → **Run
 workflow**):
-- **Build AuxLink Pi image** (`pi-image.yml`, asks for a version): builds
-  the SD-card image on a native ARM runner (`pi/image/build-image.sh`, about
-  an hour) and publishes it with the update zip.
+- **Build AuxLink Pi image** (`pi-image.yml`): builds the SD-card image on a
+  native ARM runner (`pi/image/build-image.sh`, about an hour) and publishes
+  it with the update zip as **`2.0.<run_number>`** when the version field is
+  left blank (optional override still works). Tag `pi-v2.0.N`.
 - **Build AuxLink XIAO firmware** (`xiao-firmware.yml`, asks for a version).
 - **Build AuxLink app** (`release.yml`): runs by itself on every push to
-  `main` that changes `android/`.
+  `main` that changes `android/`, as **`v2.0.<run_number>`**.
 - **Remove old releases** (`cleanup-releases.yml`): runs after each
-  successful build and keeps only the newest app, Pi image and XIAO firmware
-  release.
+  successful build; keeps **all 1.x** releases and only the newest **2.x+**
+  of each kind (app, Pi image, XIAO).
 
 **Android app**: open `android/` in Android Studio, or run
 `gradle assembleRelease`. The GitHub Actions workflow
