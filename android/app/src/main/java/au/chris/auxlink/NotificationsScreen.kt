@@ -50,7 +50,12 @@ class NotificationsScreen(
         list.setOnItemClickListener { _, _, i, _ -> detail(rows[i]) }
         empty = ui.empty("", "")
         val clear = ui.button("Clear", ui.line, ui.text1) {
-            NotifLog.clear()
+            AlertDialog.Builder(ctx, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle("Clear all alerts?")
+                .setMessage("Removes the scrollback on this device. New notifications still appear.")
+                .setPositiveButton("Clear") { _, _ -> NotifLog.clear() }
+                .setNegativeButton("Cancel", null)
+                .show()
         }
         val pane = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
@@ -67,7 +72,8 @@ class NotificationsScreen(
                 addView(settings, ui.matchWrap(bottom = 12))
             } else {
                 addView(ui.text(
-                    "Mirrored notifications from your phone. Tap one to read or reply.",
+                    "Mirrored notifications from your phone. Tap one to read or reply. " +
+                        "They also stay in the notification shade after the banner.",
                     13f, ui.text2
                 ), ui.matchWrap(bottom = 8))
             }
@@ -139,14 +145,6 @@ class NotificationsScreen(
     private fun detail(item: NotifLog.Item) {
         val body = item.body().ifEmpty { "(no text)" }
         val title = item.app + if (item.title.isNotEmpty()) "  ·  ${item.title}" else ""
-        if (item.actions.isEmpty() || item.nid.isEmpty()) {
-            AlertDialog.Builder(ctx, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-                .setTitle(title)
-                .setMessage(body)
-                .setPositiveButton("OK", null)
-                .show()
-            return
-        }
         val pad = ui.px(20)
         val col = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
@@ -154,7 +152,7 @@ class NotificationsScreen(
             addView(ui.text(body, 15f, ui.text1))
         }
         val replyAct = item.actions.firstOrNull { it.reply }
-        val input = if (replyAct != null) {
+        val input = if (replyAct != null && item.nid.isNotEmpty()) {
             EditText(ctx).apply {
                 hint = replyAct.label.ifBlank { "Reply" }
                 setTextColor(ui.text1)
@@ -207,8 +205,19 @@ class NotificationsScreen(
             }
         }
         for (act in item.actions.filter { !it.reply }.take(2)) {
+            if (item.nid.isEmpty()) break
             buttons.addView(ui.button(act.label, ui.line, ui.text1) {
                 fire(act)
+            }.also {
+                it.layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ui.px(42)
+                ).apply { marginStart = ui.px(4) }
+            })
+        }
+        if (item.pkg.isNotEmpty()) {
+            buttons.addView(ui.button("Mute", ui.line, ui.text1) {
+                dlg.dismiss()
+                OverlayMuteActivity.start(ctx, item.pkg, item.app)
             }.also {
                 it.layoutParams = LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT, ui.px(42)

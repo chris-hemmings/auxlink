@@ -187,6 +187,7 @@ class MainActivity : Activity() {
         }
         showTab(start)
         openChatFrom(intent)
+        openAlertsFrom(intent)
 
         // First run: ask for what Android lets an app ask for directly.
         val want = mutableListOf<String>()
@@ -202,6 +203,14 @@ class MainActivity : Activity() {
         super.onNewIntent(intent)
         setIntent(intent)
         openChatFrom(intent)
+        openAlertsFrom(intent)
+    }
+
+    /** Shade notification tap → Alerts tab. */
+    private fun openAlertsFrom(i: Intent?) {
+        if (i?.getBooleanExtra("open_alerts", false) != true) return
+        i.removeExtra("open_alerts")
+        showTab(3)
     }
 
     /** A tapped text: its conversation, found by number (or by name). */

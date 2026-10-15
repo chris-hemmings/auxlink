@@ -2447,15 +2447,15 @@ class NotifLink(dbus.service.Object):
         return True
 
     def to_phone(self, obj):
-        """Send one JSON line to the phone forwarder (reply / mark-read)."""
+        """Send one JSON line to the phone forwarder (reply / mark-read / mute)."""
         if self.sock is None:
-            log("notif_action: phone forwarder not connected")
+            log("notif to phone: forwarder not connected")
             return False
         try:
             self.sock.sendall((json.dumps(obj, separators=(",", ":")) + "\n").encode("utf-8"))
             return True
         except OSError as e:
-            log(f"notif_action send failed: {e}")
+            log(f"notif to phone failed: {e}")
             self.drop()
             return False
 
@@ -2663,6 +2663,14 @@ def main():
                         link.to_phone({"notif_action": info["notif_action"]})
                     else:
                         log("notif_action: forwarder service not registered")
+                elif "notif_mute" in info:
+                    # Head unit → phone: permanently mute a package in the forwarder.
+                    link = NOTIF_LINK.get("link")
+                    if link is not None:
+                        link.to_phone({"notif_mute": info["notif_mute"]})
+                        log("notif_mute: " + str((info.get("notif_mute") or {}).get("pkg", "")))
+                    else:
+                        log("notif_mute: forwarder service not registered")
                 elif PHONE["link"] and ("req" in info or "dial" in info or "dtmf" in info or "sms" in info):
                     PHONE["link"].handle(info)
                 elif "cmd" in info:
