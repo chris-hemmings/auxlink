@@ -36,7 +36,10 @@ class BtLink(private val context: Context, private val serviceUuid: UUID = APP_U
         /** Must match NOTIF_CHANNEL / APP_CHANNEL in auxlink-media.py. */
         const val NOTIF_CHANNEL = 22
         const val APP_CHANNEL = 23
+        /** Music / general link: back off after a failed sweep. */
         private const val RETRY_MS = 20_000L
+        /** Notification forwarder: reconnect quickly after phone↔Pi drop. */
+        private const val NOTIF_RETRY_MS = 3_000L
         private const val TAG = "SmoBtLink"
         /** What the last attempt did, shown on the app's screen. */
         @Volatile var lastTry: String = "(not tried yet)"
@@ -52,6 +55,8 @@ class BtLink(private val context: Context, private val serviceUuid: UUID = APP_U
     private var out: OutputStream? = null
     private var nextTry = 0L
     private var lastGood: String? = null
+    private val retryMs =
+        if (serviceUuid == NOTIF_UUID) NOTIF_RETRY_MS else RETRY_MS
     /** This instance's last attempt (not shared like the companion lastTry). */
     @Volatile var lastResult: String = "(not tried yet)"
     var deviceName: String = ""
@@ -62,8 +67,9 @@ class BtLink(private val context: Context, private val serviceUuid: UUID = APP_U
 
     fun isOpen() = sock != null
 
-    /** A button was pressed: try at once, not after the retry wait. */
-    fun retryNow() { if (sock == null) nextTry = 0L }
+    /** Try at once (button / reconnect): clear the back-off even if a zombie
+     *  socket is still held — [send] will close it and reopen. */
+    fun retryNow() { nextTry = 0L }
 
     @Synchronized
     fun send(line: String): Boolean {
@@ -75,6 +81,7 @@ class BtLink(private val context: Context, private val serviceUuid: UUID = APP_U
         } catch (e: Exception) {
             Log.w(TAG, "write failed: ${e.message}")
             close()
+            nextTry = 0L   // phone/Pi just dropped — reconnect on the next send
             false
         }
     }
@@ -143,7 +150,7 @@ class BtLink(private val context: Context, private val serviceUuid: UUID = APP_U
     @Synchronized
     fun open(): Boolean {
         if (!permitted() || SystemClock.elapsedRealtime() < nextTry) return false
-        nextTry = SystemClock.elapsedRealtime() + RETRY_MS
+        nextTry = SystemClock.elapsedRealtime() + retryMs
         val tried = mutableListOf<String>()
         val list = candidates()
         if (list.isEmpty()) { lastTry = "no paired devices (or Bluetooth off)"; lastResult = lastTry }
