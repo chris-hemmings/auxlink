@@ -11,8 +11,11 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
+import android.text.InputType
+import android.view.inputmethod.EditorInfo
 import android.widget.Button
 import android.widget.Chronometer
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
 
@@ -275,12 +278,14 @@ class TextPopup(private val ctx: Context) {
 
     /**
      * Mirrored phone notification banner: app icon + app name up top, then
-     * title and body. Floats over other apps; tap to expand / open.
+     * title and body. Optional Stage 3 action pills (Reply / Mark as read).
      *
      * @param app   source app label ("WhatsApp", …)
      * @param title notification title (may be empty)
      * @param body  preview text
      * @param icon  app icon (bitmap or tinted drawable); optional
+     * @param actions reply / mark-read buttons from the phone notification
+     * @param onAction (action, replyText?) — replyText set only for reply sends
      * @return false if the overlay couldn't be shown (caller should fall back
      *         to a notification)
      */
@@ -291,6 +296,8 @@ class TextPopup(private val ctx: Context) {
         icon: android.graphics.drawable.Drawable? = null,
         stayMs: Long = 10000,
         lines: Int = 4,
+        actions: List<NotifLog.Action> = emptyList(),
+        onAction: (NotifLog.Action, String?) -> Unit = { _, _ -> },
         onTap: () -> Unit = {},
     ): Boolean {
         if (!Settings.canDrawOverlays(ctx)) return false
@@ -360,9 +367,18 @@ class TextPopup(private val ctx: Context) {
                 addView(bodyView)
             }
 
-            val box = LinearLayout(ctx).apply {
+            val head = LinearLayout(ctx).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
+                addView(iconView)
+                addView(textCol, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    marginStart = gap
+                })
+                setOnClickListener { hide(); onTap() }
+            }
+
+            val box = LinearLayout(ctx).apply {
+                orientation = LinearLayout.VERTICAL
                 setPadding(pad, pad, pad, pad)
                 background = GradientDrawable().apply {
                     setColor(0xF2222124.toInt())
@@ -370,11 +386,28 @@ class TextPopup(private val ctx: Context) {
                     setStroke((1 * dp).toInt().coerceAtLeast(1), 0x33FFFFFF)
                 }
                 elevation = 8 * dp
-                addView(iconView)
-                addView(textCol, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                    marginStart = gap
-                })
-                setOnClickListener { hide(); onTap() }
+                addView(head)
+                if (actions.isNotEmpty()) {
+                    addView(LinearLayout(ctx).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.END
+                        setPadding(0, (10 * dp).toInt(), 0, 0)
+                        for (act in actions.take(3)) {
+                            addView(actionPill(act.label) {
+                                main.removeCallbacks(close)
+                                if (act.reply) {
+                                    showReply(act.label.ifBlank { "Reply" }) { text ->
+                                        hide()
+                                        onAction(act, text)
+                                    }
+                                } else {
+                                    hide()
+                                    onAction(act, null)
+                                }
+                            })
+                        }
+                    })
+                }
                 // Slide + fade in.
                 alpha = 0f
                 translationY = (-24 * dp)
@@ -398,6 +431,94 @@ class TextPopup(private val ctx: Context) {
             hide()
             false
         }
+    }
+
+    /** Focusable reply strip so the soft keyboard can type a response. */
+    private fun showReply(placeholder: String, onSend: (String) -> Unit) {
+        hide()
+        if (!Settings.canDrawOverlays(ctx)) return
+        try {
+            val pad = (12 * dp).toInt()
+            val input = EditText(ctx).apply {
+                hint = placeholder
+                setHintTextColor(0xFF9AA0A6.toInt())
+                setTextColor(Color.WHITE)
+                textSize = 16f
+                setBackgroundColor(0x00000000)
+                setPadding(pad, pad, pad, pad)
+                maxLines = 4
+                imeOptions = EditorInfo.IME_ACTION_SEND
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            }
+            val send = actionPill("Send") {
+                val text = input.text?.toString()?.trim().orEmpty()
+                if (text.isEmpty()) return@actionPill
+                hide()
+                onSend(text)
+            }
+            val cancel = actionPill("Cancel") { hide() }
+            val box = LinearLayout(ctx).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(pad, pad, pad, pad)
+                background = GradientDrawable().apply {
+                    setColor(0xF2222124.toInt())
+                    cornerRadius = 20 * dp
+                    setStroke((1 * dp).toInt().coerceAtLeast(1), 0x33FFFFFF)
+                }
+                elevation = 8 * dp
+                addView(input, LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+                ))
+                addView(LinearLayout(ctx).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.END
+                    addView(cancel)
+                    addView(send)
+                })
+            }
+            input.setOnEditorActionListener { _, actionId, _ ->
+                if (actionId == EditorInfo.IME_ACTION_SEND) {
+                    val text = input.text?.toString()?.trim().orEmpty()
+                    if (text.isNotEmpty()) { hide(); onSend(text) }
+                    true
+                } else false
+            }
+            val p = WindowManager.LayoutParams(
+                (440 * dp).toInt().coerceAtMost(ctx.resources.displayMetrics.widthPixels - (16 * dp).toInt()),
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                y = (140 * dp).toInt()
+                softInputMode = WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE
+            }
+            wm.addView(box, p)
+            root = box
+            input.requestFocus()
+            main.postDelayed(close, 60_000)
+        } catch (_: Exception) {
+            hide()
+        }
+    }
+
+    private fun actionPill(label: String, click: () -> Unit) = Button(ctx).apply {
+        text = label
+        setTextColor(Color.WHITE)
+        textSize = 14f
+        isAllCaps = false
+        background = GradientDrawable().apply {
+            setColor(0xFF3C4043.toInt()); cornerRadius = 20 * dp
+        }
+        setPadding((14 * dp).toInt(), 0, (14 * dp).toInt(), 0)
+        minHeight = 0
+        minimumHeight = (36 * dp).toInt()
+        setOnClickListener { click() }
+        layoutParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, (36 * dp).toInt()
+        ).apply { marginStart = (8 * dp).toInt() }
     }
 
     fun hide() {

@@ -5,20 +5,24 @@ import android.content.Context
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.drawable.BitmapDrawable
+import android.text.InputType
 import android.util.Base64
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.inputmethod.EditorInfo
 import android.widget.BaseAdapter
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.TextView
+import android.widget.Toast
 
 /**
  * Alerts tab: forwarder controls (on the phone) + scrollback of mirrored
- * notifications. Tap a row for the full text.
+ * notifications. Tap a row for the full text and Stage 3 actions.
  */
 class NotificationsScreen(
     private val ctx: Context,
@@ -63,7 +67,7 @@ class NotificationsScreen(
                 addView(settings, ui.matchWrap(bottom = 12))
             } else {
                 addView(ui.text(
-                    "Mirrored notifications from your phone. Tap one to read the full text.",
+                    "Mirrored notifications from your phone. Tap one to read or reply.",
                     13f, ui.text2
                 ), ui.matchWrap(bottom = 8))
             }
@@ -134,11 +138,85 @@ class NotificationsScreen(
 
     private fun detail(item: NotifLog.Item) {
         val body = item.body().ifEmpty { "(no text)" }
-        AlertDialog.Builder(ctx, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle(item.app + if (item.title.isNotEmpty()) "  ·  ${item.title}" else "")
-            .setMessage(body)
-            .setPositiveButton("OK", null)
-            .show()
+        val title = item.app + if (item.title.isNotEmpty()) "  ·  ${item.title}" else ""
+        if (item.actions.isEmpty() || item.nid.isEmpty()) {
+            AlertDialog.Builder(ctx, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle(title)
+                .setMessage(body)
+                .setPositiveButton("OK", null)
+                .show()
+            return
+        }
+        val pad = ui.px(20)
+        val col = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, ui.px(12), pad, ui.px(8))
+            addView(ui.text(body, 15f, ui.text1))
+        }
+        val replyAct = item.actions.firstOrNull { it.reply }
+        val input = if (replyAct != null) {
+            EditText(ctx).apply {
+                hint = replyAct.label.ifBlank { "Reply" }
+                setTextColor(ui.text1)
+                setHintTextColor(ui.text2)
+                textSize = 15f
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+                imeOptions = EditorInfo.IME_ACTION_SEND
+                setPadding(0, ui.px(12), 0, ui.px(8))
+            }.also { col.addView(it) }
+        } else null
+        val buttons = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END
+            setPadding(0, ui.px(8), 0, 0)
+        }
+        val dlg = AlertDialog.Builder(ctx, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle(title)
+            .setView(col)
+            .setNegativeButton("Close", null)
+            .create()
+        fun fire(act: NotifLog.Action, text: String = "") {
+            val svc = NowPlayingService.instance
+            if (svc == null) {
+                Toast.makeText(ctx, "Phone Link isn't running.", Toast.LENGTH_SHORT).show()
+                return
+            }
+            svc.sendNotifAction(item.nid, act.id, text)
+            Toast.makeText(ctx,
+                if (text.isNotEmpty()) "Reply sent" else act.label,
+                Toast.LENGTH_SHORT).show()
+            dlg.dismiss()
+        }
+        if (replyAct != null && input != null) {
+            buttons.addView(ui.button("Send", ui.accent) {
+                val text = input.text?.toString()?.trim().orEmpty()
+                if (text.isEmpty()) {
+                    Toast.makeText(ctx, "Type a reply first.", Toast.LENGTH_SHORT).show()
+                } else fire(replyAct, text)
+            }.also {
+                it.layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ui.px(42)
+                ).apply { marginEnd = ui.px(8) }
+            })
+            input.setOnEditorActionListener { _, actionId, _ ->
+                if (actionId == EditorInfo.IME_ACTION_SEND) {
+                    val text = input.text?.toString()?.trim().orEmpty()
+                    if (text.isNotEmpty()) fire(replyAct, text)
+                    true
+                } else false
+            }
+        }
+        for (act in item.actions.filter { !it.reply }.take(2)) {
+            buttons.addView(ui.button(act.label, ui.line, ui.text1) {
+                fire(act)
+            }.also {
+                it.layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ui.px(42)
+                ).apply { marginStart = ui.px(4) }
+            })
+        }
+        if (buttons.childCount > 0) col.addView(buttons)
+        dlg.show()
     }
 
     private fun decodeIcon(b64: String): BitmapDrawable? {

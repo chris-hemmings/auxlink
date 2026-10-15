@@ -7,6 +7,12 @@ import org.json.JSONObject
  * Newest first. Capped so a noisy app cannot grow forever.
  */
 object NotifLog {
+    data class Action(
+        val id: String,
+        val label: String,
+        val reply: Boolean,
+    )
+
     data class Item(
         val id: Long,
         val app: String,
@@ -16,6 +22,9 @@ object NotifLog {
         val pkg: String,
         val whenMs: Long,
         val iconB64: String,
+        /** Phone-side notification key (for reply / mark-read). */
+        val nid: String,
+        val actions: List<Action>,
     ) {
         fun preview(): String = text.ifEmpty { big }.replace("\n", " ")
         fun body(): String = big.ifEmpty { text }
@@ -25,6 +34,19 @@ object NotifLog {
     private val items = mutableListOf<Item>()
     private val listeners = mutableListOf<() -> Unit>()
     private var nextId = 1L
+
+    fun parseActions(o: JSONObject): List<Action> {
+        val arr = o.optJSONArray("actions") ?: return emptyList()
+        val out = mutableListOf<Action>()
+        for (i in 0 until arr.length()) {
+            val a = arr.optJSONObject(i) ?: continue
+            val id = a.optString("id")
+            val label = a.optString("label")
+            if (id.isEmpty() || label.isEmpty()) continue
+            out += Action(id, label, a.optBoolean("reply", false))
+        }
+        return out
+    }
 
     @Synchronized
     fun add(o: JSONObject): Item {
@@ -37,6 +59,8 @@ object NotifLog {
             pkg = o.optString("pkg"),
             whenMs = o.optLong("when", System.currentTimeMillis()),
             iconB64 = o.optString("icon"),
+            nid = o.optString("nid"),
+            actions = parseActions(o),
         )
         items.add(0, item)
         while (items.size > MAX) items.removeAt(items.lastIndex)
