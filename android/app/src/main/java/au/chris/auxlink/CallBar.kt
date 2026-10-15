@@ -11,11 +11,8 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
-import android.text.InputType
-import android.view.inputmethod.EditorInfo
 import android.widget.Button
 import android.widget.Chronometer
-import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
 
@@ -396,10 +393,13 @@ class TextPopup(private val ctx: Context) {
                             addView(actionPill(act.label) {
                                 main.removeCallbacks(close)
                                 if (act.reply) {
-                                    showReply(act.label.ifBlank { "Reply" }) { text ->
-                                        hide()
-                                        onAction(act, text)
-                                    }
+                                    // Never put a focusable EditText in a SYSTEM_ALERT_WINDOW
+                                    // overlay — that is what made some SMOs revoke
+                                    // "Display over other apps" after Stage 3.
+                                    hide()
+                                    OverlayReplyActivity.start(
+                                        ctx, act.label.ifBlank { "Reply" }
+                                    ) { text -> onAction(act, text) }
                                 } else {
                                     hide()
                                     onAction(act, null)
@@ -416,7 +416,11 @@ class TextPopup(private val ctx: Context) {
                 (440 * dp).toInt().coerceAtMost(ctx.resources.displayMetrics.widthPixels - (16 * dp).toInt()),
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                // Stay non-focusable: focusable overlays from a background
+                // service make some head units revoke the overlay permission.
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT
             ).apply {
                 gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
@@ -430,77 +434,6 @@ class TextPopup(private val ctx: Context) {
         } catch (e: Exception) {
             hide()
             false
-        }
-    }
-
-    /** Focusable reply strip so the soft keyboard can type a response. */
-    private fun showReply(placeholder: String, onSend: (String) -> Unit) {
-        hide()
-        if (!Settings.canDrawOverlays(ctx)) return
-        try {
-            val pad = (12 * dp).toInt()
-            val input = EditText(ctx).apply {
-                hint = placeholder
-                setHintTextColor(0xFF9AA0A6.toInt())
-                setTextColor(Color.WHITE)
-                textSize = 16f
-                setBackgroundColor(0x00000000)
-                setPadding(pad, pad, pad, pad)
-                maxLines = 4
-                imeOptions = EditorInfo.IME_ACTION_SEND
-                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-            }
-            val send = actionPill("Send") {
-                val text = input.text?.toString()?.trim().orEmpty()
-                if (text.isEmpty()) return@actionPill
-                hide()
-                onSend(text)
-            }
-            val cancel = actionPill("Cancel") { hide() }
-            val box = LinearLayout(ctx).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(pad, pad, pad, pad)
-                background = GradientDrawable().apply {
-                    setColor(0xF2222124.toInt())
-                    cornerRadius = 20 * dp
-                    setStroke((1 * dp).toInt().coerceAtLeast(1), 0x33FFFFFF)
-                }
-                elevation = 8 * dp
-                addView(input, LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
-                ))
-                addView(LinearLayout(ctx).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    gravity = Gravity.END
-                    addView(cancel)
-                    addView(send)
-                })
-            }
-            input.setOnEditorActionListener { _, actionId, _ ->
-                if (actionId == EditorInfo.IME_ACTION_SEND) {
-                    val text = input.text?.toString()?.trim().orEmpty()
-                    if (text.isNotEmpty()) { hide(); onSend(text) }
-                    true
-                } else false
-            }
-            val p = WindowManager.LayoutParams(
-                (440 * dp).toInt().coerceAtMost(ctx.resources.displayMetrics.widthPixels - (16 * dp).toInt()),
-                WindowManager.LayoutParams.WRAP_CONTENT,
-                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-                PixelFormat.TRANSLUCENT
-            ).apply {
-                gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-                y = (140 * dp).toInt()
-                softInputMode = WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE
-            }
-            wm.addView(box, p)
-            root = box
-            input.requestFocus()
-            main.postDelayed(close, 60_000)
-        } catch (_: Exception) {
-            hide()
         }
     }
 

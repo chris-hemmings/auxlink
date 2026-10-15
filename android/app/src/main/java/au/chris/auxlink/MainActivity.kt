@@ -270,6 +270,36 @@ class MainActivity : Activity() {
         // version to arrive first; stays silent unless there's something new.
         if (getSharedPreferences("auxlink", MODE_PRIVATE).getBoolean("pi_auto_update", false))
             main.postDelayed({ checkPiUpdate(auto = true) }, 8000)
+        maybeWarnOverlayLost()
+    }
+
+    /** If overlay was on last time and is off now, offer to turn it back on. */
+    private fun maybeWarnOverlayLost() {
+        val p = getSharedPreferences("auxlink", MODE_PRIVATE)
+        val on = Settings.canDrawOverlays(this)
+        val was = p.getBoolean("overlay_was_on", false)
+        if (on) {
+            p.edit().putBoolean("overlay_was_on", true).apply()
+            return
+        }
+        if (!was) return
+        val now = System.currentTimeMillis()
+        if (now - p.getLong("overlay_warn_at", 0L) < 6 * 60 * 60 * 1000L) return
+        p.edit().putLong("overlay_warn_at", now).apply()
+        android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("Display over other apps is off")
+            .setMessage("Phone Link had this on before, but Android turned it off. " +
+                "Call and text pop-ups need it. On the SMO, also set battery use to Unrestricted.")
+            .setPositiveButton("Turn on") { _, _ ->
+                try {
+                    startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        Uri.parse("package:$packageName")))
+                } catch (_: Exception) {
+                    startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION))
+                }
+            }
+            .setNegativeButton("Later", null)
+            .show()
     }
     override fun onPause() {
         super.onPause(); main.removeCallbacks(refresh)
@@ -719,7 +749,9 @@ class MainActivity : Activity() {
             if (Build.VERSION.SDK_INT >= 33) askOrSettings(Manifest.permission.POST_NOTIFICATIONS)
         }
         steps += Step("Call and text pop-ups",
-            "Shows calls (with Answer and Hang up) and texts on top of your music app.",
+            "Shows calls (with Answer and Hang up) and texts on top of your music app. " +
+                "On some SMOs this resets after a reboot if Phone Link was force-stopped — " +
+                "also set battery use to Unrestricted. Phone Link will notify you if it turns off.",
             "Allow", false, { true }, { Settings.canDrawOverlays(this) }) {
             try {
                 startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
