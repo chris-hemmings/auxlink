@@ -207,10 +207,24 @@ class NowPlayingService : NotificationListenerService() {
         override fun onReceive(c: Context, i: Intent) {
             when (i.action) {
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> io.execute { link.close() }
-                else -> { lastLine = ""; artSentId = ""; push() } // attached or permission granted: resend
+                UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
+                    // Composite gadget (UAC + serial): let the USB audio HAL
+                    // claim the sound card before we open CDC serial.
+                    io.execute {
+                        link.deferOpen(2500)
+                        lastLine = ""; artSentId = ""
+                    }
+                    main.postDelayed({
+                        lastLine = ""; artSentId = ""; push()
+                    }, 2600)
+                }
+                else -> { lastLine = ""; artSentId = ""; push() } // permission granted: resend
             }
         }
     }
+
+    /** Last time we recycled the USB serial claim for silent-audio recovery. */
+    private var lastUsbcRecycleMs = 0L
 
     // Every few seconds: follow whichever player is actually playing (a
     // player already in the session list that starts playing changes no
@@ -308,7 +322,12 @@ class NowPlayingService : NotificationListenerService() {
         if (j.has("pi")) { piStatus = j.optJSONObject("pi"); piStatusAt = System.currentTimeMillis(); return }
         if (j.has("bt")) { btStatus = j.optJSONObject("bt"); onBtStatus(); return }
         if (j.has("fw_result")) { fwCb?.invoke(j.optJSONObject("fw_result") ?: JSONObject()); return }
-        if (j.has("flow")) { flow = j.optJSONArray("flow"); main.post { if (instance != null) goForeground() }; return }
+        if (j.has("flow")) {
+            flow = j.optJSONArray("flow")
+            maybeRecoverUsbcAudio(flow)
+            main.post { if (instance != null) goForeground() }
+            return
+        }
         if (j.has("check")) { checkResult = j.optJSONObject("check"); return }
         if (j.has("bt_result")) { btResult = j.optJSONObject("bt_result"); return }
         if (PhoneData.onLine(j)) return     // contacts, recents, texts for the Phone/Messages screens
@@ -944,6 +963,30 @@ class NowPlayingService : NotificationListenerService() {
      *  foreground service, which Android (and head units' app killers) leave
      *  alone. If Android refuses (e.g. started in the background on a
      *  device that forbids it), the app still works as before. */
+    /**
+     * Pi says sound should be playing but USB-C capture is silent: drop our
+     * CDC serial claim briefly so the USB audio HAL can recover. Rate-limited.
+     * The Pi may also force a gadget re-plug if silence continues.
+     */
+    private fun maybeRecoverUsbcAudio(f: org.json.JSONArray?) {
+        if (f == null || forwarderOnly) return
+        var silentWhilePlaying = false
+        for (i in 0 until f.length()) {
+            val o = f.optJSONObject(i) ?: continue
+            if (o.optString("title").startsWith("Sound from the music") &&
+                o.optString("st") == "bad") {
+                silentWhilePlaying = true
+                break
+            }
+        }
+        if (!silentWhilePlaying) return
+        val now = System.currentTimeMillis()
+        if (now - lastUsbcRecycleMs < 90_000L) return
+        lastUsbcRecycleMs = now
+        Log.w(TAG, "USB-C audio silent while playing — recycling serial claim")
+        io.execute { link.recycle(2000) }
+    }
+
     /** The audio-path check as (one-line summary, multi-line detail) for the
      *  ongoing notification, or null when the Pi hasn't sent it yet. */
     private fun flowText(): Pair<String, String>? {

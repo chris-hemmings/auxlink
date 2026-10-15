@@ -106,8 +106,6 @@ HID_DEV = "/dev/hidg0"
 APP_UUID = "7e5b1a20-3c4d-4f8e-9a6b-74657362726b"
 APP_PATH = "/auxlink/app_link"
 APP_LINK = {"sock": None, "watch": None}
-# Phone's notification-forwarder RFCOMM (NotifLink instance once registered).
-NOTIF_LINK = {"link": None}
 # A second Bluetooth serial service the AuxLink app connects to in "forwarder"
 # mode (on the phone) to mirror the phone's notifications to the music device.
 NOTIF_UUID = "7e5b1a20-3c4d-4f8e-9a6b-6e6f74696679"   # "...notify"
@@ -290,19 +288,26 @@ def smo_volume_max(why):
     GLib.timeout_add(100, press)
 
 
-def usbc_repair():
-    """Quick pause-play in the car with the USB-C source: re-plug or rebuild
-    the USB-C connection if it is broken (never a working one), in the
-    background; its result goes to this log."""
+def usbc_repair(force=False):
+    """Re-plug or rebuild the USB-C gadget connection in the background.
+    Without force: only if the link looks broken. With force: even when the
+    card looks OK (present-but-silent host audio after reboot/update)."""
     def run():
         try:
-            r = subprocess.run(["/usr/local/bin/auxlink-usb-gadget.sh", "repair"],
-                               capture_output=True, text=True, timeout=90)
+            args = ["/usr/local/bin/auxlink-usb-gadget.sh", "repair"]
+            if force:
+                args.append("--force")
+            r = subprocess.run(args, capture_output=True, text=True, timeout=90)
             for line in (r.stdout or "").splitlines():
                 log("USB-C check: " + line.strip())
         except (OSError, subprocess.TimeoutExpired) as e:
             log(f"USB-C check failed: {e}")
     threading.Thread(target=run, daemon=True).start()
+
+
+# USB-C: SMO reports Playing but auxlink-audio sees no PCM — force a gadget
+# re-plug (rate-limited). Avoids the "Wired selected, RMS 0" stuck state.
+USBC_SILENT = {"since": 0.0, "last_force": 0.0}
 
 
 class UsbcReplug:
@@ -2379,11 +2384,7 @@ class AppLink(dbus.service.Object):
 class NotifLink(dbus.service.Object):
     """Bluetooth serial service the AuxLink app connects to in forwarder mode
     (on the phone) to mirror the phone's notifications. Each JSON line it sends
-    is relayed to the music device's app as {"notif": {...}}.
-
-    Stage 3: the music device can send {"notif_action": {...}} back; we write
-    that line to the phone so the forwarder can fire the Notification.Action
-    (reply / mark read) on the original notification."""
+    is relayed to the music device's app as {"notif": {...}}."""
 
     def __init__(self, bus, relay):
         super().__init__(bus, NOTIF_PATH)
@@ -2438,19 +2439,6 @@ class NotifLink(dbus.service.Object):
             if isinstance(info, dict) and "notif" in info:
                 self.relay({"notif": info["notif"]})
         return True
-
-    def to_phone(self, obj):
-        """Send one JSON line to the phone forwarder (reply / mark-read)."""
-        if self.sock is None:
-            log("notif_action: phone forwarder not connected")
-            return False
-        try:
-            self.sock.sendall((json.dumps(obj, separators=(",", ":")) + "\n").encode("utf-8"))
-            return True
-        except OSError as e:
-            log(f"notif_action send failed: {e}")
-            self.drop()
-            return False
 
     @dbus.service.method("org.bluez.Profile1", in_signature="o", out_signature="")
     def RequestDisconnection(self, device):
@@ -2649,13 +2637,6 @@ def main():
                         text = r.get("output") or r.get("error") or ""
                         GLib.idle_add(lambda: (app_send({"check": {"fix": fix, "output": text}}), False)[-1])
                     threading.Thread(target=chk, daemon=True).start()
-                elif "notif_action" in info:
-                    # Head unit → phone: fire a Notification.Action (reply / mark read).
-                    link = NOTIF_LINK.get("link")
-                    if link is not None:
-                        link.to_phone({"notif_action": info["notif_action"]})
-                    else:
-                        log("notif_action: forwarder service not registered")
                 elif PHONE["link"] and ("req" in info or "dial" in info or "dtmf" in info or "sms" in info):
                     PHONE["link"].handle(info)
                 elif "cmd" in info:
@@ -2704,7 +2685,6 @@ def main():
     # Pin a fixed RFCOMM channel so BlueZ actually listens and publishes SDP;
     # auth is relaxed so a bonded phone can open the channel directly.
     notif_link = NotifLink(bus, app_send)
-    NOTIF_LINK["link"] = notif_link
     try:
         dbus.Interface(bus.get_object(BLUEZ, "/org/bluez"), "org.bluez.ProfileManager1") \
             .RegisterProfile(NOTIF_PATH, NOTIF_UUID, dbus.Dictionary({
@@ -2790,6 +2770,28 @@ def main():
     GLib.timeout_add(500, Notify().tick)
     if MUSIC_SOURCE == "usbc":
         PHONE["link"] = PhoneLink()
+
+        def usbc_silent_watch():
+            """Playing + no sound for ~40 s → force USB-C re-plug (max every 3 min)."""
+            if player.phone_active:
+                USBC_SILENT["since"] = 0.0
+                return True
+            playing = player.status == "Playing"
+            if playing and not player.present:
+                now = time.time()
+                if USBC_SILENT["since"] <= 0:
+                    USBC_SILENT["since"] = now
+                elif (now - USBC_SILENT["since"] >= 40
+                      and now - USBC_SILENT["last_force"] >= 180):
+                    USBC_SILENT["last_force"] = now
+                    USBC_SILENT["since"] = now
+                    log("USB-C: SMO playing but silent for 40s — forcing gadget re-plug")
+                    usbc_repair(force=True)
+            else:
+                USBC_SILENT["since"] = 0.0
+            return True
+
+        GLib.timeout_add(5000, usbc_silent_watch)
     GLib.MainLoop().run()
 
 

@@ -10,6 +10,7 @@ import android.hardware.usb.UsbEndpoint
 import android.hardware.usb.UsbInterface
 import android.hardware.usb.UsbManager
 import android.os.Build
+import android.os.SystemClock
 import android.util.Log
 
 /**
@@ -19,6 +20,11 @@ import android.util.Log
  *  - the Pi itself on its USB-C port (PID 0x0002, MUSIC_SOURCE=usbc): a
  *    standard USB serial port (CDC ACM); the bytes arrive on /dev/ttyGS0.
  * Opens lazily and reopens after any failure.
+ *
+ * The Pi USB-C gadget is a composite device (UAC sound + CDC serial + HID).
+ * Holding the serial claim too aggressively can leave some Android head units
+ * with "Wired" selected but silent PCM — so we soft-claim first, can defer
+ * open after attach (let the USB audio HAL settle), and support recycle().
  */
 class UsbLink(private val context: Context, private val onLine: ((String) -> Unit)? = null) {
     companion object {
@@ -33,6 +39,8 @@ class UsbLink(private val context: Context, private val onLine: ((String) -> Uni
     private var conn: UsbDeviceConnection? = null
     private var iface: UsbInterface? = null
     private var ep: UsbEndpoint? = null
+    /** Don't open until this elapsedRealtime (lets UAC settle after plug-in). */
+    @Volatile private var openAfter = 0L
 
     fun findDevice(): UsbDevice? =
         usb.deviceList.values.firstOrNull { it.vendorId == VID && (it.productId == PID || it.productId == PID_PI) }
@@ -43,6 +51,20 @@ class UsbLink(private val context: Context, private val onLine: ((String) -> Uni
     fun kind(): String? = findDevice()?.let { if (it.productId == PID_PI) "the Pi (USB-C)" else "the XIAO" }
 
     fun permitted() = findDevice()?.let { usb.hasPermission(it) } ?: false
+
+    /** Close and block reopening for [ms] (USB-C attach: give audio HAL first dibs). */
+    @Synchronized
+    fun deferOpen(ms: Long) {
+        close()
+        openAfter = SystemClock.elapsedRealtime() + ms
+    }
+
+    /** Drop and reopen on the next send (stuck composite USB claim). */
+    @Synchronized
+    fun recycle(deferMs: Long = 1500L) {
+        Log.i(TAG, "Recycling USB serial claim (defer ${deferMs}ms)")
+        deferOpen(deferMs)
+    }
 
     /** Android's USB permission prompt; only from the app screen (a person is there). */
     fun askPermission() {
@@ -76,6 +98,7 @@ class UsbLink(private val context: Context, private val onLine: ((String) -> Uni
 
     @Synchronized
     fun open(): Boolean {
+        if (SystemClock.elapsedRealtime() < openAfter) return false
         val dev = findDevice() ?: return false
         // No asking from here: this runs in the background at every plug-in,
         // and Android's plain permission prompt has no "always" - it came back
@@ -92,7 +115,10 @@ class UsbLink(private val context: Context, private val onLine: ((String) -> Uni
                     end.direction == UsbConstants.USB_DIR_OUT
                 ) {
                     val c = usb.openDevice(dev) ?: return false
-                    if (!c.claimInterface(itf, true)) {
+                    // Soft claim first — force=true can upset the USB audio HAL
+                    // on some head units sharing this composite gadget.
+                    val claimed = c.claimInterface(itf, false) || c.claimInterface(itf, true)
+                    if (!claimed) {
                         c.close(); return false
                     }
                     conn = c; iface = itf; ep = end
