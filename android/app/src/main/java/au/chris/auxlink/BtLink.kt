@@ -36,7 +36,10 @@ class BtLink(private val context: Context, private val serviceUuid: UUID = APP_U
         /** Must match NOTIF_CHANNEL / APP_CHANNEL in auxlink-media.py. */
         const val NOTIF_CHANNEL = 22
         const val APP_CHANNEL = 23
+        /** Music / general link: back off after a failed sweep. */
         private const val RETRY_MS = 20_000L
+        /** Notification forwarder: reconnect quickly after phone↔Pi drop. */
+        private const val NOTIF_RETRY_MS = 3_000L
         private const val TAG = "SmoBtLink"
         /** What the last attempt did, shown on the app's screen. */
         @Volatile var lastTry: String = "(not tried yet)"
@@ -52,6 +55,8 @@ class BtLink(private val context: Context, private val serviceUuid: UUID = APP_U
     private var out: OutputStream? = null
     private var nextTry = 0L
     private var lastGood: String? = null
+    private val retryMs =
+        if (serviceUuid == NOTIF_UUID) NOTIF_RETRY_MS else RETRY_MS
     /** This instance's last attempt (not shared like the companion lastTry). */
     @Volatile var lastResult: String = "(not tried yet)"
     var deviceName: String = ""
@@ -62,8 +67,9 @@ class BtLink(private val context: Context, private val serviceUuid: UUID = APP_U
 
     fun isOpen() = sock != null
 
-    /** A button was pressed: try at once, not after the retry wait. */
-    fun retryNow() { if (sock == null) nextTry = 0L }
+    /** Try at once (button / reconnect): clear the back-off even if a zombie
+     *  socket is still held — [send] will close it and reopen. */
+    fun retryNow() { nextTry = 0L }
 
     @Synchronized
     fun send(line: String): Boolean {
@@ -75,15 +81,20 @@ class BtLink(private val context: Context, private val serviceUuid: UUID = APP_U
         } catch (e: Exception) {
             Log.w(TAG, "write failed: ${e.message}")
             close()
+            nextTry = 0L   // phone/Pi just dropped — reconnect on the next send
             false
         }
     }
 
     /** Bonded devices most likely to be the auxlink first: the one that
-     *  worked last, those already known to offer the service, those named
-     *  like it (name or the alias given here), then every other one - the
-     *  phone may still have the Pi under an old name and an old service
-     *  list, and the Pi itself says no quickly if it isn't the one. */
+     *  worked last, those already ACL-connected, those known to offer the
+     *  service, those named like it.
+     *
+     *  Notification RFCOMM is a *separate* socket from HFP/A2DP. After a
+     *  reconnect the phone can look "fully connected" while channel 22 is
+     *  still down. Sweeping every paired device then costs ~10–20s each and
+     *  is what made Test send appear ~2 minutes later. For [NOTIF_UUID] we
+     *  only try Pi-like / last-good / already-connected peers. */
     private fun candidates(): List<BluetoothDevice> {
         val bt = (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
             ?: return emptyList()
@@ -94,10 +105,21 @@ class BtLink(private val context: Context, private val serviceUuid: UUID = APP_U
             val names = listOfNotNull(d.name, if (Build.VERSION.SDK_INT >= 30) d.alias else null)
             return names.any { it.contains("auxlink", true) || it.contains("teslabridge", true) }
         }
-        return (bonded.filter { it.address == lastGood } +
+        fun aclConnected(d: BluetoothDevice): Boolean = try {
+            val m = d.javaClass.getMethod("isConnected")
+            m.invoke(d) as? Boolean == true
+        } catch (_: Exception) { false }
+        val likely = (bonded.filter { it.address == lastGood } +
+            bonded.filter { aclConnected(it) } +
             bonded.filter { d -> d.uuids?.contains(target) == true } +
-            bonded.filter { named(it) } +
-            bonded).distinctBy { it.address }
+            bonded.filter { named(it) }).distinctBy { it.address }
+        // Notif forwarder: never walk the whole bonded list (watches, cars, …).
+        if (serviceUuid == NOTIF_UUID) {
+            if (likely.isNotEmpty()) return likely
+            // First run / rename: fall back to named-only, else empty (retry soon).
+            return bonded.filter { named(it) }
+        }
+        return (likely + bonded).distinctBy { it.address }
     }
 
     /**
@@ -143,7 +165,7 @@ class BtLink(private val context: Context, private val serviceUuid: UUID = APP_U
     @Synchronized
     fun open(): Boolean {
         if (!permitted() || SystemClock.elapsedRealtime() < nextTry) return false
-        nextTry = SystemClock.elapsedRealtime() + RETRY_MS
+        nextTry = SystemClock.elapsedRealtime() + retryMs
         val tried = mutableListOf<String>()
         val list = candidates()
         if (list.isEmpty()) { lastTry = "no paired devices (or Bluetooth off)"; lastResult = lastTry }
