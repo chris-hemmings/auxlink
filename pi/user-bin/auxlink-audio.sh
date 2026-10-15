@@ -97,7 +97,14 @@ car_busy() { in_call || [ "$(cat /run/auxlink/mic-active 2>/dev/null)" = 1 ]; }
 # The phone's own media has taken over the car audio (auxlink-media decides
 # this): stop the SMO loopback so they don't play at once, but DON'T suspend
 # the car's sink - the phone's own stream is using it.
-phone_media() { [ "$(cat /run/auxlink/phone-media 2>/dev/null)" = 1 ]; }
+# Both/Merge must never drop the SMO stream — ignore a stale take-over flag.
+phone_media() {
+  [ "$(cat /run/auxlink/phone-media 2>/dev/null)" = 1 ] || return 1
+  ov=$(sed -n 's/.*"override"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+         /run/auxlink/source-state 2>/dev/null | head -1)
+  case "$ov" in both|merge) return 1 ;; esac
+  return 0
+}
 stop_loop() { [ -n "$LOOP" ] && kill "$LOOP" 2>/dev/null; LOOP=""; LOOP_SINK_ID=""; }
 linked() {
   local links; links=$(timeout 5 pw-link -l 2>/dev/null)
