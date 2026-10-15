@@ -12,12 +12,15 @@
 # page when USB-C is chosen) and a reboot.
 #   auxlink-usb-gadget.sh          set up (or tear down if another source is selected)
 #   auxlink-usb-gadget.sh stop     tear down
-#   auxlink-usb-gadget.sh repair [--check]
+#   auxlink-usb-gadget.sh repair [--check|--force]
 #                                  Check and fix / quick pause-play in the car: if the
 #                                  music device isn't connected or the sound card is
 #                                  missing, re-plug in software, then rebuild; never
-#                                  touches a working connection. Exit 0 ok, 1 not
-#                                  fixed, 2 stuck in the kernel (reboot needed).
+#                                  touches a working connection (unless --force).
+#                                  --force re-plugs even when the link looks OK — used
+#                                  when the card is present but the host sends silence.
+#                                  Exit 0 ok, 1 not fixed, 2 stuck in the kernel
+#                                  (reboot needed).
 G=/sys/kernel/config/usb_gadget/auxlink
 BOOT_CONFIG=/boot/firmware/config.txt
 OVERLAY="dtoverlay=dwc2,dr_mode=peripheral"
@@ -82,7 +85,8 @@ udc_write() {
   return 1
 }
 repair() {
-  local check=$1 st rc
+  local check=$1 st rc force=no
+  [ "$check" = --force ] && force=yes
   [ "${MUSIC_SOURCE:-wired}" = usbc ] || { echo "OK    USB-C is not the music source"; return 0; }
   if [ -z "$(ls /sys/class/udc 2>/dev/null)" ]; then
     echo "FAIL  the USB-C port isn't in device mode: reboot once (USB-C was just chosen?)"
@@ -90,8 +94,15 @@ repair() {
     return 1
   fi
   st=$(usb_state)
-  if usb_ok; then echo "OK    USB-C: music device connected ($st), sound card present"; return 0; fi
-  echo "FAIL  USB-C: music device ${st:-not connected}$(usb_card || echo ', sound card missing')"
+  if usb_ok && [ "$force" != yes ]; then
+    echo "OK    USB-C: music device connected ($st), sound card present"
+    return 0
+  fi
+  if usb_ok && [ "$force" = yes ]; then
+    echo "WARN  USB-C looks connected ($st) but forcing a re-plug (silent input)"
+  else
+    echo "FAIL  USB-C: music device ${st:-not connected}$(usb_card || echo ', sound card missing')"
+  fi
   [ "$check" = --check ] && return 1
   mkdir -p /run/auxlink; exec 9>/run/auxlink/usbc-repair.lock; flock -n 9 || { echo "      a repair is already running"; return 1; }
   if [ -n "$(cat "$G/UDC" 2>/dev/null)" ]; then
@@ -104,13 +115,13 @@ repair() {
     [ $rc = 2 ] && { echo "FAIL  USB-C is stuck: reboot the Pi (sudo reboot)"; event "USB-C stuck: reboot needed"; return 2; }
     [ "${RESTART_AUDIO:-0}" = 1 ] && asaudio systemctl --user start auxlink-audio 2>/dev/null
     RESTART_AUDIO=0
-    if wait_ok 8; then echo "OK    USB-C reconnected"; event "USB-C reconnected (re-plug)"; return 0; fi
+    if wait_ok 8; then echo "OK    USB-C reconnected"; event "USB-C reconnected (re-plug${force:+, forced})"; return 0; fi
   fi
   echo "      fixing: rebuilding the USB-C connection"
   teardown >/dev/null
   if [ -d "$G" ]; then echo "FAIL  USB-C is stuck: reboot the Pi (sudo reboot)"; event "USB-C stuck: reboot needed"; return 2; fi
   "$0" >/dev/null 2>&1
-  if wait_ok 10; then echo "OK    USB-C reconnected"; event "USB-C reconnected (rebuilt)"; return 0; fi
+  if wait_ok 10; then echo "OK    USB-C reconnected"; event "USB-C reconnected (rebuilt${force:+, forced})"; return 0; fi
   echo "FAIL  USB-C: the music device didn't connect. Is it on, and plugged into the Pi's USB-C?"
   return 1
 }
