@@ -24,6 +24,7 @@ import android.media.session.PlaybackState
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.provider.Telephony
 import android.service.notification.NotificationListenerService
 import android.util.Base64
 import android.util.Log
@@ -678,6 +679,9 @@ class NowPlayingService : NotificationListenerService() {
 
     private fun forwardNotification(sbn: android.service.notification.StatusBarNotification) {
         if (sbn.packageName == packageName) return                 // our own
+        // SMS already arrives via the Pi Messages path (Tesla + classic pop-up).
+        // Skip the phone's SMS app so you don't have to mute it by hand.
+        if (isSmsApp(sbn.packageName)) return
         val n = sbn.notification ?: return
         val flags = n.flags
         if (flags and Notification.FLAG_ONGOING_EVENT != 0) return  // persistent (media, foreground services)
@@ -715,6 +719,39 @@ class NowPlayingService : NotificationListenerService() {
         notifIo.execute { notifLink?.send(line) }
     }
 
+    /** True for the phone's SMS/MMS app (handled by MAP → Messages / Tesla,
+     *  not the notification forwarder). Chat apps like WhatsApp are left alone. */
+    private fun isSmsApp(pkg: String): Boolean {
+        val def = try { Telephony.Sms.getDefaultSmsPackage(this) } catch (_: Exception) { null }
+        if (!def.isNullOrEmpty() && pkg == def) return true
+        return pkg == "com.android.mms" ||
+            pkg == "com.google.android.apps.messaging" ||
+            pkg == "com.samsung.android.messaging" ||
+            pkg == "com.android.messaging" ||
+            pkg == "com.coloros.mms" ||
+            pkg == "com.oplus.mms" ||
+            pkg.endsWith(".mms")
+    }
+
+    /** Default SMS app icon on this device (for the classic text pop-up). */
+    private fun defaultSmsIcon(): Drawable? {
+        val candidates = mutableListOf<String>()
+        try { Telephony.Sms.getDefaultSmsPackage(this)?.let { candidates += it } } catch (_: Exception) {}
+        candidates += listOf(
+            "com.google.android.apps.messaging",
+            "com.samsung.android.messaging",
+            "com.android.mms",
+            "com.android.messaging",
+            "com.coloros.mms",
+            "com.oplus.mms",
+        )
+        for (pkg in candidates.distinct()) {
+            try { return packageManager.getApplicationIcon(pkg) } catch (_: Exception) {}
+        }
+        return try { getDrawable(R.drawable.ic_text)?.mutate()?.also { it.setTint(0xFFFFFFFF.toInt()) } }
+        catch (_: Exception) { null }
+    }
+
     /** Small PNG of the app icon, base64 — for the head-unit banner (that
      *  device does not have WhatsApp/etc installed). Empty if it fails or
      *  would be too large for the Bluetooth line. */
@@ -748,25 +785,28 @@ class NowPlayingService : NotificationListenerService() {
             .putExtra(MainActivity.EXTRA_CHAT_NAME, name)
 
     private fun showText(from: String, body: String, number: String) {
-        // Pi Messages path (also what the Tesla sees via MAP): keep the classic
-        // sender + body pop-up. Tap opens the conversation. Do not use the
-        // mirrored-notification banner here — mute the phone's Messages app in
-        // Tools → Muted apps if the forwarder would otherwise double up.
-        if (textPopup.showMessage(from.ifEmpty { "Text message" }, body) {
+        // Pi Messages path (also what the Tesla sees via MAP): classic pop-up
+        // with the default messaging app's icon. Tap opens the conversation.
+        // The forwarder auto-skips the SMS app so texts aren't doubled.
+        val smsIcon = defaultSmsIcon()
+        if (textPopup.showMessage(from.ifEmpty { "Text message" }, body, smsIcon) {
                 try { startActivity(chatIntent(number, from)) } catch (e: Exception) {}
             }) return
         val tap = PendingIntent.getActivity(this, textId, chatIntent(number, from),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        val n = Notification.Builder(this, "texts_popup")
+        val nb = Notification.Builder(this, "texts_popup")
             .setContentIntent(tap)
-            .setSmallIcon(android.R.drawable.sym_action_email)
             .setContentTitle(from.ifEmpty { "Text message" })
             .setContentText(body)
             .setStyle(Notification.BigTextStyle().bigText(body))
             .setCategory(Notification.CATEGORY_MESSAGE)
             .setAutoCancel(true)
-            .build()
-        getSystemService(NotificationManager::class.java).notify(textId++, n)
+        if (smsIcon != null && Build.VERSION.SDK_INT >= 23) {
+            nb.setSmallIcon(android.graphics.drawable.Icon.createWithBitmap(drawableToBitmap(smsIcon, 96)))
+        } else {
+            nb.setSmallIcon(android.R.drawable.sym_action_chat)
+        }
+        getSystemService(NotificationManager::class.java).notify(textId++, nb.build())
         if (textId > 150) textId = 100
     }
 

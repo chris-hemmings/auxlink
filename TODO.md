@@ -78,21 +78,21 @@ music device's app as `{"notif": {...}}`.
 - App receiver (head unit): `{"notif"}` -> heads-up banner (`TextPopup.show`)
   with app icon + app name + title/body; tap -> `showNotifDetail()` expands.
   SMS from the Pi still uses the classic `TextPopup.showMessage` pop-up (tap
-  opens the chat / Tesla path unchanged). On the phone, Tools → Apps to
-  forward lists all launchable apps (Wear-style) so Messages can be turned
-  off before any notification is seen.
+  opens the chat / Tesla path unchanged, with the default messaging app's
+  icon). The forwarder auto-skips the SMS app (no need to mute Messages).
+  Tools → Apps to forward lists all launchable apps (Wear-style) for the rest.
 - BlueZ did not publish an SDP RFCOMM record for the custom UUID (sdptool
   found nothing; phone "socket failure", no bluetoothd log). Fixed by pinning
   `NOTIF_CHANNEL=22` / `APP_CHANNEL=23` on the Pi and having `BtLink` connect
   straight to that channel (bypass SDP).
 
 **Stage 2 (done):**
-- Alerts tab on the head unit: scrollback of mirrored notifs (icon/app/title/
-  preview); tap for full text; Clear.
-- Per-app mute filter on the phone (Tools → Muted apps); remembers seen apps.
+- Alerts tab: scrollback + forwarder controls (moved out of Tools); tap for
+  full text; Clear.
+- Apps to forward: Wear-style full app list with Select all / none and Save.
 - De-dupe: same pkg+title+text within 45 s is not re-sent.
-- Forwarder-only mode: phone stops music-device traffic (track/art/USB/BT app
-  link / media commands) and only forwards notifications.
+- Forwarder-only mode: phone stops music-device traffic; UI hides Phone /
+  Messages / Status and keeps Alerts.
 
 **Stage 3 (todo):** reply/actions (reply to a Teams/WhatsApp message, mark read)
 - doable since the forwarder app is on the phone and holds the Notification

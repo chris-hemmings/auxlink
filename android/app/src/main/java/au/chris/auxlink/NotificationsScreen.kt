@@ -17,10 +17,15 @@ import android.widget.ListView
 import android.widget.TextView
 
 /**
- * Alerts tab: scrollback of mirrored phone notifications (and a tap opens
- * the full text). Lives on the head unit; the phone forwarder only sends.
+ * Alerts tab: forwarder controls (on the phone) + scrollback of mirrored
+ * notifications. Tap a row for the full text.
  */
-class NotificationsScreen(private val ctx: Context, private val ui: Ui) {
+class NotificationsScreen(
+    private val ctx: Context,
+    private val ui: Ui,
+    /** Optional block above the list (forwarder switches / buttons). */
+    settings: View? = null,
+) {
     val view: FrameLayout
     private val list: ListView
     private val empty: LinearLayout
@@ -53,11 +58,15 @@ class NotificationsScreen(private val ctx: Context, private val ui: Ui) {
                 addView(ui.text("Alerts", 26f, ui.text1, true),
                     LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
                 addView(clear, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ui.px(42)))
-            }, ui.matchWrap(bottom = 12))
-            addView(ui.text(
-                "Mirrored notifications from your phone. Tap one to read the full text.",
-                13f, ui.text2
-            ), ui.matchWrap(bottom = 8))
+            }, ui.matchWrap(bottom = 8))
+            if (settings != null) {
+                addView(settings, ui.matchWrap(bottom = 12))
+            } else {
+                addView(ui.text(
+                    "Mirrored notifications from your phone. Tap one to read the full text.",
+                    13f, ui.text2
+                ), ui.matchWrap(bottom = 8))
+            }
             addView(empty, ui.matchWrap())
             addView(list, ui.fill())
         }
@@ -79,7 +88,7 @@ class NotificationsScreen(private val ctx: Context, private val ui: Ui) {
         val (t, b) = when {
             rows.isNotEmpty() -> "" to ""
             else -> "No alerts yet" to
-                "Turn on “Forward my notifications” on your phone. New ones show up here and as a pop-up."
+                "Turn on forwarding on your phone. New ones show up here and as a pop-up."
         }
         (empty.getChildAt(0) as TextView).text = t
         (empty.getChildAt(1) as TextView).text = b
