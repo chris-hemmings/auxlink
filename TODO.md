@@ -100,3 +100,10 @@ music device's app as `{"notif": {...}}`.
   media script) while USB-C audio on the SMO is investigated — install
   `auxlink-pi-update-1.0.117.zip` (or `1.0.115.zip`) to match.
 - Re-land the Pi half of Stage 3 once audio is confirmed healthy.
+
+**USB-C reliability (v1.0.118–119):** composite gadget (UAC + CDC) can leave
+Android with Wired selected but silent PCM when the app holds serial oddly.
+- Check and fix / Pi: force re-plug when input is silent but the card looks OK.
+- Auto: if SMO Playing and no PCM for ~40 s, force gadget re-plug (3 min cool-down).
+- App: defer CDC open 2.5 s after attach; soft-claim first; recycle serial if
+  the live audio path reports "silent but should be playing".

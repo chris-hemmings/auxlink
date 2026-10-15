@@ -288,19 +288,26 @@ def smo_volume_max(why):
     GLib.timeout_add(100, press)
 
 
-def usbc_repair():
-    """Quick pause-play in the car with the USB-C source: re-plug or rebuild
-    the USB-C connection if it is broken (never a working one), in the
-    background; its result goes to this log."""
+def usbc_repair(force=False):
+    """Re-plug or rebuild the USB-C gadget connection in the background.
+    Without force: only if the link looks broken. With force: even when the
+    card looks OK (present-but-silent host audio after reboot/update)."""
     def run():
         try:
-            r = subprocess.run(["/usr/local/bin/auxlink-usb-gadget.sh", "repair"],
-                               capture_output=True, text=True, timeout=90)
+            args = ["/usr/local/bin/auxlink-usb-gadget.sh", "repair"]
+            if force:
+                args.append("--force")
+            r = subprocess.run(args, capture_output=True, text=True, timeout=90)
             for line in (r.stdout or "").splitlines():
                 log("USB-C check: " + line.strip())
         except (OSError, subprocess.TimeoutExpired) as e:
             log(f"USB-C check failed: {e}")
     threading.Thread(target=run, daemon=True).start()
+
+
+# USB-C: SMO reports Playing but auxlink-audio sees no PCM — force a gadget
+# re-plug (rate-limited). Avoids the "Wired selected, RMS 0" stuck state.
+USBC_SILENT = {"since": 0.0, "last_force": 0.0}
 
 
 class UsbcReplug:
@@ -2763,6 +2770,28 @@ def main():
     GLib.timeout_add(500, Notify().tick)
     if MUSIC_SOURCE == "usbc":
         PHONE["link"] = PhoneLink()
+
+        def usbc_silent_watch():
+            """Playing + no sound for ~40 s → force USB-C re-plug (max every 3 min)."""
+            if player.phone_active:
+                USBC_SILENT["since"] = 0.0
+                return True
+            playing = player.status == "Playing"
+            if playing and not player.present:
+                now = time.time()
+                if USBC_SILENT["since"] <= 0:
+                    USBC_SILENT["since"] = now
+                elif (now - USBC_SILENT["since"] >= 40
+                      and now - USBC_SILENT["last_force"] >= 180):
+                    USBC_SILENT["last_force"] = now
+                    USBC_SILENT["since"] = now
+                    log("USB-C: SMO playing but silent for 40s — forcing gadget re-plug")
+                    usbc_repair(force=True)
+            else:
+                USBC_SILENT["since"] = 0.0
+            return True
+
+        GLib.timeout_add(5000, usbc_silent_watch)
     GLib.MainLoop().run()
 
 
