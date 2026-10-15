@@ -1599,18 +1599,82 @@ CALL_CMD_FILE = "/run/auxlink/call-cmd"          # read by hfp-relay
 DTMF_FILE = "/run/auxlink/dtmf"                   # queued keypad tones, drained by hfp-relay
 
 
+# Queued JSON for the music-device app while USB/BT is down after a reconnect.
+# Mirrored notifs (and calls/texts) that arrive in the gap used to be written
+# into a half-dead serial buffer and only appear minutes later — or dropped.
+APP_PENDING = []          # list of (deadline_monotonic, line_bytes)
+APP_PENDING_MAX = 40
+APP_PENDING_TTL = 180.0   # seconds
+
+
+def app_link_live():
+    """True when the AuxLink app on the music device is actually reading us."""
+    if MUSIC_SOURCE == "usbc":
+        return FD is not None and (time.time() - VOLUME["last_line"] < 25)
+    if MUSIC_SOURCE == "bluetooth":
+        return APP_LINK.get("sock") is not None
+    return False
+
+
+def _app_pending_add(line):
+    now = time.monotonic()
+    APP_PENDING.append((now + APP_PENDING_TTL, line))
+    while len(APP_PENDING) > APP_PENDING_MAX:
+        APP_PENDING.pop(0)
+
+
+def _app_send_now(line):
+    if MUSIC_SOURCE == "usbc" and FD is not None:
+        send(line)
+        return True
+    sock = APP_LINK.get("sock")
+    if sock is not None:
+        try:
+            sock.sendall(line)
+            return True
+        except OSError as e:
+            log(f"App link write failed: {e}")
+            return False
+    return False
+
+
+def flush_app_pending():
+    """Deliver queued notifs/calls once the music device is linked again."""
+    if not APP_PENDING or not app_link_live():
+        return False
+    now = time.monotonic()
+    keep, sent = [], 0
+    for deadline, line in APP_PENDING:
+        if deadline < now:
+            continue
+        if _app_send_now(line):
+            sent += 1
+        else:
+            keep.append((deadline, line))
+    APP_PENDING[:] = keep
+    if sent:
+        log(f"Flushed {sent} queued app message(s) after reconnect")
+    return False  # for GLib.idle_add
+
+
 def app_send(obj):
     """A line for the AuxLink app. Only links that carry data back to it:
     USB-C (its serial port) and Bluetooth. Not the XIAO: bytes to it are
-    key presses."""
+    key presses.
+
+    After a phone/SMO reconnect the serial link is often up before the app is
+    reading. Important messages (notif / call / text) are queued and flushed
+    when the app's heartbeat returns, instead of sitting silently for minutes.
+    """
     line = (json.dumps(obj, ensure_ascii=False) + "\n").encode()
-    if MUSIC_SOURCE == "usbc" and FD is not None:
-        send(line)
-    elif APP_LINK["sock"] is not None:
-        try:
-            APP_LINK["sock"].sendall(line)
-        except OSError as e:
-            log(f"App link write failed: {e}")
+    important = any(k in obj for k in ("notif", "call", "text"))
+    if not app_link_live():
+        if important:
+            _app_pending_add(line)
+            kind = next((k for k in ("notif", "call", "text") if k in obj), "?")
+            log(f"app_send queued ({kind}): music device not linked yet")
+        return False
+    return _app_send_now(line)
 
 
 class Notify:
@@ -2662,6 +2726,9 @@ def main():
                 if now - VOLUME["last_line"] > 20:
                     smo_volume_max("the SMO connected")
                 VOLUME["last_line"] = now
+                # USB/BT (re)linked: deliver notifs that arrived during the gap.
+                if APP_PENDING:
+                    GLib.idle_add(flush_app_pending)
                 if "clock" in info:
                     set_clock(info["clock"])
                 elif "moving" in info:
@@ -2741,14 +2808,20 @@ def main():
         return False
 
     def port_event(fd, cond):
-        global FD
+        global FD, OUT_WATCH
         if cond & (GLib.IO_HUP | GLib.IO_ERR) and not cond & GLib.IO_IN:
             # The USB-C host went away (or the port vanished): reopen later.
+            # Drop any half-written buffer so a stale notif can't appear minutes
+            # later when a new FD becomes writable.
             try:
                 os.close(FD)
             except OSError:
                 pass
             FD = None
+            OUT.clear()
+            if OUT_WATCH is not None:
+                GLib.source_remove(OUT_WATCH)
+                OUT_WATCH = None
             GLib.timeout_add_seconds(3, watch_port)
             return False
         return readable(fd, cond)

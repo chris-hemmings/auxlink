@@ -257,9 +257,11 @@ class NowPlayingService : NotificationListenerService() {
         override fun run() {
             if (forwarderOnly) {
                 // Phone is only a notification forwarder: no music / Pi status traffic.
+                ensureNotifLink()
                 main.postDelayed(this, 5000)
                 return
             }
+            ensureNotifLink()
             // First beat after start: remember overlay state for loss detection.
             if (beats == 0) overlayWasOn = try { Settings.canDrawOverlays(this@NowPlayingService) }
             catch (_: Exception) { null }
@@ -1006,6 +1008,21 @@ class NowPlayingService : NotificationListenerService() {
         "muted=$notifSkippedMute, dedupe=$notifSkippedDedupe, " +
         "link=${notifLink?.lastResult ?: "(forwarder not started)"}"
 
+    /** Keep the phone→Pi notification RFCOMM up after a Bluetooth drop. */
+    private fun ensureNotifLink() {
+        if (!forwardNotifs) return
+        if (notifLink == null)
+            notifLink = BtLink(this, BtLink.NOTIF_UUID) { line -> onNotifLinkLine(line) }
+        notifIo.execute {
+            val link = notifLink ?: return@execute
+            if (!link.isOpen()) {
+                link.retryNow()
+                // Ping keeps the Profile socket warm; Pi ignores non-notif lines.
+                link.send("""{"cmd":"ping"}""")
+            }
+        }
+    }
+
     /** Send a test notification straight to the Pi (forces a connection), and
      *  report whether the Bluetooth write succeeded. */
     fun testNotifForward(cb: (Boolean) -> Unit) {
@@ -1018,7 +1035,17 @@ class NowPlayingService : NotificationListenerService() {
             .put("nid", "test").put("actions", JSONArray())
             .put("icon", appIconPng(packageName))
         val line = JSONObject().put("notif", o).toString()
-        notifIo.execute { val ok = notifLink?.send(line) ?: false; main.post { cb(ok) } }
+        notifIo.execute {
+            var ok = notifLink?.send(line) ?: false
+            if (!ok) {
+                // Common right after phone↔Pi reconnect: one quick retry.
+                notifLink?.close()
+                notifLink?.retryNow()
+                try { Thread.sleep(400) } catch (_: InterruptedException) {}
+                ok = notifLink?.send(line) ?: false
+            }
+            main.post { cb(ok) }
+        }
     }
 
     private fun forwardNotification(sbn: android.service.notification.StatusBarNotification) {
