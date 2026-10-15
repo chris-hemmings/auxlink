@@ -837,6 +837,9 @@ class Player(dbus.service.Object):
         self.status = self.effective_state()
         self.publish()
         log("Phone media released; the SMO has the car audio again")
+        # Tesla often keeps a silent A2DP session after phone → SMO handoff.
+        # Kick once (same as Fix sound) so the car takes a fresh stream.
+        GLib.timeout_add(800, lambda: (Player.kick_audio() or False))
 
     def smo_update(self, info):
         if self.phone_active:
