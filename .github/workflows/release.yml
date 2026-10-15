@@ -1,7 +1,7 @@
 name: Build AuxLink app
 # The AuxLink Android app: every push to main that changes android/ publishes
-# a signed APK as release "AuxLink app v1.0.N" (tag v1.0.N) - what Obtainium
-# follows (filter release titles by "AuxLink app").
+# a signed APK as release "AuxLink app v2.0.N" (tag v2.0.N) - what Obtainium
+# follows (filter release titles by "AuxLink app"). 1.x releases are kept.
 on:
   push:
     branches: [main]
@@ -31,10 +31,10 @@ jobs:
           SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
         run: |
           gradle assembleRelease
-          cp app/build/outputs/apk/release/app-release.apk auxlink-v1.0.${{ github.run_number }}.apk
+          cp app/build/outputs/apk/release/app-release.apk auxlink-v2.0.${{ github.run_number }}.apk
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.${{ github.run_number }}
-          name: AuxLink app v1.0.${{ github.run_number }}
+          tag_name: v2.0.${{ github.run_number }}
+          name: AuxLink app v2.0.${{ github.run_number }}
           target_commitish: ${{ github.sha }}
-          files: android/auxlink-v1.0.${{ github.run_number }}.apk
+          files: android/auxlink-v2.0.${{ github.run_number }}.apk

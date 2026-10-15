@@ -111,3 +111,14 @@ Android with Wired selected but silent PCM when the app holds serial oddly.
 - Auto: if SMO Playing and no PCM for ~40 s, force gadget re-plug (3 min cool-down).
 - App: defer CDC open 2.5 s after attach; soft-claim first; recycle serial if
   the live audio path reports "silent but should be playing".
+
+## v2.0.0 (UX / play-state / updates)
+
+Shipped as a new major line; **all 1.x GitHub releases are kept** (cleanup only
+prunes old 2.x+). Highlights:
+- Play-state: WAIT_FOR_AUDIO gates AVRCP; Buffering ≠ Playing; eager grace demote;
+  faster USB-C silent recovery (~15 s) + Re-plug tool.
+- Status: Check summary card; USB-C health; auto-recovery note.
+- Role chrome (phone / head unit / auto); forwarder-only confirm + long-press escape;
+  Alerts driving-safe actions + unread badge; setup checklist collapses when done.
+- Pi update UI: progress sheet for download → push → install (not toast-only).

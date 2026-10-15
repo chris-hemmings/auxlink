@@ -23,6 +23,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
@@ -82,6 +83,16 @@ class MainActivity : Activity() {
     private var ticks = 0
     private lateinit var details: TextView
     private val steps = mutableListOf<Step>()
+    private var setupCollapsed = true
+    private var setupBody: LinearLayout? = null
+    private var setupToggle: TextView? = null
+    private var recoveryShownAt = 0L
+    private var updateDlg: android.app.AlertDialog? = null
+    private var updateTitleTv: TextView? = null
+    private var updateMsgTv: TextView? = null
+    private var updateBar: ProgressBar? = null
+    private var toolsMusicRows: MutableList<View> = mutableListOf()
+    private var roleBlock: LinearLayout? = null
 
     // Tabs: Phone, Messages, Status, Alerts (mirrored notifications)
     private lateinit var phone: PhoneScreen
@@ -166,6 +177,25 @@ class MainActivity : Activity() {
                 text = icon + "\n" + name; textSize = 12f; gravity = Gravity.CENTER
                 setPadding(0, px(6), 0, px(6))
                 setOnClickListener { showTab(i) }
+                // Long-press Alerts: escape hatch out of forwarder-only.
+                if (i == 3) setOnLongClickListener {
+                    if (forwarderOnlyPreferred()) {
+                        android.app.AlertDialog.Builder(this@MainActivity,
+                            android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                            .setTitle("Restore full Phone Link UI?")
+                            .setMessage("Turns off forwarder-only so Phone, Messages, and Status show again.")
+                            .setPositiveButton("Restore") { _, _ ->
+                                val p = getSharedPreferences("auxlink", MODE_PRIVATE)
+                                val svc = NowPlayingService.instance
+                                if (svc != null) svc.setForwarderOnly(false)
+                                else p.edit().putBoolean("notif_forwarder_only", false).apply()
+                                applyRoleChrome()
+                                say("Full Phone Link UI restored.")
+                            }
+                            .setNegativeButton("Cancel", null).show()
+                        true
+                    } else false
+                }
                 tabBar.addView(this, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             }
         }
@@ -176,7 +206,8 @@ class MainActivity : Activity() {
             addView(tabBar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT))
         })
-        applyForwarderChrome()
+        applyRoleChrome()
+        maybeAskDeviceRole()
         // Back where you left off; the status screen until setup is done.
         // Forwarder-only phones land on Alerts.
         val saved = try { getPreferences(MODE_PRIVATE).getInt("tab", 2) } catch (e: Exception) { 2 }
@@ -247,8 +278,46 @@ class MainActivity : Activity() {
         try { getSharedPreferences("auxlink", MODE_PRIVATE).getBoolean("notif_forwarder_only", false) }
         catch (_: Exception) { false }
 
-    /** Hide Phone / Messages / Status when this phone is forwarder-only. */
-    private fun applyForwarderChrome() {
+    /** Saved role: phone / headunit / auto. Auto infers from forwarder + USB. */
+    private fun deviceRole(): String {
+        val p = try { getSharedPreferences("auxlink", MODE_PRIVATE) } catch (_: Exception) { return "auto" }
+        val saved = p.getString("device_role", "auto") ?: "auto"
+        if (saved == "phone" || saved == "headunit") return saved
+        if (p.getBoolean("notif_forwarder_only", false) || p.getBoolean("notif_forward", false))
+            return "phone"
+        if (UsbLink(this).findDevice() != null) return "headunit"
+        return "auto"
+    }
+
+    private fun isPhoneRole() = deviceRole() == "phone"
+    private fun isHeadUnitRole() = deviceRole() == "headunit"
+
+    /** First run: ask whether this device is the phone or the head unit. */
+    private fun maybeAskDeviceRole() {
+        val p = getSharedPreferences("auxlink", MODE_PRIVATE)
+        if (p.contains("device_role")) return
+        android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("What is this device?")
+            .setMessage("Phone Link runs on your phone (forward notifications) and on the " +
+                "car head unit / music tablet (receive them and drive the Pi). " +
+                "You can change this later under Tools.")
+            .setPositiveButton("This is my phone") { _, _ ->
+                p.edit().putString("device_role", "phone").apply()
+                applyRoleChrome()
+            }
+            .setNeutralButton("Head unit / tablet") { _, _ ->
+                p.edit().putString("device_role", "headunit").apply()
+                applyRoleChrome()
+            }
+            .setNegativeButton("Decide later") { _, _ ->
+                p.edit().putString("device_role", "auto").apply()
+            }
+            .setCancelable(false)
+            .show()
+    }
+
+    /** Hide Phone / Messages / Status when forwarder-only; role-aware Tools / Alerts. */
+    private fun applyRoleChrome() {
         if (!::tabViews.isInitialized) return
         val fo = forwarderOnlyPreferred()
         // Indices: 0 Phone, 1 Messages, 2 Status, 3 Alerts
@@ -257,6 +326,19 @@ class MainActivity : Activity() {
         }
         tabViews[3].visibility = View.VISIBLE
         if (fo && tab != 3) showTab(3)
+        val phone = isPhoneRole()
+        val head = isHeadUnitRole()
+        toolsMusicRows.forEach { it.visibility = if (phone) View.GONE else View.VISIBLE }
+        // Rebuild Alerts settings visibility via tag on the forwarder block.
+        alerts.setForwarderVisible(!head)
+        roleBlock?.let { updateRoleBlock(it) }
+        refreshAlertsBadge()
+    }
+
+    private fun refreshAlertsBadge() {
+        if (!::tabViews.isInitialized) return
+        val n = NotifLog.unreadCount()
+        tabViews[3].text = if (n > 0) "🔔\nAlerts ($n)" else "🔔\nAlerts"
     }
 
     @Deprecated("Deprecated in Java")
@@ -639,10 +721,21 @@ class MainActivity : Activity() {
 
     private fun updateFlow(linked: Boolean) {
         val f = NowPlayingService.flow
-        val key = (if (linked) "1" else "0") + (f?.toString() ?: "")
+        val note = NowPlayingService.lastRecoveryNote
+        val noteAt = NowPlayingService.lastRecoveryAt
+        val key = (if (linked) "1" else "0") + (f?.toString() ?: "") + note + noteAt
         if (key != flowShown) {
             flowShown = key
             flowRows.removeAllViews()
+            if (note.isNotEmpty() && noteAt > recoveryShownAt &&
+                System.currentTimeMillis() - noteAt < 120_000L) {
+                recoveryShownAt = noteAt
+                flowRows.addView(TextView(this).apply {
+                    text = "Auto-recovery: $note"
+                    setTextColor(warn); textSize = 13f
+                    setPadding(0, 0, 0, px(8))
+                })
+            }
             if (!linked || f == null) {
                 flowRows.addView(TextView(this).apply {
                     text = if (!linked) "Connect to the Pi to see the audio path."
@@ -694,46 +787,101 @@ class MainActivity : Activity() {
                 }
             }
         }
-        // Full check result: its numbered steps, each line marked OK / WARN / FAIL.
+        // Check summary card + collapsible raw log (same naming as the web page).
         val r = NowPlayingService.checkResult
         if (r != null && r !== checkShown) {
             checkShown = r
             checking = false
             checkRows.removeAllViews()
+            val out = r.optString("output")
+            val lines = out.lines().map { it.trimEnd() }.filter { it.isNotBlank() }
+            var okN = 0; var warnN = 0; var failN = 0
+            var firstFail = ""
+            for (raw in lines) {
+                val t = raw.trim()
+                when {
+                    t.startsWith("OK") -> okN++
+                    t.startsWith("WARN") -> { warnN++; if (firstFail.isEmpty()) firstFail = t.removePrefix("WARN").trim() }
+                    t.startsWith("FAIL") -> { failN++; if (firstFail.isEmpty()) firstFail = t.removePrefix("FAIL").trim() }
+                }
+            }
+            val reboot = out.contains("Reboot the Pi", ignoreCase = true)
+            val title = if (r.optBoolean("fix")) "Check and fix" else "Full check"
+            val (overall, colour, next) = when {
+                failN > 0 || reboot -> Triple(
+                    "Needs attention", bad,
+                    if (reboot) "Next: reboot the Pi (Status → Restart the Pi)."
+                    else "Next: tap Check and fix, or Re-plug USB-C under Tools.")
+                warnN > 0 -> Triple("Check recommended", warn,
+                    "Next: review the warnings below, or tap Check and fix.")
+                else -> Triple("All clear", good, "Pi side looks healthy.")
+            }
             checkRows.addView(TextView(this).apply {
-                text = if (r.optBoolean("fix")) "Check and fix" else "Full check"
-                setTextColor(text1); textSize = 14f; typeface = Typeface.DEFAULT_BOLD
-                setPadding(0, px(4), 0, px(4))
+                text = "$title  ·  $overall"
+                setTextColor(colour); textSize = 15f; typeface = Typeface.DEFAULT_BOLD
+                setPadding(0, px(4), 0, px(2))
             })
-            for (raw in r.optString("output").lines()) {
-                val l = raw.trimEnd()
-                if (l.isBlank()) continue
-                val t = l.trim()
-                val (mark, colour, rest) = when {
+            checkRows.addView(TextView(this).apply {
+                text = buildString {
+                    append("$okN OK")
+                    if (warnN > 0) append("  ·  $warnN warn")
+                    if (failN > 0) append("  ·  $failN fail")
+                    if (firstFail.isNotEmpty()) append("\nFirst issue: $firstFail")
+                    append("\n$next")
+                }
+                setTextColor(text2); textSize = 13f; setPadding(0, 0, 0, px(6))
+            })
+            val detailBody = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                visibility = View.GONE
+            }
+            for (raw in lines) {
+                val t = raw.trim()
+                val (mark, c, rest) = when {
                     t.startsWith("OK") -> Triple("✓", good, t.removePrefix("OK").trim())
                     t.startsWith("WARN") -> Triple("!", warn, t.removePrefix("WARN").trim())
                     t.startsWith("FAIL") -> Triple("✕", bad, t.removePrefix("FAIL").trim())
                     Regex("^\\d+\\.").containsMatchIn(t) -> Triple("", text1, t)
                     else -> Triple("", text2, t)
                 }
-                checkRows.addView(TextView(this).apply {
+                detailBody.addView(TextView(this).apply {
                     text = if (mark.isEmpty()) rest else "$mark  $rest"
-                    setTextColor(colour); textSize = if (mark.isEmpty() && colour == text1) 14f else 13f
-                    if (mark.isEmpty() && colour == text1) { typeface = Typeface.DEFAULT_BOLD; setPadding(0, px(6), 0, 0) }
+                    setTextColor(c); textSize = if (mark.isEmpty() && c == text1) 14f else 13f
+                    if (mark.isEmpty() && c == text1) { typeface = Typeface.DEFAULT_BOLD; setPadding(0, px(6), 0, 0) }
                     else setPadding(px(12), px(1), 0, px(1))
                 })
             }
+            val detailHead = TextView(this).apply {
+                text = "Details  ▾"; setTextColor(text2); textSize = 13f
+                setPadding(0, px(4), 0, px(4))
+                setOnClickListener {
+                    val open = detailBody.visibility != View.VISIBLE
+                    detailBody.visibility = if (open) View.VISIBLE else View.GONE
+                    text = "Details  " + if (open) "▴" else "▾"
+                }
+            }
+            checkRows.addView(detailHead)
+            checkRows.addView(detailBody)
         }
+        refreshAlertsBadge()
     }
 
     private fun setupCard(): View {
         val c = card()
         setupHead = TextView(this).apply { setTextColor(text1); textSize = 18f; typeface = Typeface.DEFAULT_BOLD }
         c.addView(setupHead)
-        c.addView(TextView(this).apply {
+        setupToggle = TextView(this).apply {
             text = "Phone Link needs a few permissions. Each one says why."
             setTextColor(text2); textSize = 14f; setPadding(0, px(2), 0, px(4))
-        })
+            setOnClickListener {
+                setupCollapsed = !setupCollapsed
+                applySetupCollapse()
+            }
+        }
+        c.addView(setupToggle)
+        val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        setupBody = body
+        c.addView(body)
         steps += Step("Notification access",
             "Lets Phone Link see what's playing (title, artist, album art) to show it in the car. Required.",
             "Open", false, { true }, ::hasAccess) {
@@ -774,10 +922,10 @@ class MainActivity : Activity() {
             { UsbLink(this).findDevice() != null }, { UsbLink(this).permitted() }) {
             UsbLink(this).askPermission()
         }
+        // ADB tip lives in a dialog only (not the main checklist body).
         steps += Step("No high-volume warning",
-            "Optional: lets Phone Link keep Android's hearing warning off, so full volume always works. " +
-                "Needs a computer once: with USB debugging on, run  adb shell pm grant au.chris.auxlink " +
-                "android.permission.WRITE_SECURE_SETTINGS", "How", true, { true },
+            "Optional: keep Android's hearing warning off so full volume always works (one-time adb grant).",
+            "How", true, { true },
             { checkSelfPermission("android.permission.WRITE_SECURE_SETTINGS") == PackageManager.PERMISSION_GRANTED }) {
             android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
                 .setTitle("Turn off the high-volume warning")
@@ -800,8 +948,22 @@ class MainActivity : Activity() {
             "Allow", true, { true }, { LocationWatch.hasPermission(this) }) {
             askOrSettings(Manifest.permission.ACCESS_FINE_LOCATION)
         }
-        for (s in steps) c.addView(stepRow(s))
+        for (s in steps) body.addView(stepRow(s))
         return c
+    }
+
+    private fun applySetupCollapse() {
+        val body = setupBody ?: return
+        val left = steps.count { it.shown() && !it.done() && !it.optional }
+        val allDone = left == 0 && hasAccess()
+        if (allDone && setupCollapsed) {
+            body.visibility = View.GONE
+            setupToggle?.text = "All permissions granted  ·  tap to expand"
+        } else {
+            body.visibility = View.VISIBLE
+            setupToggle?.text = if (allDone) "Tap to collapse completed checklist"
+            else "Phone Link needs a few permissions. Each one says why."
+        }
     }
 
     /** "Nudge Wi-Fi when the car connects": a single switch. When the car's
@@ -831,7 +993,7 @@ class MainActivity : Activity() {
     }
 
     // ----------------------------------------------------- Pi software update
-    private val piRepo = "chris-hemmings/teslabridge"
+    private val piRepo = "chris-hemmings/auxlink"
     private val piBranch = "main"
     @Volatile private var piUpdateBusy = false
 
@@ -865,7 +1027,58 @@ class MainActivity : Activity() {
         return box
     }
 
-    private fun piUpdateSay(msg: String) = say(msg)
+    /** Progress sheet for Pi updates (download → send → install). */
+    private fun showUpdateProgress(title: String, msg: String, pct: Int?) {
+        if (updateDlg == null) {
+            val pad = px(20)
+            val col = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(pad, px(12), pad, px(8))
+            }
+            updateTitleTv = TextView(this).apply {
+                setTextColor(text1); textSize = 17f; typeface = Typeface.DEFAULT_BOLD
+            }
+            updateMsgTv = TextView(this).apply {
+                setTextColor(text2); textSize = 14f; setPadding(0, px(8), 0, px(12))
+            }
+            updateBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+                max = 100
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            }
+            col.addView(updateTitleTv)
+            col.addView(updateMsgTv)
+            col.addView(updateBar)
+            updateDlg = android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setView(col)
+                .setCancelable(false)
+                .create()
+        }
+        updateTitleTv?.text = title
+        updateMsgTv?.text = msg
+        val bar = updateBar
+        if (bar != null) {
+            if (pct == null) {
+                bar.isIndeterminate = true
+            } else {
+                bar.isIndeterminate = false
+                bar.progress = pct.coerceIn(0, 100)
+            }
+        }
+        if (updateDlg?.isShowing != true) updateDlg?.show()
+    }
+
+    private fun finishUpdateProgress(msg: String, ok: Boolean) {
+        piUpdateBusy = false
+        updateDlg?.dismiss()
+        updateDlg = null
+        updateTitleTv = null; updateMsgTv = null; updateBar = null
+        android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle(if (ok) "Update sent" else "Update failed")
+            .setMessage(msg)
+            .setPositiveButton("OK", null)
+            .show()
+    }
 
     /** "1.0.89" > "1.0.9"? Numeric, component by component. */
     private fun verNewer(a: String, b: String): Boolean {
@@ -885,7 +1098,7 @@ class MainActivity : Activity() {
         if (piUpdateBusy) return
         val have = NowPlayingService.piStatus?.optString("version").orEmpty()
         if (have.isEmpty()) {
-            if (!auto) piUpdateSay("The Pi isn't connected yet, so its version is unknown. " +
+            if (!auto) say("The Pi isn't connected yet, so its version is unknown. " +
                 "Plug this device into the Pi (or connect the Bluetooth source) and try again.")
             return
         }
@@ -893,7 +1106,7 @@ class MainActivity : Activity() {
         val now = System.currentTimeMillis()
         if (auto && now - p.getLong("pi_update_checked", 0L) < 24 * 60 * 60 * 1000L) return
         piUpdateBusy = true
-        if (!auto) piUpdateSay("Checking GitHub for a newer Pi version…")
+        if (!auto) showUpdateProgress("Checking for updates", "Looking on GitHub…", null)
         Thread {
             val latest = try {
                 val c = URL("https://raw.githubusercontent.com/$piRepo/$piBranch/pi/VERSION")
@@ -902,17 +1115,25 @@ class MainActivity : Activity() {
                 c.inputStream.bufferedReader().use { it.readText() }.trim()
             } catch (e: Exception) { null }
             main.post {
-                piUpdateBusy = false
                 p.edit().putLong("pi_update_checked", now).apply()
                 if (latest == null || !latest.matches(Regex("[0-9.]{1,12}"))) {
-                    if (!auto) piUpdateSay("Couldn't reach GitHub to check for updates. " +
-                        "Is this device online?")
+                    piUpdateBusy = false
+                    if (!auto) finishUpdateProgress(
+                        "Couldn't reach GitHub to check for updates. Is this device online?", false)
                     return@post
                 }
                 if (!verNewer(latest, have)) {
-                    if (!auto) piUpdateSay("The Pi is up to date (v$have).")
+                    piUpdateBusy = false
+                    if (!auto) {
+                        updateDlg?.dismiss(); updateDlg = null
+                        updateTitleTv = null; updateMsgTv = null; updateBar = null
+                        say("The Pi is up to date (v$have).")
+                    }
                     return@post
                 }
+                piUpdateBusy = false
+                updateDlg?.dismiss(); updateDlg = null
+                updateTitleTv = null; updateMsgTv = null; updateBar = null
                 // Don't nag on auto-checks about a version already declined.
                 if (auto && p.getString("pi_update_skip", "") == latest) return@post
                 confirmPiUpdate(have, latest, auto)
@@ -937,37 +1158,57 @@ class MainActivity : Activity() {
     private fun downloadAndPushPiUpdate(latest: String) {
         if (piUpdateBusy) return
         piUpdateBusy = true
-        piUpdateSay("Downloading v$latest from GitHub…")
+        showUpdateProgress("Downloading v$latest", "Fetching from GitHub…", 0)
         Thread {
-            // Download the branch zip from GitHub (this device needs internet).
             val zip = try {
                 val c = URL("https://codeload.github.com/$piRepo/zip/refs/heads/$piBranch")
                     .openConnection() as HttpURLConnection
-                c.connectTimeout = 15000; c.readTimeout = 60000
-                c.inputStream.use { it.readBytes() }
+                c.connectTimeout = 15000; c.readTimeout = 120000
+                val len = c.contentLength
+                val inp = c.inputStream
+                val buf = java.io.ByteArrayOutputStream()
+                val chunk = ByteArray(8192)
+                var read = 0
+                while (true) {
+                    val n = inp.read(chunk)
+                    if (n < 0) break
+                    buf.write(chunk, 0, n)
+                    read += n
+                    if (len > 0) {
+                        val pct = ((read.toLong() * 100) / len).toInt().coerceIn(0, 99)
+                        main.post {
+                            showUpdateProgress("Downloading v$latest",
+                                "${read / 1024} KB of ${len / 1024} KB", pct)
+                        }
+                    } else if (read % (64 * 1024) < chunk.size) {
+                        main.post {
+                            showUpdateProgress("Downloading v$latest",
+                                "${read / 1024} KB…", null)
+                        }
+                    }
+                }
+                inp.close()
+                buf.toByteArray()
             } catch (e: Exception) { null }
             if (zip == null || zip.size < 1000) {
-                main.post { piUpdateBusy = false
-                    piUpdateSay("Download failed — is this device online?") }
+                main.post { finishUpdateProgress("Download failed — is this device online?", false) }
                 return@Thread
             }
             main.post {
-                // Prefer the USB/Bluetooth link to the Pi (works in the car, no
-                // Wi-Fi needed). Fall back to Wi-Fi/HTTP if there's no link, or
-                // if the Pi is too old to receive a pushed zip (added in 1.0.90).
+                showUpdateProgress("Downloading v$latest", "Download complete (${zip.size / 1024} KB)", 100)
                 val svc = NowPlayingService.instance
                 val piVer = NowPlayingService.piStatus?.optString("version").orEmpty()
                 val linkOk = svc != null && piVer.isNotEmpty() && !verNewer("1.0.90", piVer)
                 if (linkOk && svc != null) {
-                    piUpdateSay("Sending v$latest to the Pi over the link…")
-                    svc.pushPiUpdate(zip, latest, { }) { ok, msg ->     // per-chunk progress dropped (would spam toasts)
+                    showUpdateProgress("Sending to the Pi", "Pushing v$latest over the link…", 0)
+                    svc.pushPiUpdate(zip, latest, { label, pct ->
+                        showUpdateProgress("Sending to the Pi", label, pct)
+                    }) { ok, msg ->
                         if (msg == "nolink") installPiUpdateOverWifi(zip, latest)
-                        else {
-                            piUpdateBusy = false
-                            piUpdateSay(if (ok) "Update sent over the link. The Pi is installing v$latest and " +
-                                "will restart its services (about a minute), then reconnect." else "Couldn't " +
-                                "install: $msg")
-                        }
+                        else if (ok) finishUpdateProgress(
+                            "Update sent. The Pi is installing v$latest and will restart its " +
+                                "services (about a minute), then reconnect.", true)
+                        else finishUpdateProgress("Couldn't install: $msg", false)
                     }
                 } else installPiUpdateOverWifi(zip, latest)
             }
@@ -977,23 +1218,45 @@ class MainActivity : Activity() {
     /** Fallback: push the zip to the Pi's /api/update over Wi-Fi (needs to be
      *  on the Pi's network, like the setup page). */
     private fun installPiUpdateOverWifi(zip: ByteArray, latest: String) {
-        piUpdateSay("No link to the Pi — looking for it on Wi-Fi…")
+        showUpdateProgress("Looking for the Pi", "No link — trying Wi-Fi…", null)
         Thread {
             val base = resolvePiBase()
             if (base == null) {
-                main.post { piUpdateBusy = false
-                    piUpdateSay("Pi not found. Plug this device into the Pi's USB-C, or get on the Pi's Wi-Fi " +
-                        "(its Setup Wi-Fi, or the same network), then try again.") }
+                main.post {
+                    finishUpdateProgress(
+                        "Pi not found. Plug this device into the Pi's USB-C, or get on the Pi's Wi-Fi " +
+                            "(its Setup Wi-Fi, or the same network), then try again.", false)
+                }
                 return@Thread
             }
-            main.post { piUpdateSay("Installing on the Pi over Wi-Fi (${zip.size / 1024} KB)…") }
+            main.post {
+                showUpdateProgress("Installing on the Pi",
+                    "Uploading over Wi-Fi (${zip.size / 1024} KB)…", null)
+            }
             val ok = try {
                 val c = URL("${base}api/update").openConnection() as HttpURLConnection
                 c.requestMethod = "POST"; c.doOutput = true
                 c.connectTimeout = 15000; c.readTimeout = 60000
                 c.setRequestProperty("Content-Type", "application/zip")
                 c.setFixedLengthStreamingMode(zip.size)
-                c.outputStream.use { it.write(zip) }
+                c.outputStream.use { out ->
+                    var off = 0
+                    val chunk = 16 * 1024
+                    while (off < zip.size) {
+                        val n = minOf(chunk, zip.size - off)
+                        out.write(zip, off, n)
+                        off += n
+                        val pct = (off * 100) / zip.size
+                        main.post {
+                            showUpdateProgress("Installing on the Pi",
+                                "Uploading… $pct%", pct)
+                        }
+                    }
+                }
+                main.post {
+                    showUpdateProgress("Installing on the Pi",
+                        "Pi is installing v$latest…", null)
+                }
                 val code = c.responseCode
                 val body = try {
                     (if (code in 200..299) c.inputStream else c.errorStream)
@@ -1002,13 +1265,15 @@ class MainActivity : Activity() {
                 Triple(code in 200..299, code, body)
             } catch (e: Exception) { Triple(false, 0, e.message ?: "error") }
             main.post {
-                piUpdateBusy = false
                 when {
-                    ok.first -> piUpdateSay("Update sent over Wi-Fi. The Pi is installing v$latest and will " +
-                        "restart its services (about a minute), then reconnect.")
-                    ok.second == 401 -> piUpdateSay("The Pi's setup page is password-protected, so Wi-Fi " +
-                        "install isn't available — plug into the Pi's USB-C to install over the link instead.")
-                    else -> piUpdateSay("The Pi rejected the update: ${ok.third.take(200)}")
+                    ok.first -> finishUpdateProgress(
+                        "Update sent over Wi-Fi. The Pi is installing v$latest and will " +
+                            "restart its services (about a minute), then reconnect.", true)
+                    ok.second == 401 -> finishUpdateProgress(
+                        "The Pi's setup page is password-protected, so Wi-Fi install isn't available — " +
+                            "plug into the Pi's USB-C to install over the link instead.", false)
+                    else -> finishUpdateProgress(
+                        "The Pi rejected the update: ${ok.third.take(200)}", false)
                 }
             }
         }.start()
@@ -1019,25 +1284,36 @@ class MainActivity : Activity() {
         c.addView(TextView(this).apply {
             text = "Tools"; setTextColor(text1); textSize = 18f; typeface = Typeface.DEFAULT_BOLD
         })
-        c.addView(toolRow("Fix sound",
+        val role = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, px(8), 0, px(4)) }
+        roleBlock = role
+        updateRoleBlock(role)
+        c.addView(role)
+        toolsMusicRows.clear()
+        fun musicTool(v: View): View { toolsMusicRows += v; return v }
+        c.addView(musicTool(toolRow("Fix sound",
             "Music playing here but silent in the car? This restarts the stream to the car.", "Fix") {
             send("fix", "Asked the Pi to restart the music stream to the car.")
-        })
-        c.addView(toolRow("Test the call pop-up",
+        }))
+        c.addView(musicTool(toolRow("Re-plug USB-C",
+            "Force the Pi to re-plug its USB-C gadget (fixes Wired selected but silent). " +
+                "Music drops for a few seconds.", "Re-plug") {
+            send("usbc-replug", "Asked the Pi to re-plug USB-C. Wait a few seconds for sound to return.")
+        }))
+        c.addView(musicTool(toolRow("Test the call pop-up",
             "Shows a pretend call for 8 seconds, so you can see where it appears. Switch to your music app to see it on top.",
             "Test") {
             val svc = NowPlayingService.instance
             if (svc == null) say("Phone Link isn't running yet: allow Notification access first.")
             else { svc.testCallBar(); say("Showing a pretend call for 8 seconds.") }
-        })
-        c.addView(toolRow("Volume to full",
+        }))
+        c.addView(musicTool(toolRow("Volume to full",
             "Sets this device's media volume to 100% (use the car's volume). If Android warns about " +
                 "high volume, tap OK.", "Set") {
             val svc = NowPlayingService.instance
             if (svc == null) say("Phone Link isn't running yet: allow Notification access first.")
             else { svc.volumeMax(true); say("Volume set to full. If Android asks, tap OK.") }
-        })
-        c.addView(bannerPosBlock())
+        }))
+        c.addView(musicTool(bannerPosBlock()))
         c.addView(wifiParkedBlock())
         c.addView(piUpdateBlock())
         return c
@@ -1088,6 +1364,72 @@ class MainActivity : Activity() {
         return box
     }
 
+    private fun updateRoleBlock(box: LinearLayout) {
+        box.removeAllViews()
+        val p = getSharedPreferences("auxlink", MODE_PRIVATE)
+        val cur = p.getString("device_role", "auto") ?: "auto"
+        box.addView(TextView(this).apply {
+            text = "This device"; setTextColor(text1); textSize = 15f; typeface = Typeface.DEFAULT_BOLD
+        })
+        box.addView(TextView(this).apply {
+            text = "Phone = forward notifications. Head unit = receive them and drive the Pi. " +
+                "Auto guesses from USB / forwarder settings."
+            setTextColor(text2); textSize = 12f; setPadding(0, px(2), 0, px(6))
+        })
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        listOf("Auto" to "auto", "Phone" to "phone", "Head unit" to "headunit").forEachIndexed { i, (label, key) ->
+            val b = pillButton(label, cur == key) {
+                p.edit().putString("device_role", key).apply()
+                applyRoleChrome()
+            }
+            b.minWidth = 0; b.minimumWidth = 0
+            b.layoutParams = LinearLayout.LayoutParams(0, px(40), 1f).apply { if (i > 0) marginStart = px(8) }
+            row.addView(b)
+        }
+        box.addView(row)
+        if (isHeadUnitRole()) {
+            box.addView(TextView(this).apply {
+                text = "Head-unit mode: Alerts receives mirrored notifications (forwarder controls hidden)."
+                setTextColor(text2); textSize = 12f; setPadding(0, px(8), 0, 0)
+            })
+        }
+    }
+
+    /** Confirm before enabling forwarder-only; turning off restores tabs. */
+    private fun wireForwarderOnlySwitch(sw: android.widget.Switch) {
+        val p = getSharedPreferences("auxlink", MODE_PRIVATE)
+        sw.setOnCheckedChangeListener(null)
+        sw.isChecked = p.getBoolean("notif_forwarder_only", false)
+        sw.setOnCheckedChangeListener { _, on ->
+            if (on) {
+                // Revert until the user confirms.
+                sw.setOnCheckedChangeListener(null)
+                sw.isChecked = false
+                android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                    .setTitle("Forwarder only?")
+                    .setMessage("Hides Phone, Messages, and Status on this device. " +
+                        "Long-press the Alerts tab anytime to restore the full UI.")
+                    .setPositiveButton("Enable") { _, _ ->
+                        val svc = NowPlayingService.instance
+                        if (svc != null) svc.setForwarderOnly(true)
+                        else p.edit().putBoolean("notif_forwarder_only", true).apply()
+                        wireForwarderOnlySwitch(sw)
+                        applyRoleChrome()
+                        say("Forwarder-only on. Long-press Alerts to restore full UI.")
+                    }
+                    .setNegativeButton("Cancel") { _, _ -> wireForwarderOnlySwitch(sw) }
+                    .setOnCancelListener { wireForwarderOnlySwitch(sw) }
+                    .show()
+            } else {
+                val svc = NowPlayingService.instance
+                if (svc != null) svc.setForwarderOnly(false)
+                else p.edit().putBoolean("notif_forwarder_only", false).apply()
+                applyRoleChrome()
+                say("Full Phone Link UI restored.")
+            }
+        }
+    }
+
     /** Forwarder controls for the Alerts tab (enable on your PHONE). */
     private fun notifForwardBlock(): View {
         val p = getSharedPreferences("auxlink", MODE_PRIVATE)
@@ -1095,6 +1437,7 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             background = round(cardBg, 16f)
             setPadding(px(14), px(12), px(14), px(12))
+            tag = "forwarder"
         }
         box.addView(TextView(this).apply {
             text = "Forward from this phone"; setTextColor(text1); textSize = 15f
@@ -1114,20 +1457,15 @@ class MainActivity : Activity() {
                 else p.edit().putBoolean("notif_forward", on).apply()
                 say(if (on) "Forwarding on. Grant Notification access if prompted."
                     else "Forwarding off.")
+                applyRoleChrome()
             }
         })
-        box.addView(android.widget.Switch(this).apply {
+        val foSw = android.widget.Switch(this).apply {
             text = "  Forwarder only (hide Phone / Messages / Status)"; setTextColor(text1); textSize = 14f
             isChecked = p.getBoolean("notif_forwarder_only", false)
-            setOnCheckedChangeListener { _, on ->
-                val svc = NowPlayingService.instance
-                if (svc != null) svc.setForwarderOnly(on)
-                else p.edit().putBoolean("notif_forwarder_only", on).apply()
-                applyForwarderChrome()
-                say(if (on) "Forwarder-only: this phone just mirrors notifications."
-                    else "Full Phone Link UI restored.")
-            }
-        })
+        }
+        wireForwarderOnlySwitch(foSw)
+        box.addView(foSw)
         fun pill(label: String, click: () -> Unit) = pillButton(label, false, click).apply {
             layoutParams = LinearLayout.LayoutParams(0, px(40), 1f).apply {
                 marginStart = px(4); marginEnd = px(4)
@@ -1371,6 +1709,19 @@ class MainActivity : Activity() {
         }
         setupHead.text = if (left == 0) "Setup  ·  All done" else "Setup  ·  $left to do"
         setupHead.setTextColor(if (left == 0) text1 else warn)
+        // Collapse completed rows when everything required is done.
+        for (s in steps) {
+            if (left == 0 && setupCollapsed && s.done() && s.optional) {
+                // optional leftovers stay hidden when collapsed
+            }
+        }
+        applySetupCollapse()
+        // Hide completed optional ADB tip once required setup is done and collapsed.
+        if (left == 0 && setupCollapsed) {
+            for (s in steps) {
+                if (s.optional && s.done()) s.row.visibility = View.GONE
+            }
+        }
 
         // Details
         details.text = buildString {

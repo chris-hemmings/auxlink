@@ -1,7 +1,8 @@
 name: Remove old releases
-# Keeps only the newest release of each kind - the app (v*), the Pi image
-# (pi-v*) and the XIAO firmware (xiao-v*) - and deletes the rest with their
-# tags. Runs after each successful build, or by hand from the Actions tab.
+# Keeps every 1.x release (so you can roll back) and, for 2.x+, only the
+# newest of each kind — the app (v*), the Pi image (pi-v*) and the XIAO
+# firmware (xiao-v*). Runs after each successful build, or by hand from
+# the Actions tab.
 on:
   workflow_dispatch:
   workflow_run:
@@ -17,14 +18,31 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
-      - name: Delete all but the newest of each kind
+      - name: Delete old 2.x+ releases; keep all 1.x
         run: |
           gh release list --limit 500 --json tagName,publishedAt,isDraft \
             --jq '.[] | select(.isDraft | not) | "\(.publishedAt) \(.tagName)"' | sort -r > releases.txt
           cat releases.txt
           for kind in '^pi-v' '^xiao-v' '^v'; do
-            awk -v k="$kind" '$2 ~ k' releases.txt | tail -n +2 | while read -r _ tag; do
+            kept_new=0
+            while read -r _ tag; do
+              case "$tag" in
+                pi-v*) ver=${tag#pi-v} ;;
+                xiao-v*) ver=${tag#xiao-v} ;;
+                v*) ver=${tag#v} ;;
+                *) continue ;;
+              esac
+              major=${ver%%.*}
+              if [ "$major" = "1" ]; then
+                echo "Keeping $tag (1.x)"
+                continue
+              fi
+              if [ "$kept_new" = "0" ]; then
+                echo "Keeping newest non-1.x $tag"
+                kept_new=1
+                continue
+              fi
               echo "Deleting $tag"
               gh release delete "$tag" --yes --cleanup-tag
-            done
+            done < <(awk -v k="$kind" '$2 ~ k' releases.txt)
           done

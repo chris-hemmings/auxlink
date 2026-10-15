@@ -33,6 +33,8 @@ class NotificationsScreen(
     val view: FrameLayout
     private val list: ListView
     private val empty: LinearLayout
+    private val settingsView: View? = settings
+    private val receiveHint: TextView
     private var rows: List<NotifLog.Item> = emptyList()
     private val onData = { refresh() }
 
@@ -49,6 +51,11 @@ class NotificationsScreen(
         }
         list.setOnItemClickListener { _, _, i, _ -> detail(rows[i]) }
         empty = ui.empty("", "")
+        receiveHint = ui.text(
+            "Receiving mirrored notifications from your phone. Tap one to read or reply. " +
+                "They also stay in the notification shade after the banner.",
+            13f, ui.text2
+        ).apply { visibility = View.GONE }
         val clear = ui.button("Clear", ui.line, ui.text1) {
             AlertDialog.Builder(ctx, android.R.style.Theme_DeviceDefault_Dialog_Alert)
                 .setTitle("Clear all alerts?")
@@ -68,14 +75,12 @@ class NotificationsScreen(
                     LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
                 addView(clear, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ui.px(42)))
             }, ui.matchWrap(bottom = 8))
-            if (settings != null) {
-                addView(settings, ui.matchWrap(bottom = 12))
-            } else {
-                addView(ui.text(
-                    "Mirrored notifications from your phone. Tap one to read or reply. " +
-                        "They also stay in the notification shade after the banner.",
-                    13f, ui.text2
-                ), ui.matchWrap(bottom = 8))
+            if (settingsView != null) {
+                addView(settingsView, ui.matchWrap(bottom = 12))
+            }
+            addView(receiveHint, ui.matchWrap(bottom = 8))
+            if (settingsView == null) {
+                receiveHint.visibility = View.VISIBLE
             }
             addView(empty, ui.matchWrap())
             addView(list, ui.fill())
@@ -88,7 +93,16 @@ class NotificationsScreen(
         refresh()
     }
 
-    fun onShow() = refresh()
+    /** Head-unit mode: hide forwarder controls, show receive hint. */
+    fun setForwarderVisible(visible: Boolean) {
+        settingsView?.visibility = if (visible) View.VISIBLE else View.GONE
+        receiveHint.visibility = if (visible) View.GONE else View.VISIBLE
+    }
+
+    fun onShow() {
+        NotifLog.markSeen()
+        refresh()
+    }
 
     fun destroy() = NotifLog.unlisten(onData)
 
@@ -151,23 +165,9 @@ class NotificationsScreen(
             setPadding(pad, ui.px(12), pad, ui.px(8))
             addView(ui.text(body, 15f, ui.text1))
         }
+        // Driving-safe: large non-reply chips (Mark read / Archive) first.
+        val quick = item.actions.filter { !it.reply }.take(3)
         val replyAct = item.actions.firstOrNull { it.reply }
-        val input = if (replyAct != null && item.nid.isNotEmpty()) {
-            EditText(ctx).apply {
-                hint = replyAct.label.ifBlank { "Reply" }
-                setTextColor(ui.text1)
-                setHintTextColor(ui.text2)
-                textSize = 15f
-                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-                imeOptions = EditorInfo.IME_ACTION_SEND
-                setPadding(0, ui.px(12), 0, ui.px(8))
-            }.also { col.addView(it) }
-        } else null
-        val buttons = LinearLayout(ctx).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.END
-            setPadding(0, ui.px(8), 0, 0)
-        }
         val dlg = AlertDialog.Builder(ctx, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle(title)
             .setView(col)
@@ -185,16 +185,41 @@ class NotificationsScreen(
                 Toast.LENGTH_SHORT).show()
             dlg.dismiss()
         }
-        if (replyAct != null && input != null) {
-            buttons.addView(ui.button("Send", ui.accent) {
+        if (quick.isNotEmpty() && item.nid.isNotEmpty()) {
+            val chips = LinearLayout(ctx).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(0, ui.px(12), 0, ui.px(4))
+            }
+            for (act in quick) {
+                chips.addView(ui.button(act.label, ui.accent) { fire(act) }.also {
+                    it.layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ui.px(52)
+                    ).apply { bottomMargin = ui.px(8) }
+                    it.textSize = 16f
+                })
+            }
+            col.addView(chips)
+        }
+        if (replyAct != null && item.nid.isNotEmpty()) {
+            val input = EditText(ctx).apply {
+                hint = replyAct.label.ifBlank { "Reply" }
+                setTextColor(ui.text1)
+                setHintTextColor(ui.text2)
+                textSize = 15f
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+                imeOptions = EditorInfo.IME_ACTION_SEND
+                setPadding(0, ui.px(8), 0, ui.px(8))
+            }
+            col.addView(input)
+            col.addView(ui.button("Send reply", ui.line, ui.text1) {
                 val text = input.text?.toString()?.trim().orEmpty()
                 if (text.isEmpty()) {
                     Toast.makeText(ctx, "Type a reply first.", Toast.LENGTH_SHORT).show()
                 } else fire(replyAct, text)
             }.also {
                 it.layoutParams = LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ui.px(42)
-                ).apply { marginEnd = ui.px(8) }
+                    ViewGroup.LayoutParams.MATCH_PARENT, ui.px(48)
+                ).apply { topMargin = ui.px(4) }
             })
             input.setOnEditorActionListener { _, actionId, _ ->
                 if (actionId == EditorInfo.IME_ACTION_SEND) {
@@ -204,27 +229,16 @@ class NotificationsScreen(
                 } else false
             }
         }
-        for (act in item.actions.filter { !it.reply }.take(2)) {
-            if (item.nid.isEmpty()) break
-            buttons.addView(ui.button(act.label, ui.line, ui.text1) {
-                fire(act)
-            }.also {
-                it.layoutParams = LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ui.px(42)
-                ).apply { marginStart = ui.px(4) }
-            })
-        }
         if (item.pkg.isNotEmpty()) {
-            buttons.addView(ui.button("Mute", ui.line, ui.text1) {
+            col.addView(ui.button("Mute", ui.line, ui.text1) {
                 dlg.dismiss()
                 OverlayMuteActivity.start(ctx, item.pkg, item.app)
             }.also {
                 it.layoutParams = LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ui.px(42)
-                ).apply { marginStart = ui.px(4) }
+                    ViewGroup.LayoutParams.MATCH_PARENT, ui.px(48)
+                ).apply { topMargin = ui.px(8) }
             })
         }
-        if (buttons.childCount > 0) col.addView(buttons)
         dlg.show()
     }
 

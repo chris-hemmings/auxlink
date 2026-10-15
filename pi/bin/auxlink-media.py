@@ -309,7 +309,8 @@ def usbc_repair(force=False):
 
 # USB-C: SMO reports Playing but auxlink-audio sees no PCM — force a gadget
 # re-plug (rate-limited). Avoids the "Wired selected, RMS 0" stuck state.
-USBC_SILENT = {"since": 0.0, "last_force": 0.0}
+# Trigger after ~15 s silence; cool-down 3 min. Status surfaces last recovery.
+USBC_SILENT = {"since": 0.0, "last_force": 0.0, "note": "", "note_at": 0.0}
 
 
 class UsbcReplug:
@@ -558,6 +559,7 @@ class Player(dbus.service.Object):
         self.key_seq = 0            # play/pause keys sent so far
         self.present = False
         self.ignore_sound_until = 0.0  # after the car pauses: the tail of the sound doesn't count
+        self.silent_play_since = 0.0  # eager mode: app Playing with no PCM (grace demote)
         self.art_id = None            # artwork id last received from the SMO app
         # Image handles must not repeat across restarts: the car caches
         # pictures by handle, so a reused one shows the OLD picture (and a
@@ -628,7 +630,28 @@ class Player(dbus.service.Object):
         if MUSIC_SOURCE == "bluetooth":
             return self.app_state    # follows the source's own stream already
         sound = self.present and time.monotonic() >= self.ignore_sound_until
-        return "Playing" if (self.app_state == "Playing" or sound) else self.app_state
+        # WAIT_FOR_AUDIO: only advertise Playing when real PCM is present.
+        # MediaSession alone must not tell the car "Playing" (silent stream).
+        if WAIT_FOR_AUDIO:
+            if sound:
+                self.silent_play_since = 0.0
+                return "Playing"
+            if self.app_state == "Playing":
+                return "Paused"
+            return self.app_state
+        # Eager mode (default): app Playing OR sound — but demote after ~10 s
+        # of silence so a stuck MediaSession does not leave the car on Playing.
+        if self.app_state == "Playing" or sound:
+            if self.app_state == "Playing" and not sound:
+                if self.silent_play_since <= 0:
+                    self.silent_play_since = time.monotonic()
+                elif time.monotonic() - self.silent_play_since >= 10.0:
+                    return "Paused"
+            else:
+                self.silent_play_since = 0.0
+            return "Playing"
+        self.silent_play_since = 0.0
+        return self.app_state
 
     def sound_check(self, present):
         """Called a few times a second with whether sound is arriving."""
@@ -641,7 +664,12 @@ class Player(dbus.service.Object):
         want = self.effective_state()
         if want != self.status:
             self.status = want
-            why = "sound arriving" if present else "sound stopped"
+            if present:
+                why = "sound arriving"
+            elif want == "Paused" and self.app_state == "Playing":
+                why = "silent while Playing (demoted)"
+            else:
+                why = "sound stopped"
             log(f"[SMO] {why}: {want}")
             self.publish()
         elif changed:
@@ -2144,10 +2172,19 @@ def audio_flow(player):
             card = "UAC1" in open("/proc/asound/cards").read().replace("_", "")
         except OSError:
             card = False
-        out.append(item("input", "USB-C to the Pi",
-                        ("Connected" if state == "configured" else (state or "no USB-C port")) +
-                        ("  ·  48 kHz 16-bit stereo sound card" if card else "  ·  sound card missing"),
-                        "ok" if state == "configured" and card else "bad"))
+        usbc_detail = ("Connected" if state == "configured" else (state or "no USB-C port")) + \
+            ("  ·  48 kHz 16-bit stereo sound card" if card else "  ·  sound card missing")
+        usbc_st = "ok" if state == "configured" and card else "bad"
+        # Live health: silent while the app wants music → warn before full force-repair.
+        want_play = player.app_state == "Playing" or player.status == "Playing"
+        if usbc_st == "ok" and want_play and not player.present and not player.phone_active:
+            usbc_detail = "Silent while playing — re-plug may help"
+            usbc_st = "warn"
+        if USBC_SILENT.get("note") and time.time() - USBC_SILENT.get("note_at", 0) < 120:
+            usbc_detail += "  ·  " + USBC_SILENT["note"]
+            if usbc_st == "ok":
+                usbc_st = "warn"
+        out.append(item("input", "USB-C to the Pi", usbc_detail, usbc_st))
     sound = player.present
     if player.phone_active:
         out.append(item("input", "Sound from the music device",
@@ -2276,6 +2313,14 @@ def app_command(player, cmd):
     if cmd == "fix":
         log("App: fix sound - restarting the car's stream")
         player.kick_audio()
+    elif cmd == "usbc-replug":
+        log("App: force USB-C re-plug")
+        if MUSIC_SOURCE == "usbc":
+            USBC_SILENT["note"] = "USB-C re-plug requested from the app"
+            USBC_SILENT["note_at"] = time.time()
+            usbc_repair(force=True)
+        else:
+            log("usbc-replug: MUSIC_SOURCE is not usbc — ignored")
     elif cmd == "reboot":
         log("App: restart the Pi")
         try:
@@ -2807,26 +2852,29 @@ def main():
         PHONE["link"] = PhoneLink()
 
         def usbc_silent_watch():
-            """Playing + no sound for ~40 s → force USB-C re-plug (max every 3 min)."""
+            """Playing + no sound for ~15 s → force USB-C re-plug (max every 3 min)."""
             if player.phone_active:
                 USBC_SILENT["since"] = 0.0
                 return True
-            playing = player.status == "Playing"
+            # Use effective Playing intent (app or status) so demoted AVRCP still recovers.
+            playing = player.app_state == "Playing" or player.status == "Playing"
             if playing and not player.present:
                 now = time.time()
                 if USBC_SILENT["since"] <= 0:
                     USBC_SILENT["since"] = now
-                elif (now - USBC_SILENT["since"] >= 40
+                elif (now - USBC_SILENT["since"] >= 15
                       and now - USBC_SILENT["last_force"] >= 180):
                     USBC_SILENT["last_force"] = now
                     USBC_SILENT["since"] = now
-                    log("USB-C: SMO playing but silent for 40s — forcing gadget re-plug")
+                    USBC_SILENT["note"] = "Forced USB-C re-plug (silent while playing)"
+                    USBC_SILENT["note_at"] = now
+                    log("USB-C: SMO playing but silent for 15s — forcing gadget re-plug")
                     usbc_repair(force=True)
             else:
                 USBC_SILENT["since"] = 0.0
             return True
 
-        GLib.timeout_add(5000, usbc_silent_watch)
+        GLib.timeout_add(2000, usbc_silent_watch)
     GLib.MainLoop().run()
 
 
