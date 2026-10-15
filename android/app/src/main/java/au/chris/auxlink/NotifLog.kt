@@ -34,6 +34,7 @@ object NotifLog {
     private val items = mutableListOf<Item>()
     private val listeners = mutableListOf<() -> Unit>()
     private var nextId = 1L
+    private var unread = 0
 
     fun parseActions(o: JSONObject): List<Action> {
         val arr = o.optJSONArray("actions") ?: return emptyList()
@@ -64,6 +65,7 @@ object NotifLog {
         )
         items.add(0, item)
         while (items.size > MAX) items.removeAt(items.lastIndex)
+        unread++
         val cbs = listeners.toList()
         cbs.forEach { it.invoke() }
         return item
@@ -71,9 +73,19 @@ object NotifLog {
 
     @Synchronized fun all(): List<Item> = items.toList()
 
+    @Synchronized fun unreadCount(): Int = unread
+
+    @Synchronized
+    fun markSeen() {
+        if (unread == 0) return
+        unread = 0
+        listeners.toList().forEach { it.invoke() }
+    }
+
     @Synchronized
     fun clear() {
         items.clear()
+        unread = 0
         listeners.toList().forEach { it.invoke() }
     }
 

@@ -70,6 +70,9 @@ class NowPlayingService : NotificationListenerService() {
         @Volatile var btResult: JSONObject? = null
         @Volatile var linkOpen: Boolean = false
         @Volatile var linkKind: String = ""
+        /** Last USB-C silent-audio recovery note (for Status). */
+        @Volatile var lastRecoveryNote: String = ""
+        @Volatile var lastRecoveryAt = 0L
         /** Last successful send to / line from the Pi (ms). */
         @Volatile var lastTraffic = 0L
         /** Connected = the link is open, or it carried something in the last
@@ -147,11 +150,11 @@ class NowPlayingService : NotificationListenerService() {
     @Volatile private var fwCb: ((JSONObject) -> Unit)? = null
 
     /** Push a Pi update zip to the Pi over the open USB/Bluetooth link, in
-     *  base64 chunks. [done] gets (ok, message); false with "nolink" means
-     *  there's no link to the Pi (fall back to Wi-Fi). Callbacks run on the
-     *  main thread. */
+     *  base64 chunks. [progress] gets (label, percent 0–100 or null = indeterminate).
+     *  [done] gets (ok, message); false with "nolink" means there's no link to
+     *  the Pi (fall back to Wi-Fi). Callbacks run on the main thread. */
     fun pushPiUpdate(zip: ByteArray, ver: String,
-                     progress: (String) -> Unit, done: (Boolean, String) -> Unit) {
+                     progress: (String, Int?) -> Unit, done: (Boolean, String) -> Unit) {
         io.execute {
             val b64 = android.util.Base64.encodeToString(zip, android.util.Base64.NO_WRAP)
             val chunk = 24000            // base64 chars per line (well under the 64 KB cap)
@@ -171,11 +174,15 @@ class NowPlayingService : NotificationListenerService() {
                     ok = false; break
                 }
                 i++
-                if (i % 4 == 0 || i == total) { val n = i; main.post { progress("Sending to the Pi… $n/$total") } }
+                if (i % 2 == 0 || i == total) {
+                    val n = i
+                    val pct = if (total > 0) (n * 100) / total else 100
+                    main.post { progress("Sending to the Pi… $pct%", pct) }
+                }
             }
             if (ok) sendLine(JSONObject().put("fw", JSONObject().put("op", "end")).toString())
             if (!ok) { fwCb = null; main.post { done(false, "The link to the Pi dropped while sending.") }; return@execute }
-            main.post { progress("Installing on the Pi…") }
+            main.post { progress("Installing on the Pi…", null) }
             val got = try {
                 latch.await(90, java.util.concurrent.TimeUnit.SECONDS)
             } catch (e: Exception) { false }
@@ -1171,10 +1178,12 @@ class NowPlayingService : NotificationListenerService() {
         }
         if (!silentWhilePlaying) return
         val now = System.currentTimeMillis()
-        if (now - lastUsbcRecycleMs < 90_000L) return
+        if (now - lastUsbcRecycleMs < 30_000L) return
         lastUsbcRecycleMs = now
         Log.w(TAG, "USB-C audio silent while playing — recycling serial claim")
-        io.execute { link.recycle(2000) }
+        lastRecoveryNote = "Recycled USB serial (silent while playing)"
+        lastRecoveryAt = now
+        io.execute { link.recycle(1500) }
     }
 
     /** The audio-path check as (one-line summary, multi-line detail) for the
@@ -1419,9 +1428,11 @@ class NowPlayingService : NotificationListenerService() {
         val c = controller ?: return
         val md = c.metadata
         val ps = c.playbackState
+        // BUFFERING is not Playing for the car — advertising Playing before
+        // samples hit USB/I2S causes Tesla silent-stream glitches.
         val state = when (ps?.state) {
-            PlaybackState.STATE_PLAYING, PlaybackState.STATE_BUFFERING -> "Playing"
-            PlaybackState.STATE_PAUSED -> "Paused"
+            PlaybackState.STATE_PLAYING -> "Playing"
+            PlaybackState.STATE_BUFFERING, PlaybackState.STATE_PAUSED -> "Paused"
             else -> "Stopped"
         }
         val json = JSONObject().apply {
