@@ -15,7 +15,9 @@
 #                          then start it like after a call (see below)
 #   * SMO plays         -> start (auxlink-media has already told the car
 #                          "Playing" when it writes PLAY_FILE)
-#   * SMO pauses / call -> stop, and suspend the car output (car sees pause)
+#   * SMO pauses        -> hold the stream STREAM_HOLD_SEC (app switches),
+#                          then stop + suspend (car sees pause)
+#   * call / phone media -> stop immediately (phone media does not suspend)
 # While streaming, both channels are checked every 60 s: a suspend/resume of
 # the car's output (the car can do that too) leaves a running pw-loopback
 # with a silent RIGHT channel until it is recreated.
@@ -45,7 +47,7 @@ KICK_FILE=/run/auxlink/audio-kick    # touched by auxlink-media when the car pre
 KICK_SEEN=$(stat -c %Y "$KICK_FILE" 2>/dev/null || echo 0)
 RECHECK=""        # why the stream is restarted (play pressed in the car)
 RECHECK_AT=0      # when to do it (0 = not pending)
-CALL_ENDED_AT=0; WAS_CALL=0
+CALL_ENDED_AT=0; WAS_CALL=0; WAS_PHONE=0
 # s after a call / voice search before the car's stream restarts (the car
 # leaves call mode; the silent restart that follows covers the rest). Editable
 # on the setup page (CALL_SETTLE). Separate from the page's "Resume music after
@@ -53,6 +55,11 @@ CALL_ENDED_AT=0; WAS_CALL=0
 # it until this stream runs anyway). Too low and the Tesla swallows the first
 # second of music while it's still leaving call mode.
 call_settle() { echo "${CALL_SETTLE:-2}"; }
+# Keep the car A2DP stream up across short SMO pause / silent gaps (app
+# switches, Spotify buffering). Calls and phone-media take-over still stop
+# immediately. 0 = old behaviour (stop as soon as should_stream is false).
+stream_hold() { echo "${STREAM_HOLD_SEC:-20}"; }
+HOLD_UNTIL=0
 LOOP=""; LOOP_SINK_ID=""; LOOP_INPUT=""; LOOP_STARTED=0; UNLINKED=0; GONE=2; NO_CARD=0; NOT_ACTIVE=0; LAST_NUDGE=0
 CONNECTED_AT=0; WAITING_SAID=""; NEXT_STEREO=0; STEREO_BAD=0; STOPPED_FOR=""; CAR_SUSP=0
 XQ_FAILS=0   # SBC-XQ attempts since this script started (never reset by a disconnect)
@@ -90,7 +97,14 @@ car_busy() { in_call || [ "$(cat /run/auxlink/mic-active 2>/dev/null)" = 1 ]; }
 # The phone's own media has taken over the car audio (auxlink-media decides
 # this): stop the SMO loopback so they don't play at once, but DON'T suspend
 # the car's sink - the phone's own stream is using it.
-phone_media() { [ "$(cat /run/auxlink/phone-media 2>/dev/null)" = 1 ]; }
+# Both/Merge must never drop the SMO stream — ignore a stale take-over flag.
+phone_media() {
+  [ "$(cat /run/auxlink/phone-media 2>/dev/null)" = 1 ] || return 1
+  ov=$(sed -n 's/.*"override"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+         /run/auxlink/source-state 2>/dev/null | head -1)
+  case "$ov" in both|merge) return 1 ;; esac
+  return 0
+}
 stop_loop() { [ -n "$LOOP" ] && kill "$LOOP" 2>/dev/null; LOOP=""; LOOP_SINK_ID=""; }
 linked() {
   local links; links=$(timeout 5 pw-link -l 2>/dev/null)
@@ -315,12 +329,38 @@ while true; do
       { RECHECK="play was pressed in the car"; RECHECK_AT=$(date +%s); }
   fi
   WHY=""
-  if car_busy; then WHY="a call"
-  elif phone_media; then WHY="phone media"
-  elif [ $(( $(date +%s) - CALL_ENDED_AT )) -lt "$(call_settle)" ]; then WHY="the call just ended"
+  now=$(date +%s)
+  if car_busy; then WHY="a call"; HOLD_UNTIL=0; WAS_PHONE=0
+  elif phone_media; then
+    WHY="phone media"; HOLD_UNTIL=0; WAS_PHONE=1
+  elif [ "$WAS_PHONE" = 1 ]; then
+    # Phone handed back to the SMO: do not just open a plain loopback — Teslas
+    # often keep the previous A2DP session silent. Restart like after a call
+    # (muted first start + quick_restart) so Spotify comes back without Fix sound.
+    WAS_PHONE=0; HOLD_UNTIL=0
+    RECHECK="phone media ended"; RECHECK_AT=0
+    echo "Phone media ended; will restart the car stream for the SMO"
+  elif [ $(( now - CALL_ENDED_AT )) -lt "$(call_settle)" ]; then WHY="the call just ended"; HOLD_UNTIL=0
   elif ! should_stream; then
-    [ "${WAIT_FOR_AUDIO:-0}" = 1 ] && WHY="no audio is playing" || WHY="the SMO is paused"
-  elif ! car_ready; then WHY="the car is still connecting"
+    hold=$(stream_hold)
+    if [ -n "$LOOP" ] && [ "$hold" -gt 0 ] 2>/dev/null; then
+      if [ "$HOLD_UNTIL" -le 0 ]; then
+        HOLD_UNTIL=$((now + hold))
+        echo "Holding the car stream for ${hold}s (app switch / pause gap)"
+      fi
+      if [ "$now" -lt "$HOLD_UNTIL" ]; then
+        WHY=""   # keep the same A2DP stream; do not stop/start
+      else
+        [ "${WAIT_FOR_AUDIO:-0}" = 1 ] && WHY="no audio is playing" || WHY="the SMO is paused"
+        HOLD_UNTIL=0
+      fi
+    else
+      [ "${WAIT_FOR_AUDIO:-0}" = 1 ] && WHY="no audio is playing" || WHY="the SMO is paused"
+      HOLD_UNTIL=0
+    fi
+  elif ! car_ready; then WHY="the car is still connecting"; HOLD_UNTIL=0
+  else
+    HOLD_UNTIL=0
   fi
 
   if [ -n "$WHY" ]; then
