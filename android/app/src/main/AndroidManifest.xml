@@ -97,25 +97,28 @@
                 android:resource="@xml/device_filter" />
         </activity>
 
-        <!-- Reply from a banner: normal Activity (not a focusable overlay). -->
+        <!-- Reply / mute: full-screen translucent so they sit above the shade. -->
         <activity
             android:name=".OverlayReplyActivity"
             android:exported="false"
-            android:theme="@android:style/Theme.DeviceDefault.Dialog"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
             android:excludeFromRecents="true"
             android:noHistory="true"
             android:taskAffinity=""
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
             android:windowSoftInputMode="stateVisible|adjustResize"
             android:label="Reply" />
 
-        <!-- Mute duration chooser for mirrored alerts. -->
         <activity
             android:name=".OverlayMuteActivity"
             android:exported="false"
-            android:theme="@android:style/Theme.DeviceDefault.Dialog"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
             android:excludeFromRecents="true"
             android:noHistory="true"
             android:taskAffinity=""
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
             android:label="Mute" />
 
         <service

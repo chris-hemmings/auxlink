@@ -1037,9 +1037,55 @@ class MainActivity : Activity() {
             if (svc == null) say("Phone Link isn't running yet: allow Notification access first.")
             else { svc.volumeMax(true); say("Volume set to full. If Android asks, tap OK.") }
         })
+        c.addView(bannerPosBlock())
         c.addView(wifiParkedBlock())
         c.addView(piUpdateBlock())
         return c
+    }
+
+    /** Where floating alert banners appear (remembered across reboot). */
+    private fun bannerPosBlock(): View {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; setPadding(0, px(10), 0, 0)
+        }
+        val status = TextView(this).apply {
+            text = "Currently: " + BannerPos.summary(this@MainActivity)
+            setTextColor(text2); textSize = 13f; setPadding(0, px(2), 0, px(6))
+        }
+        box.addView(TextView(this).apply {
+            text = "Alert banner position"; setTextColor(text1); textSize = 15f
+            typeface = Typeface.DEFAULT_BOLD
+        })
+        box.addView(TextView(this).apply {
+            text = "Drag any floating alert to move it — the spot is saved across reboot. " +
+                "Or pick a vertical slot here."
+            setTextColor(text2); textSize = 13f; setPadding(0, px(2), 0, px(6))
+        })
+        box.addView(status)
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        listOf("Top" to "top", "Upper" to "upper", "Middle" to "middle", "Lower" to "lower")
+            .forEachIndexed { i, (label, key) ->
+                val b = pillButton(label, false) {
+                    BannerPos.setPreset(this, key)
+                    status.text = "Currently: " + BannerPos.summary(this)
+                    say("Banner position set to $label")
+                }
+                b.minWidth = 0; b.minimumWidth = 0
+                b.layoutParams = LinearLayout.LayoutParams(0, px(40), 1f).apply {
+                    if (i > 0) marginStart = px(6)
+                }
+                row.addView(b)
+            }
+        box.addView(row)
+        box.addView(pillButton("Reset to default", false) {
+            BannerPos.reset(this)
+            status.text = "Currently: " + BannerPos.summary(this)
+            say("Banner position reset")
+        }.apply {
+            (layoutParams as LinearLayout.LayoutParams).marginStart = 0
+            (layoutParams as LinearLayout.LayoutParams).topMargin = px(8)
+        })
+        return box
     }
 
     /** Forwarder controls for the Alerts tab (enable on your PHONE). */

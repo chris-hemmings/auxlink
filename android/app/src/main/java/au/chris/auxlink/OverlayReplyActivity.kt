@@ -5,21 +5,25 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.Bundle
 import android.text.InputType
 import android.view.Gravity
 import android.view.ViewGroup
-import android.view.Window
+import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.widget.Button
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 
 /**
- * Type a notification reply in a normal Activity window — not a focusable
- * SYSTEM_ALERT_WINDOW overlay. Focusable overlays from the background service
- * make some head units (SMO / Screenmate) revoke "Display over other apps".
+ * Type a notification reply in a normal Activity — not a focusable
+ * SYSTEM_ALERT_WINDOW overlay (those make some SMOs revoke overlay permission).
+ *
+ * Shown as a full-screen dim layer so Reply from the notification shade is
+ * visible even if the shade doesn't fully collapse.
  */
 class OverlayReplyActivity : Activity() {
     companion object {
@@ -28,9 +32,15 @@ class OverlayReplyActivity : Activity() {
 
         fun start(ctx: Context, hint: String, onSend: (String) -> Unit) {
             pending = onSend
+            SystemUi.collapseShade(ctx)
             ctx.startActivity(
                 Intent(ctx, OverlayReplyActivity::class.java)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    .addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                            Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                            Intent.FLAG_ACTIVITY_NO_USER_ACTION
+                    )
                     .putExtra(EXTRA_HINT, hint)
             )
         }
@@ -38,7 +48,21 @@ class OverlayReplyActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        requestWindowFeature(Window.FEATURE_NO_TITLE)
+        SystemUi.collapseShade(this)
+        if (Build.VERSION.SDK_INT >= 27) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        } else {
+            @Suppress("DEPRECATION")
+            window.addFlags(
+                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                    WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+            )
+        }
+        window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS)
+        window.statusBarColor = 0xCC000000.toInt()
+        window.navigationBarColor = 0xCC000000.toInt()
+
         val dp = resources.displayMetrics.density
         fun px(v: Int) = (v * dp).toInt()
         val hint = intent.getStringExtra(EXTRA_HINT).orEmpty().ifBlank { "Reply" }
@@ -75,13 +99,14 @@ class OverlayReplyActivity : Activity() {
             cb?.invoke(text)
             finish()
         }
-        val box = LinearLayout(this).apply {
+        val card = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(px(18), px(16), px(18), px(16))
             background = GradientDrawable().apply {
                 setColor(0xF2222124.toInt())
                 cornerRadius = 20 * dp
             }
+            elevation = 12 * dp
             addView(TextView(this@OverlayReplyActivity).apply {
                 text = "Reply"; setTextColor(Color.WHITE); textSize = 18f
                 typeface = android.graphics.Typeface.DEFAULT_BOLD
@@ -103,12 +128,31 @@ class OverlayReplyActivity : Activity() {
         input.setOnEditorActionListener { _, actionId, _ ->
             if (actionId == EditorInfo.IME_ACTION_SEND) { send(); true } else false
         }
-        setContentView(box)
+        val root = FrameLayout(this).apply {
+            setBackgroundColor(0xCC000000.toInt())
+            setOnClickListener {
+                // Tap dim: don't dismiss — easy mis-tap while shade is closing.
+            }
+            val w = (resources.displayMetrics.widthPixels * 0.92f).toInt().coerceAtMost(px(440))
+            addView(card, FrameLayout.LayoutParams(w, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                gravity = Gravity.CENTER
+            })
+        }
+        setContentView(root)
         window.setLayout(
-            (resources.displayMetrics.widthPixels * 0.92f).toInt().coerceAtMost(px(440)),
-            ViewGroup.LayoutParams.WRAP_CONTENT
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT
         )
         input.requestFocus()
+        window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
+        // Collapse again after we're up — shade often re-covers dialog-only themes.
+        window.decorView.post { SystemUi.collapseShade(this) }
+        window.decorView.postDelayed({ SystemUi.collapseShade(this) }, 200)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        SystemUi.collapseShade(this)
     }
 
     override fun onDestroy() {
