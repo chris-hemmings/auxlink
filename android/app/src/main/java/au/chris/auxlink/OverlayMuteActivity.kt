@@ -5,10 +5,13 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.Bundle
+import android.view.Gravity
 import android.view.ViewGroup
-import android.view.Window
+import android.view.WindowManager
 import android.widget.Button
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -17,6 +20,8 @@ import android.widget.Toast
  * Choose how long to mute a mirrored app's alerts on the head unit.
  * 30 minutes / next boot stay on the car; Always tells the phone to stop
  * forwarding that app permanently.
+ *
+ * Full-screen dim so it shows above the notification shade (same as Reply).
  */
 class OverlayMuteActivity : Activity() {
     companion object {
@@ -25,9 +30,14 @@ class OverlayMuteActivity : Activity() {
         private const val EXTRA_SHADE_ID = "shade_id"
 
         fun start(ctx: Context, pkg: String, app: String, shadeId: Int = -1) {
+            SystemUi.collapseShade(ctx)
             ctx.startActivity(
                 Intent(ctx, OverlayMuteActivity::class.java)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    .addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                            Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+                    )
                     .putExtra(EXTRA_PKG, pkg)
                     .putExtra(EXTRA_APP, app)
                     .putExtra(EXTRA_SHADE_ID, shadeId)
@@ -37,7 +47,17 @@ class OverlayMuteActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        requestWindowFeature(Window.FEATURE_NO_TITLE)
+        SystemUi.collapseShade(this)
+        if (Build.VERSION.SDK_INT >= 27) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        } else {
+            @Suppress("DEPRECATION")
+            window.addFlags(
+                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                    WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+            )
+        }
         val dp = resources.displayMetrics.density
         fun px(v: Int) = (v * dp).toInt()
         val pkg = intent.getStringExtra(EXTRA_PKG).orEmpty()
@@ -80,12 +100,13 @@ class OverlayMuteActivity : Activity() {
             finish()
         }
 
-        val box = LinearLayout(this).apply {
+        val card = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(px(18), px(16), px(18), px(12))
             background = GradientDrawable().apply {
                 setColor(0xF2222124.toInt()); cornerRadius = 20 * dp
             }
+            elevation = 12 * dp
             addView(TextView(this@OverlayMuteActivity).apply {
                 text = "Mute $app"; setTextColor(Color.WHITE); textSize = 18f
                 typeface = android.graphics.Typeface.DEFAULT_BOLD
@@ -111,7 +132,6 @@ class OverlayMuteActivity : Activity() {
                         Toast.LENGTH_LONG).show()
                     return@pill
                 }
-                // Also mute locally so new ones stop until the phone complies.
                 CarNotifMute.muteUntilNextBoot(this@OverlayMuteActivity, pkg)
                 svc.sendNotifMute(pkg, app)
                 done("Asked the phone to always mute $app")
@@ -126,10 +146,24 @@ class OverlayMuteActivity : Activity() {
                 ).apply { topMargin = px(4) }
             })
         }
-        setContentView(box)
+        val w = (resources.displayMetrics.widthPixels * 0.92f).toInt().coerceAtMost(px(440))
+        val root = FrameLayout(this).apply {
+            setBackgroundColor(0xCC000000.toInt())
+            addView(card, FrameLayout.LayoutParams(w, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                gravity = Gravity.CENTER
+            })
+        }
+        setContentView(root)
         window.setLayout(
-            (resources.displayMetrics.widthPixels * 0.92f).toInt().coerceAtMost(px(440)),
-            ViewGroup.LayoutParams.WRAP_CONTENT
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT
         )
+        window.decorView.post { SystemUi.collapseShade(this) }
+        window.decorView.postDelayed({ SystemUi.collapseShade(this) }, 200)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        SystemUi.collapseShade(this)
     }
 }

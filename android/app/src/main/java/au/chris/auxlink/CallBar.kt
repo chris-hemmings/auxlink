@@ -15,6 +15,8 @@ import android.widget.Button
 import android.widget.Chronometer
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
+import kotlin.math.abs
 
 /**
  * A small bar floating over whatever is on screen while the phone has a
@@ -250,20 +252,20 @@ class TextPopup(private val ctx: Context) {
                 alpha = 0f
                 translationY = (-24 * dp)
             }
+            val width = (440 * dp).toInt().coerceAtMost(ctx.resources.displayMetrics.widthPixels - (16 * dp).toInt())
             val p = WindowManager.LayoutParams(
-                (440 * dp).toInt().coerceAtMost(ctx.resources.displayMetrics.widthPixels - (16 * dp).toInt()),
+                width,
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
                     WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT
-            ).apply {
-                gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-                y = (140 * dp).toInt()   // below the call bar, if there is one
-            }
+            )
+            BannerPos.apply(ctx, p, width)
             wm.addView(box, p)
             root = box
+            enableDrag(box, box, p, stayMs)
             box.animate().alpha(1f).translationY(0f).setDuration(220).start()
             main.postDelayed(close, stayMs)
             true
@@ -422,8 +424,9 @@ class TextPopup(private val ctx: Context) {
                 alpha = 0f
                 translationY = (-24 * dp)
             }
+            val width = (440 * dp).toInt().coerceAtMost(ctx.resources.displayMetrics.widthPixels - (16 * dp).toInt())
             val p = WindowManager.LayoutParams(
-                (440 * dp).toInt().coerceAtMost(ctx.resources.displayMetrics.widthPixels - (16 * dp).toInt()),
+                width,
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 // Stay non-focusable: focusable overlays from a background
@@ -432,18 +435,85 @@ class TextPopup(private val ctx: Context) {
                     WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
                     WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT
-            ).apply {
-                gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-                y = (140 * dp).toInt()   // below the call bar, if there is one
-            }
+            )
+            BannerPos.apply(ctx, p, width)
             wm.addView(box, p)
             root = box
+            // Drag the text area to reposition; actions stay tappable.
+            enableDrag(head, box, p, stayMs)
             box.animate().alpha(1f).translationY(0f).setDuration(220).start()
             main.postDelayed(close, stayMs)
             true
         } catch (e: Exception) {
             hide()
             false
+        }
+    }
+
+    /**
+     * Drag [handle] to move [box]; position is saved across reboot.
+     * A short tap still fires the handle's click listener.
+     */
+    @SuppressLint("ClickableViewAccessibility")
+    private fun enableDrag(
+        handle: View,
+        box: View,
+        params: WindowManager.LayoutParams,
+        stayMs: Long,
+    ) {
+        val dm = ctx.resources.displayMetrics
+        val slop = (12 * dp).toInt()
+        var downRawX = 0f
+        var downRawY = 0f
+        var startX = 0
+        var startY = 0
+        var dragging = false
+        handle.setOnTouchListener { v, e ->
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downRawX = e.rawX
+                    downRawY = e.rawY
+                    startX = params.x
+                    startY = params.y
+                    dragging = false
+                    main.removeCallbacks(close)
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = (e.rawX - downRawX).toInt()
+                    val dy = (e.rawY - downRawY).toInt()
+                    if (!dragging && (abs(dx) > slop || abs(dy) > slop)) {
+                        dragging = true
+                        // Convert centred gravity to absolute TOP|START so x works.
+                        if (params.gravity and Gravity.CENTER_HORIZONTAL != 0) {
+                            val w = if (box.width > 0) box.width else params.width
+                            params.gravity = Gravity.TOP or Gravity.START
+                            params.x = ((dm.widthPixels - w) / 2).coerceAtLeast(0)
+                            startX = params.x
+                        }
+                    }
+                    if (dragging) {
+                        val w = if (box.width > 0) box.width else params.width
+                        val maxX = (dm.widthPixels - w).coerceAtLeast(0)
+                        val maxY = (dm.heightPixels - 80).coerceAtLeast(0)
+                        params.x = (startX + dx).coerceIn(0, maxX)
+                        params.y = (startY + dy).coerceIn(0, maxY)
+                        try { wm.updateViewLayout(box, params) } catch (_: Exception) {}
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (dragging) {
+                        BannerPos.save(ctx, params.x, params.y)
+                        Toast.makeText(ctx, "Banner position saved", Toast.LENGTH_SHORT).show()
+                    } else {
+                        v.performClick()
+                    }
+                    if (stayMs > 0) main.postDelayed(close, stayMs)
+                    true
+                }
+                else -> false
+            }
         }
     }
 
