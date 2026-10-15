@@ -28,29 +28,9 @@ else
   rm -f /tmp/audio-check.wav
   timeout 2 pw-record --target "$I2S" /tmp/audio-check.wav 2>/dev/null
   rms=$(sox /tmp/audio-check.wav -n stat 2>&1 | awk '/RMS +amplitude/ {print $3}')
-  if [ -z "$rms" ]; then bad "could not read the music input"
+  if [ -z "$rms" ]; then bad "could not read the music input ($I2S)"
   elif awk "BEGIN{exit !($rms > 0.002)}"; then ok "audio arriving (RMS $rms) from $I2S"
-  else
-    bad "input is silent (RMS $rms) on $I2S: source paused or volume 0? (wired/USB-C: is its output set to the Pi/XIAO? bluetooth: is a USB sound card still plugged into it? Android prefers USB)"
-    # Card can look fine while Android sends digital silence after a reboot /
-    # update. Normal repair refuses to touch a "working" link — force a re-plug.
-    if [ $FIX = yes ] && [ "${MUSIC_SOURCE:-wired}" = usbc ]; then
-      echo "        fixing: forcing USB-C re-plug (sound card present but silent)"
-      sudo /usr/local/bin/auxlink-usb-gadget.sh repair --force
-      sleep 3
-      I2S=$(music_input)
-      if [ -n "$I2S" ]; then
-        rm -f /tmp/audio-check.wav
-        timeout 2 pw-record --target "$I2S" /tmp/audio-check.wav 2>/dev/null
-        rms=$(sox /tmp/audio-check.wav -n stat 2>&1 | awk '/RMS +amplitude/ {print $3}')
-        if [ -n "$rms" ] && awk "BEGIN{exit !($rms > 0.002)}"; then
-          ok "audio arriving after USB-C re-plug (RMS $rms)"
-        else
-          echo "        still silent after re-plug — on the music device: Spotify → Wired, volume up, then Check and fix again"
-        fi
-      fi
-    fi
-  fi
+  else bad "input is silent (RMS $rms) on $I2S: source paused or volume 0? (wired/USB-C: is its output set to the Pi/XIAO? bluetooth: is a USB sound card still plugged into it? Android prefers USB)"; fi
 fi
 
 echo "2. Bluetooth link to the car"

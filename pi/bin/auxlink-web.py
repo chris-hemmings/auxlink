@@ -429,18 +429,35 @@ def act_check(body):
     c = auxconf.load()
     user = c.get("AUDIO_USER", "chris")
     home = os.path.expanduser(f"~{user}")
-    args = [f"{home}/.local/bin/audio-check.sh"] + (["--fix"] if body.get("fix") else [])
+    fix = bool(body.get("fix"))
+    args = [f"{home}/.local/bin/audio-check.sh"] + (["--fix"] if fix else [])
     pre = ""
     if c.get("MUSIC_SOURCE") == "usbc":
         # The USB-C connection first (needs root; re-plugs only if broken).
         rc, out = sh("/usr/local/bin/auxlink-usb-gadget.sh", "repair",
-                     *([] if body.get("fix") else ["--check"]), timeout=60)
+                     *([] if fix else ["--check"]), timeout=60)
         pre = "0. USB-C connection to the music device\n" + \
               "\n".join("  " + l for l in out.splitlines()) + "\n"
         if rc == 2:
             return {"ok": True, "output": pre + "\nReboot the Pi to clear it (Pi login tab or sudo reboot)."}
     r = auxconf.run_as_user(user, args, timeout=90)
     text = pre + re.sub(r"\x1b\[[0-9;]*m", "", (r.stdout or "") + (r.stderr or ""))
+    # Card can look fine while the host sends digital silence (common after a
+    # reboot/update). Normal repair refuses to touch a "working" link — force
+    # one re-plug, then re-check without looping forever.
+    if (fix and c.get("MUSIC_SOURCE") == "usbc"
+            and "input is silent" in text):
+        rc2, out2 = sh("/usr/local/bin/auxlink-usb-gadget.sh", "repair",
+                       "--force", timeout=90)
+        text += "\n0b. USB-C forced re-plug (sound card present but silent)\n" + \
+                "\n".join("  " + l for l in out2.splitlines()) + "\n"
+        if rc2 == 2:
+            return {"ok": True, "output": text +
+                    "\nReboot the Pi to clear it (Pi login tab or sudo reboot)."}
+        r2 = auxconf.run_as_user(
+            user, [f"{home}/.local/bin/audio-check.sh"], timeout=90)
+        text += "\nAfter forced USB-C re-plug:\n" + \
+                re.sub(r"\x1b\[[0-9;]*m", "", (r2.stdout or "") + (r2.stderr or ""))
     return {"ok": True, "output": text}
 
 
