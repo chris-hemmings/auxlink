@@ -819,13 +819,18 @@ class NowPlayingService : NotificationListenerService() {
             .setSortKey(String.format("%013d", Long.MAX_VALUE - whenMs))
             .setShowWhen(true)
             .setWhen(whenMs)
-            // Status-bar / header glyph must be a white silhouette. A full-color
-            // app bitmap here becomes an opaque square (Android uses alpha only).
-            .setSmallIcon(R.drawable.ic_text)
         val icon = decodeNotifIcon(o.optString("icon"))
         val appBmp = if (icon is BitmapDrawable && icon.bitmap != null) {
             drawableToBitmap(icon, 128)
         } else null
+        // Status bar: white/black silhouette of THIS app's icon (not a generic
+        // chat glyph). Android only uses alpha in setSmallIcon — a full-color
+        // opaque bitmap becomes a square, so we derive a proper silhouette.
+        if (appBmp != null) {
+            b.setSmallIcon(Icon.createWithBitmap(statusBarSilhouette(appBmp)))
+        } else {
+            b.setSmallIcon(R.drawable.ic_text)
+        }
         if (appBmp != null && Build.VERSION.SDK_INT >= 28) {
             // Full-color app icon as the conversation avatar (left of the row).
             val person = Person.Builder()
@@ -1413,6 +1418,44 @@ class NowPlayingService : NotificationListenerService() {
         val left = (src.width - size) / 2f
         val top = (src.height - size) / 2f
         c.drawBitmap(src, -left, -top, Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG))
+        return out
+    }
+
+    /**
+     * Status-bar glyph from an app icon: white shape, transparent background.
+     * SystemUI tints this (white/black). Uses the icon's alpha when present;
+     * for flat opaque icons, keeps saturated/dark “logo” pixels so we don't
+     * get a solid square.
+     */
+    private fun statusBarSilhouette(src: Bitmap, size: Int = 96): Bitmap {
+        val scaled = Bitmap.createScaledBitmap(src, size, size, true)
+        val n = size * size
+        val px = IntArray(n)
+        scaled.getPixels(px, 0, size, 0, 0, size, size)
+        var clear = 0
+        for (p in px) if (((p ushr 24) and 0xFF) < 128) clear++
+        val hasShapeAlpha = clear > n / 20
+        if (hasShapeAlpha) {
+            for (i in 0 until n) {
+                val a = (px[i] ushr 24) and 0xFF
+                px[i] = (a shl 24) or 0x00FFFFFF
+            }
+        } else {
+            for (i in 0 until n) {
+                val p = px[i]
+                val a = (p ushr 24) and 0xFF
+                if (a < 16) { px[i] = 0; continue }
+                val r = (p shr 16) and 0xFF
+                val g = (p shr 8) and 0xFF
+                val b = p and 0xFF
+                val sat = maxOf(r, g, b) - minOf(r, g, b)
+                val lum = (r * 299 + g * 587 + b * 114) / 1000
+                // Keep logo/content; drop near-white flat fill.
+                px[i] = if (sat > 28 || lum < 225) 0xFFFFFFFF.toInt() else 0
+            }
+        }
+        val out = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        out.setPixels(px, 0, size, 0, 0, size, size)
         return out
     }
 
