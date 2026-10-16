@@ -8,10 +8,9 @@
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <!-- Finding the Pi's setup page (Open setup page) -->
     <uses-permission android:name="android.permission.INTERNET" />
-    <!-- Never used to record. The XIAO is also a USB sound card (the car's
-         mic for the SMO), and without this Android's plug-in prompt warns
-         about audio capture and drops its "Always" tick box - so it asked
-         at every plug-in. -->
+    <!-- Voice-to-text for notification replies. Also keeps the XIAO USB sound
+         card plug-in prompt from warning about audio capture (and dropping
+         its "Always" tick box). -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- Staying alive: a permanent "Phone Link connected" notification (a
          foreground service of the connected-device kind; CHANGE_NETWORK_STATE
@@ -53,6 +52,10 @@
         <intent>
             <action android:name="android.intent.action.SENDTO" />
             <data android:scheme="smsto" />
+        </intent>
+        <!-- SpeechRecognizer / voice reply on Android 11+. -->
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
         </intent>
         <package android:name="com.google.android.apps.messaging" />
         <package android:name="com.samsung.android.messaging" />

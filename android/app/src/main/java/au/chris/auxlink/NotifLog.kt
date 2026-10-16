@@ -73,6 +73,13 @@ object NotifLog {
 
     @Synchronized fun all(): List<Item> = items.toList()
 
+    /** Newest item with this phone-side notification key, or null. */
+    @Synchronized
+    fun findByNid(nid: String): Item? {
+        if (nid.isEmpty()) return null
+        return items.firstOrNull { it.nid == nid }
+    }
+
     @Synchronized fun unreadCount(): Int = unread
 
     @Synchronized

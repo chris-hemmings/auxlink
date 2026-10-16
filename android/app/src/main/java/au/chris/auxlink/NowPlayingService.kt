@@ -83,6 +83,8 @@ class NowPlayingService : NotificationListenerService() {
         const val ACTION_SHADE_ACT = "au.chris.auxlink.SHADE_ACT"
         const val ACTION_SHADE_MUTE = "au.chris.auxlink.SHADE_MUTE"
         const val ACTION_SHADE_REPLY = "au.chris.auxlink.SHADE_REPLY"
+        /** Shade body tap → open that alert with actions (not the Alerts list). */
+        const val ACTION_SHADE_OPEN = "au.chris.auxlink.SHADE_OPEN"
         const val EXTRA_SHADE_ID = "shade_id"
         const val EXTRA_NID = "nid"
         const val EXTRA_ACTION_ID = "action_id"
@@ -389,6 +391,12 @@ class NowPlayingService : NotificationListenerService() {
                         sendNotifAction(nid, id, text)
                         if (shadeId > 0) getSystemService(NotificationManager::class.java).cancel(shadeId)
                     }
+                }
+                ACTION_SHADE_OPEN -> {
+                    val nid = i.getStringExtra(EXTRA_NID).orEmpty()
+                    val shadeId = i.getIntExtra(EXTRA_SHADE_ID, -1)
+                    SystemUi.collapseShade(this@NowPlayingService)
+                    openShadeNotif(nid, shadeId)
                 }
             }
         }
@@ -750,12 +758,22 @@ class NowPlayingService : NotificationListenerService() {
         val actions = NotifLog.parseActions(o)
         val shadeId = shadeIdSeq++
         if (shadeIdSeq > SHADE_ID_MAX) shadeIdSeq = SHADE_ID_BASE
+        if (nid.isNotEmpty()) {
+            synchronized(shadePayloads) {
+                shadePayloads[nid] = o
+                while (shadePayloads.size > 40) {
+                    val first = shadePayloads.keys.firstOrNull() ?: break
+                    shadePayloads.remove(first)
+                }
+            }
+        }
         val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        val open = PendingIntent.getActivity(
+        // Body tap → that notification’s actions (banner detail), not Alerts list.
+        val open = PendingIntent.getBroadcast(
             this, shadeId,
-            Intent(this, MainActivity::class.java)
-                .putExtra("open_alerts", true)
-                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            Intent(ACTION_SHADE_OPEN).setPackage(packageName)
+                .putExtra(EXTRA_SHADE_ID, shadeId)
+                .putExtra(EXTRA_NID, nid),
             flags
         )
         val head = if (title.isNotEmpty()) "$app  ·  $title" else app
@@ -799,17 +817,62 @@ class NowPlayingService : NotificationListenerService() {
         getSystemService(NotificationManager::class.java).notify(shadeId, b.build())
     }
 
-    private fun showNotifDetail(o: JSONObject) {
+    private fun showNotifDetail(o: JSONObject): Boolean {
         val app = o.optString("app").ifEmpty { "Notification" }
         val title = o.optString("title")
         val body = o.optString("big").ifEmpty { o.optString("text") }
         val actions = NotifLog.parseActions(o)
         val nid = o.optString("nid")
         val pkg = o.optString("pkg")
-        textPopup.show(app, title, body, decodeNotifIcon(o.optString("icon")), 30000, 16, actions,
-            onAction = { act, text -> sendNotifAction(nid, act.id, text.orEmpty()) },
-            onMute = { OverlayMuteActivity.start(this, pkg, app) })
+        return showNotifDetail(app, title, body, o.optString("icon"), nid, pkg, actions)
     }
+
+    private fun showNotifDetail(item: NotifLog.Item): Boolean {
+        return showNotifDetail(
+            item.app, item.title, item.body(), item.iconB64, item.nid, item.pkg, item.actions
+        )
+    }
+
+    private fun showNotifDetail(
+        app: String,
+        title: String,
+        body: String,
+        iconB64: String,
+        nid: String,
+        pkg: String,
+        actions: List<NotifLog.Action>,
+    ): Boolean {
+        return textPopup.show(app, title, body, decodeNotifIcon(iconB64), 30000, 16, actions,
+            onAction = { act, text -> sendNotifAction(nid, act.id, text.orEmpty()) },
+            onMute = if (pkg.isNotEmpty()) ({ OverlayMuteActivity.start(this, pkg, app) }) else null)
+    }
+
+    /** Shade notification body tap: open that alert with Reply / actions. */
+    private fun openShadeNotif(nid: String, shadeId: Int) {
+        val fromLog = NotifLog.findByNid(nid)
+        val fromCache = if (nid.isNotEmpty()) synchronized(shadePayloads) { shadePayloads[nid] } else null
+        val shown = when {
+            fromLog != null -> showNotifDetail(fromLog)
+            fromCache != null -> showNotifDetail(fromCache)
+            else -> false
+        }
+        if (!shown) {
+            // No overlay / unknown nid: open Alerts focused on this notification.
+            startActivity(
+                Intent(this, MainActivity::class.java)
+                    .putExtra(MainActivity.EXTRA_OPEN_NOTIF_NID, nid)
+                    .addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                            Intent.FLAG_ACTIVITY_CLEAR_TOP
+                    )
+            )
+        }
+        if (shadeId > 0) getSystemService(NotificationManager::class.java).cancel(shadeId)
+    }
+
+    /** Recent shade payloads by nid (so a tap still works if the log was cleared). */
+    private val shadePayloads = linkedMapOf<String, JSONObject>()
 
     /** Head unit → Pi → phone: fire a Notification.Action (reply / mark read). */
     fun sendNotifAction(nid: String, actionId: String, text: String = "") {
@@ -1465,7 +1528,8 @@ class NowPlayingService : NotificationListenerService() {
         CarNotifMute.onBoot(this)
         val actions = IntentFilter().apply {
             addAction(ACTION_ANSWER); addAction(ACTION_DECLINE)
-            addAction(ACTION_SHADE_ACT); addAction(ACTION_SHADE_MUTE); addAction(ACTION_SHADE_REPLY)
+            addAction(ACTION_SHADE_ACT); addAction(ACTION_SHADE_MUTE)
+            addAction(ACTION_SHADE_REPLY); addAction(ACTION_SHADE_OPEN)
         }
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(callButtons, actions, Context.RECEIVER_NOT_EXPORTED)
         else @Suppress("UnspecifiedRegisterReceiverFlag") registerReceiver(callButtons, actions)
