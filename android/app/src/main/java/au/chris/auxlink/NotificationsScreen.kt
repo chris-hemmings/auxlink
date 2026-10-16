@@ -1,5 +1,6 @@
 package au.chris.auxlink
 
+import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
 import android.graphics.BitmapFactory
@@ -102,6 +103,12 @@ class NotificationsScreen(
     fun onShow() {
         NotifLog.markSeen()
         refresh()
+    }
+
+    /** Open the detail/actions dialog for a phone-side notification key. */
+    fun openDetail(nid: String) {
+        val item = NotifLog.findByNid(nid) ?: return
+        detail(item)
     }
 
     fun destroy() = NotifLog.unlisten(onData)
@@ -211,16 +218,43 @@ class NotificationsScreen(
                 setPadding(0, ui.px(8), 0, ui.px(8))
             }
             col.addView(input)
-            col.addView(ui.button("Send reply", ui.line, ui.text1) {
+            val replyRow = LinearLayout(ctx).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = ui.px(4) }
+            }
+            lateinit var micBtn: TextView
+            micBtn = ui.button("Mic", ui.line, ui.text1) {
+                val act = ctx as? Activity
+                if (act == null) {
+                    Toast.makeText(ctx, "Voice reply isn't available here.", Toast.LENGTH_SHORT).show()
+                    return@button
+                }
+                VoiceToText.listen(act,
+                    onText = { spoken ->
+                        input.setText(spoken)
+                        input.setSelection(spoken.length)
+                    },
+                    onState = { listening ->
+                        micBtn.text = if (listening) "Listening…" else "Mic"
+                    })
+            }.also {
+                it.layoutParams = LinearLayout.LayoutParams(0, ui.px(48), 1f).apply {
+                    marginEnd = ui.px(8)
+                }
+            }
+            val sendBtn = ui.button("Send reply", ui.line, ui.text1) {
                 val text = input.text?.toString()?.trim().orEmpty()
                 if (text.isEmpty()) {
                     Toast.makeText(ctx, "Type a reply first.", Toast.LENGTH_SHORT).show()
                 } else fire(replyAct, text)
             }.also {
-                it.layoutParams = LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ui.px(48)
-                ).apply { topMargin = ui.px(4) }
-            })
+                it.layoutParams = LinearLayout.LayoutParams(0, ui.px(48), 2f)
+            }
+            replyRow.addView(micBtn)
+            replyRow.addView(sendBtn)
+            col.addView(replyRow)
             input.setOnEditorActionListener { _, actionId, _ ->
                 if (actionId == EditorInfo.IME_ACTION_SEND) {
                     val text = input.text?.toString()?.trim().orEmpty()
@@ -228,6 +262,7 @@ class NotificationsScreen(
                     true
                 } else false
             }
+            dlg.setOnDismissListener { VoiceToText.stop() }
         }
         if (item.pkg.isNotEmpty()) {
             col.addView(ui.button("Mute", ui.line, ui.text1) {

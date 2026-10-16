@@ -44,6 +44,8 @@ class MainActivity : Activity() {
         /** Open a conversation on the Messages tab (from a text pop-up or notification). */
         const val EXTRA_CHAT_NUMBER = "chat_number"
         const val EXTRA_CHAT_NAME = "chat_name"
+        /** Open Alerts focused on one mirrored notification (nid). */
+        const val EXTRA_OPEN_NOTIF_NID = "open_notif_nid"
     }
     private val main = Handler(Looper.getMainLooper())
     private val refresh = object : Runnable {
@@ -219,6 +221,7 @@ class MainActivity : Activity() {
         showTab(start)
         openChatFrom(intent)
         openAlertsFrom(intent)
+        openNotifFrom(intent)
 
         // First run: ask for what Android lets an app ask for directly.
         val want = mutableListOf<String>()
@@ -235,13 +238,23 @@ class MainActivity : Activity() {
         setIntent(intent)
         openChatFrom(intent)
         openAlertsFrom(intent)
+        openNotifFrom(intent)
     }
 
-    /** Shade notification tap → Alerts tab. */
+    /** Fallback: open Alerts tab (shade body taps open the alert itself now). */
     private fun openAlertsFrom(i: Intent?) {
         if (i?.getBooleanExtra("open_alerts", false) != true) return
         i.removeExtra("open_alerts")
         showTab(3)
+    }
+
+    /** Open Alerts and the detail dialog for one notification (overlay fallback). */
+    private fun openNotifFrom(i: Intent?) {
+        val nid = i?.getStringExtra(EXTRA_OPEN_NOTIF_NID).orEmpty()
+        if (nid.isEmpty()) return
+        i?.removeExtra(EXTRA_OPEN_NOTIF_NID)
+        showTab(3)
+        alerts.openDetail(nid)
     }
 
     /** A tapped text: its conversation, found by number (or by name). */
@@ -1797,6 +1810,7 @@ class MainActivity : Activity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        VoiceToText.onPermissionResult(this, requestCode, permissions, grantResults)
         // Location just granted: (re)start the watcher so the service begins
         // reporting movement to the Pi (and re-arms its foreground service type).
         if (permissions.any { it == Manifest.permission.ACCESS_FINE_LOCATION ||

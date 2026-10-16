@@ -23,7 +23,8 @@ import android.widget.TextView
  * SYSTEM_ALERT_WINDOW overlay (those make some SMOs revoke overlay permission).
  *
  * Shown as a full-screen dim layer so Reply from the notification shade is
- * visible even if the shade doesn't fully collapse.
+ * visible even if the shade doesn't fully collapse. Includes Mic for
+ * voice-to-text (same RECORD_AUDIO ask as Setup).
  */
 class OverlayReplyActivity : Activity() {
     companion object {
@@ -45,6 +46,8 @@ class OverlayReplyActivity : Activity() {
             )
         }
     }
+
+    private var micBtn: Button? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -94,10 +97,15 @@ class OverlayReplyActivity : Activity() {
         fun send() {
             val text = input.text?.toString()?.trim().orEmpty()
             if (text.isEmpty()) return
+            VoiceToText.stop()
             val cb = pending
             pending = null
             cb?.invoke(text)
             finish()
+        }
+        fun setMicListening(listening: Boolean) {
+            micBtn?.text = if (listening) "Listening…" else "Mic"
+            micBtn?.isEnabled = !listening
         }
         val card = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -118,7 +126,19 @@ class OverlayReplyActivity : Activity() {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.END
                 setPadding(0, px(12), 0, 0)
+                micBtn = pill("Mic", false) {
+                    VoiceToText.listen(
+                        this@OverlayReplyActivity,
+                        onText = { spoken ->
+                            input.setText(spoken)
+                            input.setSelection(spoken.length)
+                        },
+                        onState = { setMicListening(it) }
+                    )
+                }
+                addView(micBtn)
                 addView(pill("Cancel", false) {
+                    VoiceToText.stop()
                     pending = null
                     finish()
                 })
@@ -150,12 +170,22 @@ class OverlayReplyActivity : Activity() {
         window.decorView.postDelayed({ SystemUi.collapseShade(this) }, 200)
     }
 
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        VoiceToText.onPermissionResult(this, requestCode, permissions, grantResults)
+    }
+
     override fun onResume() {
         super.onResume()
         SystemUi.collapseShade(this)
     }
 
     override fun onDestroy() {
+        VoiceToText.stop()
         if (isFinishing) pending = null
         super.onDestroy()
     }
