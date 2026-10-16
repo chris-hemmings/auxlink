@@ -67,9 +67,19 @@ class BtLink(private val context: Context, private val serviceUuid: UUID = APP_U
 
     fun isOpen() = sock != null
 
+    /** Address of the peer we last connected to (for ACL-drop handling). */
+    fun peerAddress(): String? = lastGood
+
     /** Try at once (button / reconnect): clear the back-off even if a zombie
      *  socket is still held — [send] will close it and reopen. */
     fun retryNow() { nextTry = 0L }
+
+    /** Drop a half-dead socket so the next [send]/[open] reconnects. */
+    @Synchronized
+    fun dropIfPeer(address: String?) {
+        if (address.isNullOrEmpty()) return
+        if (lastGood.equals(address, ignoreCase = true)) close()
+    }
 
     @Synchronized
     fun send(line: String): Boolean {
@@ -185,8 +195,16 @@ class BtLink(private val context: Context, private val serviceUuid: UUID = APP_U
                                 if (n < 0) break
                                 lines.feed(b, n)
                             }
-                        } catch (_: Exception) {}
-                    }.apply { isDaemon = true; start() }
+                        } catch (_: Exception) {
+                        } finally {
+                            // Peer dropped: clear sock so isOpen() is false and
+                            // the forwarder reconnects instead of writing into a
+                            // zombie RFCOMM after the car/phone link comes back.
+                            synchronized(this@BtLink) {
+                                if (sock === s) close()
+                            }
+                        }
+                    }.apply { isDaemon = true; name = "btlink-read"; start() }
                 }
                 deviceName = dev.name ?: dev.address
                 lastGood = dev.address

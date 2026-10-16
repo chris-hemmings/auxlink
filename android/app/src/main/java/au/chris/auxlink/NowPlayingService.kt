@@ -244,6 +244,30 @@ class NowPlayingService : NotificationListenerService() {
         }
     }
 
+    /** Phone↔Pi ACL drop: tear down notif RFCOMM so we don't keep a zombie. */
+    private val btAclEvents = object : BroadcastReceiver() {
+        override fun onReceive(c: Context, i: Intent) {
+            if (i.action != android.bluetooth.BluetoothDevice.ACTION_ACL_DISCONNECTED &&
+                i.action != android.bluetooth.BluetoothDevice.ACTION_ACL_CONNECTED) return
+            val dev = if (Build.VERSION.SDK_INT >= 33)
+                i.getParcelableExtra(android.bluetooth.BluetoothDevice.EXTRA_DEVICE,
+                    android.bluetooth.BluetoothDevice::class.java)
+            else @Suppress("DEPRECATION")
+                i.getParcelableExtra(android.bluetooth.BluetoothDevice.EXTRA_DEVICE)
+            val addr = dev?.address ?: return
+            if (i.action == android.bluetooth.BluetoothDevice.ACTION_ACL_DISCONNECTED) {
+                notifLink?.dropIfPeer(addr)
+                Log.i(TAG, "ACL disconnected $addr — dropped notif RFCOMM if it matched")
+            } else if (forwardNotifs) {
+                // Link is back (e.g. back in the car): reconnect promptly.
+                notifIo.execute {
+                    notifLink?.retryNow()
+                    ensureNotifLink()
+                }
+            }
+        }
+    }
+
     /** Last time we recycled the USB serial claim for silent-audio recovery. */
     private var lastUsbcRecycleMs = 0L
 
@@ -993,6 +1017,10 @@ class NowPlayingService : NotificationListenerService() {
     @Volatile private var notifCount = 0
     @Volatile private var notifSkippedMute = 0
     @Volatile private var notifSkippedDedupe = 0
+    @Volatile private var notifSkippedEmpty = 0
+    @Volatile private var notifSendFail = 0
+    @Volatile private var notifSent = 0
+    @Volatile private var notifLastSkip = ""
 
     override fun onNotificationPosted(sbn: android.service.notification.StatusBarNotification) {
         if (!forwardNotifs) return
@@ -1005,22 +1033,40 @@ class NowPlayingService : NotificationListenerService() {
      *  and what the last Bluetooth attempt did. */
     fun notifDiag() = "forwarding=${if (forwardNotifs) "ON" else "off"}, " +
         "only=${if (forwarderOnly) "ON" else "off"}, seen=$notifCount, " +
-        "muted=$notifSkippedMute, dedupe=$notifSkippedDedupe, " +
+        "sent=$notifSent, fail=$notifSendFail, " +
+        "muted=$notifSkippedMute, dedupe=$notifSkippedDedupe, empty=$notifSkippedEmpty, " +
+        "lastSkip=$notifLastSkip, " +
         "link=${notifLink?.lastResult ?: "(forwarder not started)"}"
 
-    /** Keep the phone→Pi notification RFCOMM up after a Bluetooth drop. */
+    /** Keep the phone→Pi notification RFCOMM up after a Bluetooth drop.
+     *  Always probe with a ping — after leaving the car the socket object can
+     *  still look open while RFCOMM is dead (Test send force-retries; live
+     *  Discord posts were silently dropped). */
     private fun ensureNotifLink() {
         if (!forwardNotifs) return
         if (notifLink == null)
             notifLink = BtLink(this, BtLink.NOTIF_UUID) { line -> onNotifLinkLine(line) }
         notifIo.execute {
             val link = notifLink ?: return@execute
-            if (!link.isOpen()) {
+            if (!link.send("""{"cmd":"ping"}""")) {
                 link.retryNow()
-                // Ping keeps the Profile socket warm; Pi ignores non-notif lines.
+                try { Thread.sleep(300) } catch (_: InterruptedException) {}
                 link.send("""{"cmd":"ping"}""")
             }
         }
+    }
+
+    /** Send one forwarded line; retry once like Test send after a drop. */
+    private fun sendNotifLine(line: String): Boolean {
+        val link = notifLink ?: run {
+            notifLink = BtLink(this, BtLink.NOTIF_UUID) { onNotifLinkLine(it) }
+            notifLink
+        } ?: return false
+        if (link.send(line)) return true
+        link.close()
+        link.retryNow()
+        try { Thread.sleep(400) } catch (_: InterruptedException) {}
+        return link.send(line)
     }
 
     /** Send a test notification straight to the Pi (forces a connection), and
@@ -1055,23 +1101,31 @@ class NowPlayingService : NotificationListenerService() {
         if (isSmsApp(sbn.packageName)) return
         val n = sbn.notification ?: return
         val flags = n.flags
-        if (flags and Notification.FLAG_ONGOING_EVENT != 0) return  // persistent (media, foreground services)
-        if (flags and Notification.FLAG_GROUP_SUMMARY != 0) return  // the group header, not a real message
+        if (flags and Notification.FLAG_ONGOING_EVENT != 0) {
+            notifLastSkip = "ongoing:${sbn.packageName}"; return
+        }
+        if (flags and Notification.FLAG_GROUP_SUMMARY != 0) {
+            notifLastSkip = "summary:${sbn.packageName}"; return
+        }
         val cat = n.category
-        if (cat == Notification.CATEGORY_CALL || cat == Notification.CATEGORY_TRANSPORT) return  // calls/media handled elsewhere
+        if (cat == Notification.CATEGORY_CALL || cat == Notification.CATEGORY_TRANSPORT) {
+            notifLastSkip = "cat:$cat:${sbn.packageName}"; return
+        }
         val ex = n.extras ?: return
-        val title = ex.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
-        val text = ex.getCharSequence(Notification.EXTRA_TEXT)?.toString().orEmpty()
-        val big = ex.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()
-            ?: ex.getCharSequenceArray(Notification.EXTRA_TEXT_LINES)?.joinToString("\n") { it.toString() }
-            ?: text
-        if (title.isEmpty() && text.isEmpty()) return
+        val (title, text, big) = notifTitleText(n, ex)
+        if (title.isEmpty() && text.isEmpty()) {
+            notifSkippedEmpty++
+            notifLastSkip = "empty:${sbn.packageName}"
+            return
+        }
         val app = try {
             packageManager.getApplicationLabel(packageManager.getApplicationInfo(sbn.packageName, 0)).toString()
         } catch (e: Exception) { sbn.packageName }
         rememberSeenApp(sbn.packageName, app)
         if (sbn.packageName in mutedNotifPackages()) {
-            notifSkippedMute++; return
+            notifSkippedMute++
+            notifLastSkip = "muted:${sbn.packageName}"
+            return
         }
         val dedupeKey = sbn.packageName + "|" + title + "|" + text.take(120)
         val now = SystemClock.elapsedRealtime()
@@ -1079,7 +1133,9 @@ class NowPlayingService : NotificationListenerService() {
             recentNotifs.entries.removeAll { now - it.value > DEDUPE_MS }
             val prev = recentNotifs[dedupeKey]
             if (prev != null && now - prev < DEDUPE_MS) {
-                notifSkippedDedupe++; return
+                notifSkippedDedupe++
+                notifLastSkip = "dedupe:${sbn.packageName}"
+                return
             }
             recentNotifs[dedupeKey] = now
         }
@@ -1089,7 +1145,61 @@ class NowPlayingService : NotificationListenerService() {
             .put("nid", sbn.key).put("actions", actions)
             .put("icon", appIconPng(sbn.packageName))
         val line = JSONObject().put("notif", o).toString()
-        notifIo.execute { notifLink?.send(line) }
+        notifIo.execute {
+            if (sendNotifLine(line)) {
+                notifSent++
+                notifLastSkip = ""
+            } else {
+                notifSendFail++
+                notifLastSkip = "sendfail:${sbn.packageName}"
+                Log.w(TAG, "notif send failed for ${sbn.packageName}")
+            }
+        }
+    }
+
+    /**
+     * Title/body for forwarding. Discord and other chat apps often use
+     * MessagingStyle with empty EXTRA_TEXT — pull the latest message instead
+     * of dropping the notification as "empty".
+     */
+    private fun notifTitleText(n: Notification, ex: android.os.Bundle): Triple<String, String, String> {
+        var title = ex.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
+        var text = ex.getCharSequence(Notification.EXTRA_TEXT)?.toString().orEmpty()
+        if (text.isEmpty())
+            text = ex.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE)?.toString().orEmpty()
+        if (text.isEmpty())
+            text = ex.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString().orEmpty()
+        var big = ex.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString().orEmpty()
+        if (big.isEmpty()) {
+            big = ex.getCharSequenceArray(Notification.EXTRA_TEXT_LINES)
+                ?.joinToString("\n") { it.toString() }.orEmpty()
+        }
+        if ((title.isEmpty() && text.isEmpty()) || (text.isEmpty() && big.isEmpty())) {
+            if (Build.VERSION.SDK_INT >= 24) {
+                try {
+                    val style = Notification.MessagingStyle.extractMessagingStyleFromNotification(n)
+                    val msgs = style?.messages
+                    if (msgs != null && msgs.isNotEmpty()) {
+                        val last = msgs.last()
+                        if (title.isEmpty()) {
+                            title = style.conversationTitle?.toString()
+                                ?: last.sender?.toString().orEmpty()
+                        }
+                        if (text.isEmpty()) text = last.text?.toString().orEmpty()
+                        if (big.isEmpty()) {
+                            big = msgs.takeLast(5).joinToString("\n") { m ->
+                                val who = m.sender?.toString().orEmpty()
+                                if (who.isNotEmpty()) "$who: ${m.text}" else "${m.text}"
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "MessagingStyle parse: ${e.message}")
+                }
+            }
+        }
+        if (big.isEmpty()) big = text
+        return Triple(title, text, big)
     }
 
     /** True for the phone's SMS/MMS app (handled by MAP → Messages / Tesla,
@@ -1341,6 +1451,12 @@ class NowPlayingService : NotificationListenerService() {
         }
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(usbEvents, f, Context.RECEIVER_EXPORTED)
         else @Suppress("UnspecifiedRegisterReceiverFlag") registerReceiver(usbEvents, f)
+        val btF = IntentFilter().apply {
+            addAction(android.bluetooth.BluetoothDevice.ACTION_ACL_DISCONNECTED)
+            addAction(android.bluetooth.BluetoothDevice.ACTION_ACL_CONNECTED)
+        }
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(btAclEvents, btF, Context.RECEIVER_EXPORTED)
+        else @Suppress("UnspecifiedRegisterReceiverFlag") registerReceiver(btAclEvents, btF)
 
         if (forwarderOnly) {
             // Notification forwarder only: no media sessions / location / music link traffic.
