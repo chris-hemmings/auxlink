@@ -1112,7 +1112,7 @@ class NowPlayingService : NotificationListenerService() {
             notifLastSkip = "cat:$cat:${sbn.packageName}"; return
         }
         val ex = n.extras ?: return
-        val (title, text, big) = notifTitleText(n, ex)
+        val (title, text, big) = notifTitleText(ex)
         if (title.isEmpty() && text.isEmpty()) {
             notifSkippedEmpty++
             notifLastSkip = "empty:${sbn.packageName}"
@@ -1162,44 +1162,69 @@ class NowPlayingService : NotificationListenerService() {
      * MessagingStyle with empty EXTRA_TEXT — pull the latest message instead
      * of dropping the notification as "empty".
      */
-    private fun notifTitleText(n: Notification, ex: android.os.Bundle): Triple<String, String, String> {
+    private fun notifTitleText(ex: android.os.Bundle): Triple<String, String, String> {
         var title = ex.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
         var text = ex.getCharSequence(Notification.EXTRA_TEXT)?.toString().orEmpty()
         if (text.isEmpty())
-            text = ex.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE)?.toString().orEmpty()
-        if (text.isEmpty())
             text = ex.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString().orEmpty()
+        if (text.isEmpty() && Build.VERSION.SDK_INT >= 30)
+            text = ex.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE)?.toString().orEmpty()
         var big = ex.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString().orEmpty()
         if (big.isEmpty()) {
             big = ex.getCharSequenceArray(Notification.EXTRA_TEXT_LINES)
                 ?.joinToString("\n") { it.toString() }.orEmpty()
         }
         if ((title.isEmpty() && text.isEmpty()) || (text.isEmpty() && big.isEmpty())) {
-            if (Build.VERSION.SDK_INT >= 24) {
-                try {
-                    val style = Notification.MessagingStyle.extractMessagingStyleFromNotification(n)
-                    val msgs = style?.messages
-                    if (msgs != null && msgs.isNotEmpty()) {
-                        val last = msgs.last()
-                        if (title.isEmpty()) {
-                            title = style.conversationTitle?.toString()
-                                ?: last.sender?.toString().orEmpty()
-                        }
-                        if (text.isEmpty()) text = last.text?.toString().orEmpty()
-                        if (big.isEmpty()) {
-                            big = msgs.takeLast(5).joinToString("\n") { m ->
-                                val who = m.sender?.toString().orEmpty()
-                                if (who.isNotEmpty()) "$who: ${m.text}" else "${m.text}"
-                            }
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "MessagingStyle parse: ${e.message}")
-                }
+            // No androidx: parse MessagingStyle extras directly (Discord etc.).
+            // Platform extractMessagingStyleFromNotification is missing from the
+            // compile classpath this project uses.
+            val chat = messagingFromExtras(ex)
+            if (chat != null) {
+                if (title.isEmpty()) title = chat.first
+                if (text.isEmpty()) text = chat.second
+                if (big.isEmpty()) big = chat.third
             }
         }
         if (big.isEmpty()) big = text
         return Triple(title, text, big)
+    }
+
+    /** Last few MessagingStyle lines from notification extras, if any. */
+    private fun messagingFromExtras(ex: android.os.Bundle): Triple<String, String, String>? {
+        @Suppress("DEPRECATION")
+        val arr = ex.getParcelableArray(Notification.EXTRA_MESSAGES) ?: return null
+        val lines = mutableListOf<String>()
+        var lastText = ""
+        var lastSender = ""
+        for (p in arr) {
+            val b: android.os.Bundle? = when (p) {
+                is android.os.Bundle -> p
+                else -> try {
+                    p.javaClass.getMethod("toBundle").invoke(p) as? android.os.Bundle
+                } catch (_: Exception) { null }
+            }
+            if (b == null) continue
+            val t = b.getCharSequence("text")?.toString().orEmpty()
+            if (t.isEmpty()) continue
+            var s = b.getCharSequence("sender")?.toString().orEmpty()
+            if (s.isEmpty() && Build.VERSION.SDK_INT >= 28) {
+                try {
+                    @Suppress("DEPRECATION")
+                    val person = b.getParcelable("sender_person") as? android.app.Person
+                    s = person?.name?.toString().orEmpty()
+                } catch (_: Exception) {}
+            }
+            lastText = t
+            lastSender = s
+            lines += if (s.isNotEmpty()) "$s: $t" else t
+        }
+        if (lastText.isEmpty()) return null
+        val conv = if (Build.VERSION.SDK_INT >= 30)
+            ex.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE)?.toString().orEmpty()
+        else ""
+        val title = conv.ifEmpty { lastSender }
+        val big = lines.takeLast(5).joinToString("\n")
+        return Triple(title, lastText, big)
     }
 
     /** True for the phone's SMS/MMS app (handled by MAP → Messages / Tesla,
@@ -1521,6 +1546,7 @@ class NowPlayingService : NotificationListenerService() {
         sessions?.removeOnActiveSessionsChangedListener(sessionsChanged)
         controller?.unregisterCallback(callback)
         try { unregisterReceiver(usbEvents) } catch (_: Exception) {}
+        try { unregisterReceiver(btAclEvents) } catch (_: Exception) {}
         try { unregisterReceiver(callButtons) } catch (_: Exception) {}
         io.execute {
             try { link.close() } catch (_: Exception) {}
