@@ -224,12 +224,12 @@ class NotificationsScreen(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
                 ).apply { topMargin = ui.px(4) }
             }
-            lateinit var micBtn: TextView
-            micBtn = ui.button("Mic", ui.line, ui.text1) {
+            lateinit var micBtn: View
+            micBtn = ui.iconButton(R.drawable.ic_mic, ui.line, 48) {
                 val act = ctx as? Activity
                 if (act == null) {
                     Toast.makeText(ctx, "Voice reply isn't available here.", Toast.LENGTH_SHORT).show()
-                    return@button
+                    return@iconButton
                 }
                 VoiceToText.listen(act,
                     onText = { spoken ->
@@ -237,10 +237,13 @@ class NotificationsScreen(
                         input.setSelection(spoken.length)
                     },
                     onState = { listening ->
-                        micBtn.text = if (listening) "Listening…" else "Mic"
+                        micBtn.alpha = if (listening) 0.45f else 1f
+                        micBtn.isEnabled = !listening
+                        micBtn.contentDescription = if (listening) "Listening" else "Microphone"
                     })
             }.also {
-                it.layoutParams = LinearLayout.LayoutParams(0, ui.px(48), 1f).apply {
+                it.contentDescription = "Microphone"
+                it.layoutParams = LinearLayout.LayoutParams(ui.px(48), ui.px(48)).apply {
                     marginEnd = ui.px(8)
                 }
             }
@@ -250,7 +253,7 @@ class NotificationsScreen(
                     Toast.makeText(ctx, "Type a reply first.", Toast.LENGTH_SHORT).show()
                 } else fire(replyAct, text)
             }.also {
-                it.layoutParams = LinearLayout.LayoutParams(0, ui.px(48), 2f)
+                it.layoutParams = LinearLayout.LayoutParams(0, ui.px(48), 1f)
             }
             replyRow.addView(micBtn)
             replyRow.addView(sendBtn)
