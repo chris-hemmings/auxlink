@@ -4,6 +4,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.app.Person
 import android.app.RemoteInput
 import android.content.BroadcastReceiver
 import android.content.ComponentName
@@ -15,8 +16,11 @@ import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
+import android.graphics.drawable.Icon
 import android.hardware.usb.UsbManager
 import android.media.MediaMetadata
 import android.media.session.MediaController
@@ -802,29 +806,42 @@ class NowPlayingService : NotificationListenerService() {
         // the shade still shows Phone Link as the posting app (platform rule).
         val groupKey = "mirror_" + (nid.ifEmpty { shadeId.toString() })
         val channel = mirrorChannel(pkg, app)
+        val whenMs = o.optLong("when", System.currentTimeMillis())
         val b = Notification.Builder(this, channel)
             .setContentTitle(title.ifEmpty { app })
             .setContentText(body)
             .setSubText(app)
-            .setStyle(Notification.BigTextStyle().bigText(big).setSummaryText(app))
             .setContentIntent(open)
             .setAutoCancel(true)
             .setOnlyAlertOnce(true)
             .setCategory(Notification.CATEGORY_MESSAGE)
             .setGroup(groupKey)
-            .setSortKey(String.format("%013d", Long.MAX_VALUE - System.currentTimeMillis()))
+            .setSortKey(String.format("%013d", Long.MAX_VALUE - whenMs))
             .setShowWhen(true)
-            .setWhen(o.optLong("when", System.currentTimeMillis()))
+            .setWhen(whenMs)
+            // Status-bar / header glyph must be a white silhouette. A full-color
+            // app bitmap here becomes an opaque square (Android uses alpha only).
+            .setSmallIcon(R.drawable.ic_text)
         val icon = decodeNotifIcon(o.optString("icon"))
-        if (icon is BitmapDrawable && icon.bitmap != null && Build.VERSION.SDK_INT >= 23) {
-            val bmp = icon.bitmap
-            b.setLargeIcon(bmp)
-            // Prefer the phone app's icon in the shade row (not Phone Link's).
-            b.setSmallIcon(android.graphics.drawable.Icon.createWithBitmap(
-                drawableToBitmap(icon, 96)
-            ))
+        val appBmp = if (icon is BitmapDrawable && icon.bitmap != null) {
+            drawableToBitmap(icon, 128)
+        } else null
+        if (appBmp != null && Build.VERSION.SDK_INT >= 28) {
+            // Full-color app icon as the conversation avatar (left of the row).
+            val person = Person.Builder()
+                .setName(title.ifEmpty { app })
+                .setKey(pkg.ifEmpty { nid }.ifEmpty { shadeId.toString() })
+                .setIcon(Icon.createWithBitmap(circleCropBitmap(appBmp)))
+                .build()
+            val style = Notification.MessagingStyle(person)
+                .setGroupConversation(false)
+            if (title.isNotEmpty()) style.setConversationTitle(app)
+            val msg = body.ifEmpty { big }.ifEmpty { app }
+            style.addMessage(msg, whenMs, person)
+            b.setStyle(style)
         } else {
-            b.setSmallIcon(android.R.drawable.ic_dialog_info)
+            if (appBmp != null) b.setLargeIcon(appBmp)
+            b.setStyle(Notification.BigTextStyle().bigText(big).setSummaryText(app))
         }
         // Up to 2 phone actions + Mute (Android shows ~3 actions).
         for (act in actions.take(2)) {
@@ -1382,6 +1399,21 @@ class NowPlayingService : NotificationListenerService() {
         d.setBounds(0, 0, size, size)
         d.draw(c)
         return bmp
+    }
+
+    /** Round bitmap for MessagingStyle Person avatars (transparent corners). */
+    private fun circleCropBitmap(src: Bitmap): Bitmap {
+        val size = minOf(src.width, src.height)
+        val out = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val c = Canvas(out)
+        val path = Path().apply {
+            addCircle(size / 2f, size / 2f, size / 2f, Path.Direction.CW)
+        }
+        c.clipPath(path)
+        val left = (src.width - size) / 2f
+        val top = (src.height - size) / 2f
+        c.drawBitmap(src, -left, -top, Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG))
+        return out
     }
 
     /** Opens this conversation in the app's Messages tab. */
