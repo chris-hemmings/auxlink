@@ -451,6 +451,7 @@ class NowPlayingService : NotificationListenerService() {
         nm.createNotificationChannel(NotificationChannel(
             "call_ongoing", "Call in progress", NotificationManager.IMPORTANCE_LOW))
         // Quiet shade entry after the floating banner — no second heads-up.
+        // Kept as a fallback; live posts use per-source-app channels below.
         nm.createNotificationChannel(NotificationChannel(
             "mirrored", "Mirrored alerts", NotificationManager.IMPORTANCE_DEFAULT
         ).apply {
@@ -458,6 +459,26 @@ class NowPlayingService : NotificationListenerService() {
             setSound(null, null)
             enableVibration(false)
         })
+    }
+
+    /**
+     * One quiet channel per phone app so shade rows stay separate and labeled
+     * by source (WhatsApp, Messages, …). Android still attributes them to
+     * Phone Link as the posting app — that cannot be spoofed.
+     */
+    private fun mirrorChannel(pkg: String, app: String): String {
+        val id = "mirror_" + (pkg.ifEmpty { "other" }.replace(Regex("[^a-zA-Z0-9._-]"), "_").take(40))
+        val nm = getSystemService(NotificationManager::class.java)
+        if (nm.getNotificationChannel(id) == null) {
+            nm.createNotificationChannel(NotificationChannel(
+                id, app.ifEmpty { "Mirrored alert" }, NotificationManager.IMPORTANCE_DEFAULT
+            ).apply {
+                description = "Mirrored from $app on your phone"
+                setSound(null, null)
+                enableVibration(false)
+            })
+        }
+        return id
     }
 
     /** A line from the Pi: {"call": state, "number", "name"} or {"text": {...}}. */
@@ -776,19 +797,34 @@ class NowPlayingService : NotificationListenerService() {
                 .putExtra(EXTRA_NID, nid),
             flags
         )
-        val head = if (title.isNotEmpty()) "$app  ·  $title" else app
-        val b = Notification.Builder(this, "mirrored")
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setContentTitle(head)
+        // Unique group key → system won't auto-stack everything under one
+        // "Phone Link" bundle. SubText + channel name carry the source app;
+        // the shade still shows Phone Link as the posting app (platform rule).
+        val groupKey = "mirror_" + (nid.ifEmpty { shadeId.toString() })
+        val channel = mirrorChannel(pkg, app)
+        val b = Notification.Builder(this, channel)
+            .setContentTitle(title.ifEmpty { app })
             .setContentText(body)
-            .setStyle(Notification.BigTextStyle().bigText(big))
+            .setSubText(app)
+            .setStyle(Notification.BigTextStyle().bigText(big).setSummaryText(app))
             .setContentIntent(open)
             .setAutoCancel(true)
             .setOnlyAlertOnce(true)
             .setCategory(Notification.CATEGORY_MESSAGE)
+            .setGroup(groupKey)
+            .setSortKey(String.format("%013d", Long.MAX_VALUE - System.currentTimeMillis()))
+            .setShowWhen(true)
+            .setWhen(o.optLong("when", System.currentTimeMillis()))
         val icon = decodeNotifIcon(o.optString("icon"))
         if (icon is BitmapDrawable && icon.bitmap != null && Build.VERSION.SDK_INT >= 23) {
-            b.setLargeIcon(icon.bitmap)
+            val bmp = icon.bitmap
+            b.setLargeIcon(bmp)
+            // Prefer the phone app's icon in the shade row (not Phone Link's).
+            b.setSmallIcon(android.graphics.drawable.Icon.createWithBitmap(
+                drawableToBitmap(icon, 96)
+            ))
+        } else {
+            b.setSmallIcon(android.R.drawable.ic_dialog_info)
         }
         // Up to 2 phone actions + Mute (Android shows ~3 actions).
         for (act in actions.take(2)) {
