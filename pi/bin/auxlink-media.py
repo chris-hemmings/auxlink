@@ -1589,11 +1589,18 @@ def phone_media_monitor(bus, om, player):
             player.phone_release()
             write_phone_flag(False)
             set_active("smo")
-            # Both/Merge (or leaving Auto): resume SMO if it was playing before
-            # take-over, or if we are mixing and the app still wants music.
-            if resume or mixes_phone_and_smo(SOURCE_OVERRIDE):
-                if resume or player.app_state == "Playing" or player.present:
-                    app_send({"media": "play"})
+            # Car-off drops the phone at this same moment — never send play then
+            # (that was unpausing an already-paused SMO when you left the car).
+            car_off = os.path.exists("/run/auxlink/car-off")
+            if car_off:
+                if resume or mixes_phone_and_smo(SOURCE_OVERRIDE):
+                    log("Phone media released while car off; not resuming the SMO")
+            else:
+                # Both/Merge (or leaving Auto): resume SMO if it was playing before
+                # take-over, or if we are mixing and the app still wants music.
+                if resume or mixes_phone_and_smo(SOURCE_OVERRIDE):
+                    if resume or player.app_state == "Playing" or player.present:
+                        app_send({"media": "play"})
         write_phone_mute(mute_phone)
         if player.phone_active:
             player.phone_update(phone_info(props))
@@ -2714,8 +2721,23 @@ def main():
         if present and not car_left["flagged"]:
             car_left["flagged"] = True
             if load_conf().get("PAUSE_ON_CAR_OFF", "1") == "1":
-                log("Car gone; pausing the music so it doesn't play on after you leave")
-                app_send({"media": "pause"})
+                # Forget any "resume SMO after phone media" intent — the phone is
+                # dropped at this same moment, and that release used to send play.
+                player.smo_was_playing = False
+                already = (
+                    player.status != "Playing"
+                    and player.app_seen[1] != "Playing"
+                    and not player.present
+                )
+                if already:
+                    log("Car gone; SMO already paused — leaving it paused")
+                else:
+                    log("Car gone; pausing the music so it doesn't play on after you leave")
+                    # Explicit pause (not play/pause toggle) via the Phone Link app.
+                    app_send({"media": "pause"})
+                    player.status = player.app_state = "Paused"
+                    player.paused_at = time.monotonic()
+                    player.publish()
         elif not present and car_left["flagged"]:
             car_left["flagged"] = False
         return True
