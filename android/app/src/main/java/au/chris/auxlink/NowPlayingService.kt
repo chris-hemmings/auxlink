@@ -963,9 +963,18 @@ class NowPlayingService : NotificationListenerService() {
     @Volatile private var forwardNotifs = false
     @Volatile private var forwarderOnly = false
     private var notifLink: BtLink? = null
+    /**
+     * When the listener connects (or forwarding is turned on), Android re-posts
+     * every active shade notification via [onNotificationPosted]. Gate those out
+     * so only notifications that appear after the phone is linked are mirrored.
+     */
+    @Volatile private var forwardAfterWallMs = 0L
+    @Volatile private var suppressReplayUntilElapsed = 0L
+    private val shadeKeysAtArm = mutableSetOf<String>()
     /** Recent forwards for de-dupe: key -> elapsedRealtime of last send. */
     private val recentNotifs = LinkedHashMap<String, Long>()
     private val DEDUPE_MS = 45_000L
+    private val REPLAY_SUPPRESS_MS = 5_000L
     /** Pending Notification.Action intents keyed by "nid|actionId". */
     private data class HeldNotifAction(
         val pending: PendingIntent,
@@ -983,12 +992,43 @@ class NowPlayingService : NotificationListenerService() {
     fun setForwardNotifs(on: Boolean) {
         forwardNotifs = on
         try { prefs().edit().putBoolean("notif_forward", on).apply() } catch (e: Exception) {}
-        if (on && notifLink == null) {
-            notifLink = BtLink(this, BtLink.NOTIF_UUID) { line -> onNotifLinkLine(line) }
-        } else if (!on) {
+        if (on) {
+            armNotifForwardGate("forwarding on")
+            if (notifLink == null) {
+                notifLink = BtLink(this, BtLink.NOTIF_UUID) { line -> onNotifLinkLine(line) }
+            }
+        } else {
             notifLink?.close(); notifLink = null
             synchronized(heldActions) { heldActions.clear() }
+            synchronized(shadeKeysAtArm) { shadeKeysAtArm.clear() }
         }
+    }
+
+    /** Ignore the shade dump Android delivers when the listener (re)connects. */
+    private fun armNotifForwardGate(why: String) {
+        forwardAfterWallMs = System.currentTimeMillis()
+        suppressReplayUntilElapsed = SystemClock.elapsedRealtime() + REPLAY_SUPPRESS_MS
+        val keys = mutableSetOf<String>()
+        try {
+            activeNotifications?.forEach { keys += it.key }
+        } catch (e: Exception) {
+            Log.w(TAG, "activeNotifications: ${e.message}")
+        }
+        synchronized(shadeKeysAtArm) {
+            shadeKeysAtArm.clear()
+            shadeKeysAtArm += keys
+        }
+        Log.i(TAG, "notif forward gate: $why — ignore ${keys.size} existing shade item(s) for ${REPLAY_SUPPRESS_MS}ms")
+    }
+
+    /** True for the burst of already-posted shade items after connect. */
+    private fun isConnectReplay(sbn: android.service.notification.StatusBarNotification): Boolean {
+        if (SystemClock.elapsedRealtime() >= suppressReplayUntilElapsed) return false
+        synchronized(shadeKeysAtArm) {
+            if (sbn.key in shadeKeysAtArm) return true
+        }
+        val posted = sbn.postTime
+        return posted > 0L && posted < forwardAfterWallMs
     }
 
     /** Lines from the Pi on the notification RFCOMM (Stage 3 actions / mute). */
@@ -1220,6 +1260,10 @@ class NowPlayingService : NotificationListenerService() {
         // SMS already arrives via the Pi Messages path (Tesla + classic pop-up).
         // Skip the phone's SMS app so you don't have to mute it by hand.
         if (isSmsApp(sbn.packageName)) return
+        if (isConnectReplay(sbn)) {
+            notifLastSkip = "preconnect:${sbn.packageName}"
+            return
+        }
         val n = sbn.notification ?: return
         val flags = n.flags
         if (flags and Notification.FLAG_ONGOING_EVENT != 0) {
@@ -1632,6 +1676,8 @@ class NowPlayingService : NotificationListenerService() {
         try {
             forwarderOnly = prefs().getBoolean("notif_forwarder_only", false)
             if (prefs().getBoolean("notif_forward", false))
+                // setForwardNotifs arms the gate so the system's re-delivery of
+                // every active shade item is ignored as pre-connect.
                 setForwardNotifs(true)
         } catch (e: Exception) {}
         link = UsbLink(this) { onPiLine(it) }
