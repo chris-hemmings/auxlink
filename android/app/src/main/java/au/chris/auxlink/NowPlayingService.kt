@@ -1440,8 +1440,26 @@ class NowPlayingService : NotificationListenerService() {
     }
 
     private fun drawableToBitmap(d: Drawable, size: Int): Bitmap {
+        // Adaptive icons: draw() applies the system mask (circle/squircle) with
+        // transparent corners — needed so status-bar silhouettes aren't squares.
+        if (Build.VERSION.SDK_INT >= 26 &&
+            d is android.graphics.drawable.AdaptiveIconDrawable) {
+            val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+            val c = Canvas(bmp)
+            d.setBounds(0, 0, size, size)
+            d.draw(c)
+            return bmp
+        }
         if (d is BitmapDrawable && d.bitmap != null) {
-            return Bitmap.createScaledBitmap(d.bitmap, size, size, true)
+            val src = d.bitmap
+            val out = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+            val c = Canvas(out)
+            c.drawBitmap(
+                src, null,
+                android.graphics.Rect(0, 0, size, size),
+                Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+            )
+            return out
         }
         val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
         val c = Canvas(bmp)
@@ -1467,35 +1485,65 @@ class NowPlayingService : NotificationListenerService() {
 
     /**
      * Status-bar glyph from an app icon: white shape, transparent background.
-     * SystemUI tints this (white/black). Uses the icon's alpha when present;
-     * for flat opaque icons, keeps saturated/dark “logo” pixels so we don't
-     * get a solid square.
+     * SystemUI only uses alpha and tints white/black — a full-bleed opaque icon
+     * becomes a white square in the circular status-bar chip. We circle-crop
+     * first, punch flat letterbox/background fill, then keep alpha as the shape.
      */
-    private fun statusBarSilhouette(src: Bitmap, size: Int = 96): Bitmap {
-        val scaled = Bitmap.createScaledBitmap(src, size, size, true)
+    private fun statusBarSilhouette(src: Bitmap, size: Int = 72): Bitmap {
+        // Circle first so opaque square launcher icons can't become a square glyph.
+        val round = circleCropBitmap(src)
+        val scaled = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        Canvas(scaled).drawBitmap(
+            round, null,
+            android.graphics.Rect(0, 0, size, size),
+            Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+        )
         val n = size * size
         val px = IntArray(n)
         scaled.getPixels(px, 0, size, 0, 0, size, size)
-        var clear = 0
-        for (p in px) if (((p ushr 24) and 0xFF) < 128) clear++
-        val hasShapeAlpha = clear > n / 20
-        if (hasShapeAlpha) {
-            for (i in 0 until n) {
-                val a = (px[i] ushr 24) and 0xFF
-                px[i] = (a shl 24) or 0x00FFFFFF
+        // Sample near-edge pixels as “background” (letterbox / pad color).
+        val samples = intArrayOf(
+            px[size / 2], px[size * (size / 2)],
+            px[size * (size / 2) + size - 1], px[n - size / 2]
+        )
+        var br = 0; var bg = 0; var bb = 0; var bn = 0
+        for (s in samples) {
+            if (((s ushr 24) and 0xFF) < 128) continue
+            br += (s shr 16) and 0xFF
+            bg += (s shr 8) and 0xFF
+            bb += s and 0xFF
+            bn++
+        }
+        if (bn > 0) { br /= bn; bg /= bn; bb /= bn }
+        for (i in 0 until n) {
+            val p = px[i]
+            val a = (p ushr 24) and 0xFF
+            if (a < 16) { px[i] = 0; continue }
+            val r = (p shr 16) and 0xFF
+            val g = (p shr 8) and 0xFF
+            val b = p and 0xFF
+            if (bn > 0) {
+                val dr = r - br; val dg = g - bg; val db = b - bb
+                // Flat pad/background inside the circle → transparent.
+                if (dr * dr + dg * dg + db * db < 40 * 40) {
+                    px[i] = 0
+                    continue
+                }
             }
-        } else {
-            for (i in 0 until n) {
-                val p = px[i]
-                val a = (p ushr 24) and 0xFF
-                if (a < 16) { px[i] = 0; continue }
-                val r = (p shr 16) and 0xFF
-                val g = (p shr 8) and 0xFF
-                val b = p and 0xFF
-                val sat = maxOf(r, g, b) - minOf(r, g, b)
-                val lum = (r * 299 + g * 587 + b * 114) / 1000
-                // Keep logo/content; drop near-white flat fill.
-                px[i] = if (sat > 28 || lum < 225) 0xFFFFFFFF.toInt() else 0
+            val sat = maxOf(r, g, b) - minOf(r, g, b)
+            val lum = (r * 299 + g * 587 + b * 114) / 1000
+            // Near-white fill with no chroma → transparent; keep logo/content.
+            if (sat < 18 && lum > 235) { px[i] = 0; continue }
+            px[i] = (a shl 24) or 0x00FFFFFF
+        }
+        // Re-apply a clean circular mask (anti-aliased edge for the status chip).
+        val mid = (size - 1) / 2f
+        val r2 = (size / 2f - 0.75f).let { it * it }
+        for (y in 0 until size) {
+            for (x in 0 until size) {
+                val dx = x - mid
+                val dy = y - mid
+                if (dx * dx + dy * dy > r2) px[y * size + x] = 0
             }
         }
         val out = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
