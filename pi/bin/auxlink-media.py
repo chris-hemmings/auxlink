@@ -343,9 +343,11 @@ class UsbcReplug:
        Re-plug button (which can't reach us when the link is dead).
     """
     GADGET_UDC = "/sys/kernel/config/usb_gadget/auxlink/UDC"
-    STALE_SEC = 30          # app sends ≥ every 5 s when linked
-    STALE_COOLDOWN = 45     # min s between stale-path re-plugs
-    STALE_MAX = 6           # then wait for a real unplug / healthy line
+    # App holds USB closed ~35 s on no-reply so this can fire (was 30 s /
+    # 1.5 s recycle — too short for the Pi to notice).
+    STALE_SEC = 20          # app sends ≥ every 5 s when linked
+    STALE_COOLDOWN = 40     # min s between stale-path re-plugs
+    STALE_MAX = 8           # then wait for a real unplug / healthy line
 
     def __init__(self):
         self.up_since = None
@@ -367,7 +369,7 @@ class UsbcReplug:
             log(f"USB-C replug check failed: {e}")
         return True
 
-    def replug(self, name, why):
+    def replug(self, name, why, force_repair=False):
         self.last_replug = time.time()
         log(f"USB-C: {why}")
         with open(self.GADGET_UDC, "w") as f:
@@ -376,6 +378,9 @@ class UsbcReplug:
         with open(self.GADGET_UDC, "w") as f:
             f.write(name)
         self.up_since = None
+        # After a few soft toggles, rebuild the gadget (stuck composite).
+        if force_repair:
+            usbc_repair(force=True)
 
     def check(self):
         name = self.udc()
@@ -412,7 +417,8 @@ class UsbcReplug:
             self.tries += 1
             self.replug(name,
                         f"no word from the AuxLink app; replugging so Android "
-                        f"gives it the link (try {self.tries} of 3)")
+                        f"gives it the link (try {self.tries} of 3)",
+                        force_repair=(self.tries >= 3))
             return
 
         # Heard from the app earlier this session, then it went quiet while USB
@@ -427,7 +433,8 @@ class UsbcReplug:
         self.replug(name,
                     f"app quiet for {int(age)}s (link likely half-dead after "
                     f"sleep/preheat); replugging (try {self.stale_tries} of "
-                    f"{self.STALE_MAX})")
+                    f"{self.STALE_MAX})",
+                    force_repair=(self.stale_tries >= 3 and self.stale_tries % 3 == 0))
 
 
 class UsbcMic:
