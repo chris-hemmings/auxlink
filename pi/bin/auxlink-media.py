@@ -620,6 +620,11 @@ class Player(dbus.service.Object):
         self.ignore_sound_until = 0.0  # after the car pauses: the tail of the sound doesn't count
         self.silent_play_since = 0.0  # eager mode: app Playing with no PCM (grace demote)
         self.art_id = None            # artwork id last received from the SMO app
+        # MediaSession package from the SMO app (YouTube → Spotify, etc.).
+        self.media_pkg = ""
+        self.last_pkg_kick_at = 0.0   # monotonic: debounce Fix-sound on app switch
+        # App switched while still Buffering/Paused — kick once Playing lands.
+        self.pending_pkg_kick = None  # (prev_pkg, new_pkg) or None
         # Image handles must not repeat across restarts: the car caches
         # pictures by handle, so a reused one shows the OLD picture (and a
         # new file under the current handle isn't even announced). Start
@@ -927,6 +932,46 @@ class Player(dbus.service.Object):
         if track_changed or status_changed:
             self.publish(track_changed)
             log(f"[SMO] {self.title} - {self.artist} [{self.status}]")
+        # Player app changed (YouTube → Spotify): Tesla often keeps a silent
+        # A2DP session. Restart once like Fix sound — not on every Play.
+        self.maybe_kick_on_player_switch(info, state)
+
+    def maybe_kick_on_player_switch(self, info, state):
+        """If the SMO's MediaSession package changed while music should play,
+        touch audio-kick so auxlink-audio recreates the car stream."""
+        pkg = str(info.get("pkg") or "").strip()
+        if pkg and pkg != self.media_pkg:
+            prev = self.media_pkg
+            self.media_pkg = pkg
+            if prev and not self.phone_active and not self.in_call:
+                playing = (
+                    state == "Playing"
+                    or self.status == "Playing"
+                    or self.app_state == "Playing"
+                    or self.present
+                )
+                if playing:
+                    self.schedule_pkg_kick(prev, pkg)
+                else:
+                    # Spotify often lands BUFFERING (we send Paused) first.
+                    self.pending_pkg_kick = (prev, pkg)
+                    log(f"Media app {prev} → {pkg}: will Fix sound when Playing")
+        if self.pending_pkg_kick and (
+            state == "Playing" or self.app_state == "Playing" or self.present
+        ):
+            prev, new = self.pending_pkg_kick
+            self.pending_pkg_kick = None
+            self.schedule_pkg_kick(prev, new)
+
+    def schedule_pkg_kick(self, prev, pkg):
+        now = time.monotonic()
+        if now - self.last_pkg_kick_at < 5.0:
+            log(f"Media app {prev} → {pkg}: skip kick (debounce)")
+            return
+        self.last_pkg_kick_at = now
+        self.pending_pkg_kick = None
+        log(f"Media app {prev} → {pkg}: Fix sound (player switch)")
+        GLib.timeout_add(800, lambda: (Player.kick_audio() or False))
 
     # ---------- playing / pausing the SMO ----------
     def set_playing(self, want_playing, why):
