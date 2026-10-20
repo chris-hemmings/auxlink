@@ -46,3 +46,20 @@ jobs:
             auxlink-pi-${{ env.VERSION }}.img.xz
             auxlink-pi-${{ env.VERSION }}.img.xz.sha256
             auxlink-pi-update-${{ env.VERSION }}.zip
+      # Keep main's pi/VERSION in sync so anything still reading the file
+      # (not only the app's Releases API path) sees the published number.
+      - name: Commit VERSION to main
+        if: github.ref == 'refs/heads/main'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git checkout -B main origin/main
+          echo "$VERSION" > pi/VERSION
+          git add pi/VERSION
+          if git diff --cached --quiet; then
+            echo "pi/VERSION already $VERSION"
+          else
+            git commit -m "Pi VERSION $VERSION (image release)"
+            git push origin main
+          fi
