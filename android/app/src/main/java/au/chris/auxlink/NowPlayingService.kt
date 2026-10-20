@@ -80,25 +80,9 @@ class NowPlayingService : NotificationListenerService() {
         @Volatile var lastRecoveryAt = 0L
         /** Last successful send to / line from the Pi (ms). */
         @Volatile var lastTraffic = 0L
-        /** Last line actually received from the Pi (not a local send). */
-        @Volatile var lastPiReplyAt = 0L
-        /** First successful send/open this process (handshake grace). */
-        @Volatile var firstLinkAt = 0L
-        /**
-         * Connected for UI/tools: recent traffic, and a recent Pi reply once
-         * the handshake should have finished. Half-dead USB still accepts
-         * outbound sends — that alone must not look Connected.
-         */
-        fun connected(): Boolean {
-            val now = System.currentTimeMillis()
-            if (!(linkOpen || now - lastTraffic < 15000L)) return false
-            if (lastPiReplyAt > 0L && now - lastPiReplyAt < 20000L) return true
-            // First ~40 s after we start talking: allow Connected while waiting
-            // for the first Pi reply (cold plug / Pi boot).
-            if (lastPiReplyAt == 0L && firstLinkAt > 0L && now - firstLinkAt < 40_000L) return true
-            if (lastPiReplyAt == 0L && firstLinkAt == 0L) return linkOpen
-            return false
-        }
+        /** Connected = the link is open, or it carried something in the last
+         *  15 s (a link that blips between sends still counts). */
+        fun connected() = linkOpen || System.currentTimeMillis() - lastTraffic < 15000
         const val ACTION_ANSWER = "au.chris.auxlink.ANSWER"
         const val ACTION_DECLINE = "au.chris.auxlink.DECLINE"
         const val ACTION_SHADE_ACT = "au.chris.auxlink.SHADE_ACT"
@@ -407,8 +391,6 @@ class NowPlayingService : NotificationListenerService() {
 
     /** Last time we recycled the USB serial claim for silent-audio recovery. */
     private var lastUsbcRecycleMs = 0L
-    /** App-side: no Pi reply while USB looks open → recycle (Pi can't hear Re-plug). */
-    private var lastNoReplyRecycleMs = 0L
 
     // Every few seconds: follow whichever player is actually playing (a
     // player already in the session list that starts playing changes no
@@ -434,10 +416,6 @@ class NowPlayingService : NotificationListenerService() {
             if (controller == null) io.execute { sendLine("{\"cmd\":\"ping\",\"ctl\":2}") }
             // Keep the Pi's idea of vehicle movement fresh (e.g. after it rebooted).
             LocationWatch.moving?.let { mv -> io.execute { sendLine("{\"moving\":$mv}") } }
-            // USB looks open but Pi never answers (Asking the Pi…): drop our
-            // serial claim so Android re-opens — Re-plug in the app can't reach
-            // a half-dead Pi. Pi also re-plugs when our heartbeat goes quiet.
-            maybeRecycleUsbNoPiReply()
             // Refresh the audio-path check shown in the notification (~every 30 s).
             if (beats % 6 == 0) request(JSONObject().put("req", "pi"))
             // Keep Android's safe-volume warning suppressed: a car (A2DP)
@@ -625,11 +603,8 @@ class NowPlayingService : NotificationListenerService() {
     /** A line from the Pi: {"call": state, "number", "name"} or {"text": {...}}. */
     private fun onPiLine(line: String) {
         val j = try { JSONObject(line) } catch (e: Exception) { return }
-        val now = System.currentTimeMillis()
-        lastTraffic = now
-        lastPiReplyAt = now
-        if (firstLinkAt == 0L) firstLinkAt = now
-        if (j.has("pi")) { piStatus = j.optJSONObject("pi"); piStatusAt = now; return }
+        lastTraffic = System.currentTimeMillis()
+        if (j.has("pi")) { piStatus = j.optJSONObject("pi"); piStatusAt = System.currentTimeMillis(); return }
         if (j.has("bt")) { btStatus = j.optJSONObject("bt"); onBtStatus(); return }
         if (j.has("fw_result")) { fwCb?.invoke(j.optJSONObject("fw_result") ?: JSONObject()); return }
         if (j.has("flow")) {
@@ -1754,31 +1729,6 @@ class NowPlayingService : NotificationListenerService() {
      *  alone. If Android refuses (e.g. started in the background on a
      *  device that forbids it), the app still works as before. */
     /**
-     * USB send still "works" but nothing comes back from the Pi — typical
-     * after Tesla sleep / short leave. A 1.5 s recycle is not enough: the Pi
-     * only re-plugs after ~20 s with no app heartbeat. Hold the serial claim
-     * closed longer so that watchdog fires (Re-plug in the app can't reach
-     * a half-dead Pi).
-     */
-    private fun maybeRecycleUsbNoPiReply() {
-        if (forwarderOnly) return
-        if (link.findDevice() == null) return
-        // ~30 s of heartbeats so a cold start can get the first Pi reply.
-        if (beats < 6) return
-        val now = System.currentTimeMillis()
-        val quiet = lastPiReplyAt == 0L || now - lastPiReplyAt >= 25_000L
-        if (!quiet) return
-        // Longer than Pi UsbcReplug.STALE_SEC; don't thrash every recycle.
-        if (now - lastNoReplyRecycleMs < 90_000L) return
-        lastNoReplyRecycleMs = now
-        val holdMs = 35_000L
-        Log.w(TAG, "USB open but no Pi reply — holding serial closed ${holdMs}ms for Pi re-plug")
-        lastRecoveryNote = "Holding USB so Pi can re-plug (no reply)"
-        lastRecoveryAt = now
-        io.execute { link.recycle(holdMs) }
-    }
-
-    /**
      * Pi says sound should be playing but USB-C capture is silent: drop our
      * CDC serial claim briefly so the USB audio HAL can recover. Rate-limited.
      * The Pi may also force a gadget re-plug if silence continues.
@@ -2025,11 +1975,7 @@ class NowPlayingService : NotificationListenerService() {
         } else {
             bt.send(line).also { if (it) linkKind = "Bluetooth (${bt.deviceName})" }
         }
-        if (ok) {
-            val now = System.currentTimeMillis()
-            lastTraffic = now
-            if (firstLinkAt == 0L) firstLinkAt = now
-        }
+        if (ok) lastTraffic = System.currentTimeMillis()
         linkOpen = link.isOpen() || bt.isOpen()
         if (!connected()) linkKind = ""
         return ok
