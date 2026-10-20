@@ -1730,11 +1730,20 @@ class MainActivity : Activity() {
         val running = NowPlayingService.instance != null
         val usb = UsbLink(this).kind()      // the Pi's USB-C, the XIAO, or nothing
 
+        // Half-dead USB: we can still send, but the Pi never answers.
+        val usbStuck = !linked && usb != null && UsbLink(this).permitted() &&
+            NowPlayingService.lastTraffic > 0L &&
+            System.currentTimeMillis() - NowPlayingService.lastTraffic < 15000L &&
+            (NowPlayingService.lastPiReplyAt == 0L ||
+                System.currentTimeMillis() - NowPlayingService.lastPiReplyAt >= 20000L)
         // Connection
         val (title, sub, colour) = when {
             !hasAccess() -> Triple("Not set up yet", "Allow Notification access below to get started.", warn)
             linked -> Triple("Connected to the Pi", "Over " + NowPlayingService.linkKind.ifEmpty { "USB" } +
                 ". Track info and car buttons are working.", good)
+            usbStuck -> Triple("USB link stuck",
+                "Phone Link is sending but the Pi isn't answering. Auto-recovery will hold USB " +
+                    "so the Pi can re-plug — or reboot the Pi / unplug the cable.", warn)
             !running -> Triple("Starting…", "Phone Link is starting in the background.", warn)
             usb != null && !UsbLink(this).permitted() -> Triple("Waiting for USB access",
                 "Tap Allow next to USB access below.", warn)
@@ -1744,7 +1753,12 @@ class MainActivity : Activity() {
         linkTitle.text = title
         linkSub.text = sub
         linkDot.background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(colour) }
-        pill.text = if (linked) "Connected" else if (hasAccess()) "Not connected" else "Setup needed"
+        pill.text = when {
+            linked -> "Connected"
+            usbStuck -> "USB stuck"
+            hasAccess() -> "Not connected"
+            else -> "Setup needed"
+        }
         pill.setTextColor(colour)
         pill.background = GradientDrawable().apply {
             cornerRadius = 999f; setColor(colour and 0x00FFFFFF or 0x26000000)

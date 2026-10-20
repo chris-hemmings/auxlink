@@ -82,9 +82,23 @@ class NowPlayingService : NotificationListenerService() {
         @Volatile var lastTraffic = 0L
         /** Last line actually received from the Pi (not a local send). */
         @Volatile var lastPiReplyAt = 0L
-        /** Connected = the link is open, or it carried something in the last
-         *  15 s (a link that blips between sends still counts). */
-        fun connected() = linkOpen || System.currentTimeMillis() - lastTraffic < 15000
+        /** First successful send/open this process (handshake grace). */
+        @Volatile var firstLinkAt = 0L
+        /**
+         * Connected for UI/tools: recent traffic, and a recent Pi reply once
+         * the handshake should have finished. Half-dead USB still accepts
+         * outbound sends — that alone must not look Connected.
+         */
+        fun connected(): Boolean {
+            val now = System.currentTimeMillis()
+            if (!(linkOpen || now - lastTraffic < 15000L)) return false
+            if (lastPiReplyAt > 0L && now - lastPiReplyAt < 20000L) return true
+            // First ~40 s after we start talking: allow Connected while waiting
+            // for the first Pi reply (cold plug / Pi boot).
+            if (lastPiReplyAt == 0L && firstLinkAt > 0L && now - firstLinkAt < 40_000L) return true
+            if (lastPiReplyAt == 0L && firstLinkAt == 0L) return linkOpen
+            return false
+        }
         const val ACTION_ANSWER = "au.chris.auxlink.ANSWER"
         const val ACTION_DECLINE = "au.chris.auxlink.DECLINE"
         const val ACTION_SHADE_ACT = "au.chris.auxlink.SHADE_ACT"
@@ -614,6 +628,7 @@ class NowPlayingService : NotificationListenerService() {
         val now = System.currentTimeMillis()
         lastTraffic = now
         lastPiReplyAt = now
+        if (firstLinkAt == 0L) firstLinkAt = now
         if (j.has("pi")) { piStatus = j.optJSONObject("pi"); piStatusAt = now; return }
         if (j.has("bt")) { btStatus = j.optJSONObject("bt"); onBtStatus(); return }
         if (j.has("fw_result")) { fwCb?.invoke(j.optJSONObject("fw_result") ?: JSONObject()); return }
@@ -1739,10 +1754,11 @@ class NowPlayingService : NotificationListenerService() {
      *  alone. If Android refuses (e.g. started in the background on a
      *  device that forbids it), the app still works as before. */
     /**
-     * USB send still "works" (Connected) but nothing comes back from the Pi —
-     * typical after Tesla preheat/sleep. Recycle our CDC claim so the reader
-     * restarts; the Pi's stale-heartbeat watchdog re-plugs the gadget when
-     * our lines stop during the recycle. Does not need the Re-plug button.
+     * USB send still "works" but nothing comes back from the Pi — typical
+     * after Tesla sleep / short leave. A 1.5 s recycle is not enough: the Pi
+     * only re-plugs after ~20 s with no app heartbeat. Hold the serial claim
+     * closed longer so that watchdog fires (Re-plug in the app can't reach
+     * a half-dead Pi).
      */
     private fun maybeRecycleUsbNoPiReply() {
         if (forwarderOnly) return
@@ -1752,12 +1768,14 @@ class NowPlayingService : NotificationListenerService() {
         val now = System.currentTimeMillis()
         val quiet = lastPiReplyAt == 0L || now - lastPiReplyAt >= 25_000L
         if (!quiet) return
-        if (now - lastNoReplyRecycleMs < 45_000L) return
+        // Longer than Pi UsbcReplug.STALE_SEC; don't thrash every recycle.
+        if (now - lastNoReplyRecycleMs < 90_000L) return
         lastNoReplyRecycleMs = now
-        Log.w(TAG, "USB open but no Pi reply — recycling serial claim")
-        lastRecoveryNote = "Recycled USB (no reply from Pi)"
+        val holdMs = 35_000L
+        Log.w(TAG, "USB open but no Pi reply — holding serial closed ${holdMs}ms for Pi re-plug")
+        lastRecoveryNote = "Holding USB so Pi can re-plug (no reply)"
         lastRecoveryAt = now
-        io.execute { link.recycle(1500) }
+        io.execute { link.recycle(holdMs) }
     }
 
     /**
@@ -2007,7 +2025,11 @@ class NowPlayingService : NotificationListenerService() {
         } else {
             bt.send(line).also { if (it) linkKind = "Bluetooth (${bt.deviceName})" }
         }
-        if (ok) lastTraffic = System.currentTimeMillis()
+        if (ok) {
+            val now = System.currentTimeMillis()
+            lastTraffic = now
+            if (firstLinkAt == 0L) firstLinkAt = now
+        }
         linkOpen = link.isOpen() || bt.isOpen()
         if (!connected()) linkKind = ""
         return ok
