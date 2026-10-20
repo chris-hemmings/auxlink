@@ -105,6 +105,20 @@ class NowPlayingService : NotificationListenerService() {
         /** Allowlist of packages to mirror (Apps to forward). */
         private const val KEY_ALLOWED_PKGS = "notif_allowed_pkgs"
         private const val KEY_ALLOWLIST_READY = "notif_allowlist_ready"
+        /**
+         * Framework noise that must never mirror — not in Apps to forward,
+         * and blocked even if somehow present in the saved allowlist.
+         * ("Android System" hotspot / tethering alerts use [android].)
+         */
+        private val NEVER_FORWARD_PKGS = setOf(
+            "android",
+            "com.android.systemui",
+            "com.android.shell",
+            "com.android.keychain",
+            "com.android.providers.settings",
+        )
+        /** Prefs allowlist scrubbed of framework pkgs once this process. */
+        @Volatile private var allowlistScrubbed = false
         /** The running service, for the app screen's buttons. */
         @Volatile var instance: NowPlayingService? = null
         /** True while the app is in the foreground (MainActivity resumed). */
@@ -133,11 +147,37 @@ class NowPlayingService : NotificationListenerService() {
             } catch (_: Exception) { emptyList() }
             return found.mapNotNull { ri ->
                 val pkg = ri.activityInfo?.packageName ?: return@mapNotNull null
-                if (pkg == ctx.packageName) return@mapNotNull null
+                if (pkg == ctx.packageName || neverForwardPackage(ctx, pkg)) return@mapNotNull null
                 val label = try { ri.loadLabel(pm).toString() } catch (_: Exception) { pkg }
                 val icon = try { ri.loadIcon(pm) } catch (_: Exception) { null }
                 ForwardApp(pkg, label, icon)
             }.distinctBy { it.pkg }.sortedBy { it.label.lowercase() }
+        }
+
+        /** True if [pkg] has a launcher activity (can appear in Apps to forward). */
+        fun isLaunchablePackage(ctx: Context, pkg: String): Boolean {
+            if (pkg.isEmpty()) return false
+            val pm = ctx.packageManager
+            val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setPackage(pkg)
+            return try {
+                if (Build.VERSION.SDK_INT >= 33)
+                    pm.queryIntentActivities(intent, PackageManager.ResolveInfoFlags.of(0)).isNotEmpty()
+                else
+                    @Suppress("DEPRECATION") pm.queryIntentActivities(intent, 0).isNotEmpty()
+            } catch (_: Exception) { false }
+        }
+
+        /**
+         * Framework / non-launcher system packages — never mirror.
+         * Launchable system apps (Messages, Phone, Settings) stay selectable.
+         */
+        fun neverForwardPackage(ctx: Context, pkg: String): Boolean {
+            if (pkg.isEmpty() || pkg == ctx.packageName || pkg in NEVER_FORWARD_PKGS) return true
+            val ai = try {
+                ctx.packageManager.getApplicationInfo(pkg, 0)
+            } catch (_: Exception) { return false }
+            if ((ai.flags and ApplicationInfo.FLAG_SYSTEM) == 0) return false
+            return !isLaunchablePackage(ctx, pkg)
         }
 
         /**
@@ -158,11 +198,7 @@ class NowPlayingService : NotificationListenerService() {
                 val i = row.indexOf('\t')
                 if (i <= 0) continue
                 val pkg = row.substring(0, i)
-                if (pkg in have || pkg == ctx.packageName) continue
-                // Non-launcher system packages stay out of the picker (and
-                // off the allowlist) — those were the unmutable noise.
-                val ai = try { pm.getApplicationInfo(pkg, 0) } catch (_: Exception) { null }
-                if (ai != null && (ai.flags and ApplicationInfo.FLAG_SYSTEM) != 0) continue
+                if (pkg in have || neverForwardPackage(ctx, pkg)) continue
                 val label = row.substring(i + 1).ifBlank { pkg }
                 val icon = try { pm.getApplicationIcon(pkg) } catch (_: Exception) { null }
                 extras += ForwardApp(pkg, "$label  ·  seen", icon)
@@ -198,10 +234,21 @@ class NowPlayingService : NotificationListenerService() {
         /** Packages currently on the allowlist (seeds once if needed). */
         fun readAllowedNotifPackages(ctx: Context): Set<String> {
             ensureNotifAllowlist(ctx)
-            return try {
-                ctx.getSharedPreferences("auxlink", MODE_PRIVATE)
-                    .getStringSet(KEY_ALLOWED_PKGS, emptySet())?.toSet() ?: emptySet()
-            } catch (_: Exception) { emptySet() }
+            val p = try { ctx.getSharedPreferences("auxlink", MODE_PRIVATE) }
+            catch (_: Exception) { return emptySet() }
+            val raw = try { p.getStringSet(KEY_ALLOWED_PKGS, emptySet())?.toSet() ?: emptySet() }
+            catch (_: Exception) { emptySet() }
+            if (allowlistScrubbed) return raw
+            val clean = raw.filter { !neverForwardPackage(ctx, it) }.toSet()
+            allowlistScrubbed = true
+            if (clean.size != raw.size) {
+                try {
+                    p.edit().putStringSet(KEY_ALLOWED_PKGS, clean).apply()
+                    Log.i(TAG, "notif allowlist scrubbed ${raw.size - clean.size} system pkg(s)")
+                } catch (_: Exception) {}
+                return clean
+            }
+            return raw
         }
     }
 
@@ -1232,17 +1279,19 @@ class NowPlayingService : NotificationListenerService() {
     fun allowedNotifPackages(): Set<String> = readAllowedNotifPackages(this)
 
     fun setAllowedNotifPackages(pkgs: Set<String>) {
+        val clean = pkgs.filter { !neverForwardPackage(this, it) }.toSet()
         try {
             prefs().edit()
-                .putStringSet(KEY_ALLOWED_PKGS, pkgs.toSet())
+                .putStringSet(KEY_ALLOWED_PKGS, clean)
                 .putBoolean(KEY_ALLOWLIST_READY, true)
                 .apply()
+            allowlistScrubbed = true
         } catch (_: Exception) {}
     }
 
-    /** True only if [pkg] was explicitly selected in Apps to forward. */
+    /** True only if [pkg] was selected in Apps to forward (never framework noise). */
     fun isNotifForwardAllowed(pkg: String): Boolean =
-        pkg.isNotEmpty() && pkg in allowedNotifPackages()
+        pkg.isNotEmpty() && !neverForwardPackage(this, pkg) && pkg in allowedNotifPackages()
 
     /** Apps the forwarder has seen posting a notification (kept for diagnostics). */
     fun seenNotifApps(): List<Pair<String, String>> {
