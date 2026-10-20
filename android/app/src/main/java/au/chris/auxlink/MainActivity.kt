@@ -1585,8 +1585,8 @@ class MainActivity : Activity() {
                         typeface = Typeface.DEFAULT_BOLD
                     })
                     addView(TextView(this@MainActivity).apply {
-                        text = "Only apps turned on are mirrored. System apps and anything " +
-                            "not listed never come through. SMS/Messages is skipped automatically."
+                        text = "Only apps turned on are mirrored. Android System and other " +
+                            "framework alerts never come through. SMS/Messages is skipped automatically."
                         setTextColor(text2); textSize = 12f
                         setPadding(0, px(4), 0, px(8))
                     })
