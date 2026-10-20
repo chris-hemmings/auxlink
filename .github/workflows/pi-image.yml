@@ -1,7 +1,8 @@
 name: Build AuxLink Pi image
 # The one-file SD-card image for the Pi (plus the update zip for the setup
 # page). Run it from the Actions tab with a version number; it publishes a
-# release "AuxLink Pi image <version>" tagged pi-v<version>.
+# release "AuxLink Pi image <version>" tagged pi-v<version>, then commits
+# that version to main's pi/VERSION so the SMO app's update check sees it.
 on:
   workflow_dispatch:
     inputs:
@@ -46,3 +47,43 @@ jobs:
             auxlink-pi-${{ env.VERSION }}.img.xz
             auxlink-pi-${{ env.VERSION }}.img.xz.sha256
             auxlink-pi-update-${{ env.VERSION }}.zip
+      # Always write the published number to main's pi/VERSION (the SMO app
+      # and anything else that reads that file). Do this even when the
+      # workflow was started from another branch/tag.
+      - name: Commit pi/VERSION to main
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git checkout -B version-bump origin/main
+          echo "$VERSION" > pi/VERSION
+          git add pi/VERSION
+          if git diff --cached --quiet; then
+            echo "main pi/VERSION already $VERSION"
+            exit 0
+          fi
+          git commit -m "Pi VERSION $VERSION (image release)"
+          # Image builds are long; main may have moved — rebase and retry.
+          for i in 1 2 3 4; do
+            if git push origin HEAD:main; then
+              echo "Pushed pi/VERSION $VERSION to main"
+              exit 0
+            fi
+            echo "Push failed (attempt $i); rebasing onto main…"
+            git fetch origin main
+            git rebase origin/main
+            echo "$VERSION" > pi/VERSION
+            git add pi/VERSION
+            git diff --cached --quiet || git -c core.editor=true rebase --continue 2>/dev/null || \
+              git commit -m "Pi VERSION $VERSION (image release)" || true
+            # If rebase left us without a commit tip, recommit.
+            if ! git log origin/main..HEAD --oneline | grep -q .; then
+              echo "$VERSION" > pi/VERSION
+              git add pi/VERSION
+              git diff --cached --quiet || git commit -m "Pi VERSION $VERSION (image release)"
+            fi
+            sleep $((i * 4))
+          done
+          echo "Failed to push pi/VERSION to main after retries" >&2
+          exit 1

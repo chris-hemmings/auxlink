@@ -27,6 +27,7 @@ import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.InetAddress
@@ -1104,6 +1105,86 @@ class MainActivity : Activity() {
         return false
     }
 
+    private data class PiRelease(val version: String, val zipUrl: String)
+
+    /**
+     * Newest published Pi image release (tag pi-v*). The image workflow only
+     * writes VERSION inside the release zip — main's pi/VERSION can lag, so
+     * we must not trust raw.githubusercontent for "what's latest".
+     */
+    private fun fetchLatestPiRelease(): PiRelease? {
+        val c = URL("https://api.github.com/repos/$piRepo/releases?per_page=40")
+            .openConnection() as HttpURLConnection
+        c.setRequestProperty("Accept", "application/vnd.github+json")
+        c.setRequestProperty("User-Agent", "AuxLink-PhoneLink")
+        c.connectTimeout = 10000; c.readTimeout = 15000
+        val body = c.inputStream.bufferedReader().use { it.readText() }
+        val arr = JSONArray(body)
+        var best: PiRelease? = null
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            if (o.optBoolean("draft") || o.optBoolean("prerelease")) continue
+            val tag = o.optString("tag_name")
+            if (!tag.startsWith("pi-v")) continue
+            val ver = tag.removePrefix("pi-v")
+            if (!ver.matches(Regex("[0-9.]{1,12}"))) continue
+            val assets = o.optJSONArray("assets") ?: continue
+            var zipUrl = ""
+            for (j in 0 until assets.length()) {
+                val a = assets.optJSONObject(j) ?: continue
+                val name = a.optString("name")
+                if (name == "auxlink-pi-update-$ver.zip") {
+                    zipUrl = a.optString("browser_download_url")
+                    break
+                }
+            }
+            if (zipUrl.isEmpty()) continue
+            if (best == null || verNewer(ver, best.version)) best = PiRelease(ver, zipUrl)
+        }
+        return best
+    }
+
+    /** Fallback when the Releases API is unreachable: main's pi/VERSION. */
+    private fun fetchPiVersionFromBranch(): String? {
+        val c = URL("https://raw.githubusercontent.com/$piRepo/$piBranch/pi/VERSION")
+            .openConnection() as HttpURLConnection
+        c.connectTimeout = 10000; c.readTimeout = 10000
+        val v = c.inputStream.bufferedReader().use { it.readText() }.trim()
+        return v.takeIf { it.matches(Regex("[0-9.]{1,12}")) }
+    }
+
+    private fun downloadUrl(url: String, latest: String): ByteArray? {
+        val c = URL(url).openConnection() as HttpURLConnection
+        c.instanceFollowRedirects = true
+        c.setRequestProperty("User-Agent", "AuxLink-PhoneLink")
+        c.connectTimeout = 15000; c.readTimeout = 120000
+        val len = c.contentLength
+        val inp = c.inputStream
+        val buf = java.io.ByteArrayOutputStream()
+        val chunk = ByteArray(8192)
+        var read = 0
+        while (true) {
+            val n = inp.read(chunk)
+            if (n < 0) break
+            buf.write(chunk, 0, n)
+            read += n
+            if (len > 0) {
+                val pct = ((read.toLong() * 100) / len).toInt().coerceIn(0, 99)
+                main.post {
+                    showUpdateProgress("Downloading v$latest",
+                        "${read / 1024} KB of ${len / 1024} KB", pct)
+                }
+            } else if (read % (64 * 1024) < chunk.size) {
+                main.post {
+                    showUpdateProgress("Downloading v$latest",
+                        "${read / 1024} KB…", null)
+                }
+            }
+        }
+        inp.close()
+        return buf.toByteArray()
+    }
+
     /** Check GitHub for a newer Pi version and, if there is one, offer to
      *  install it. [auto] = triggered by the daily auto-check (stays quiet
      *  when there's nothing new or a check already ran today). */
@@ -1121,15 +1202,12 @@ class MainActivity : Activity() {
         piUpdateBusy = true
         if (!auto) showUpdateProgress("Checking for updates", "Looking on GitHub…", null)
         Thread {
-            val latest = try {
-                val c = URL("https://raw.githubusercontent.com/$piRepo/$piBranch/pi/VERSION")
-                    .openConnection() as HttpURLConnection
-                c.connectTimeout = 10000; c.readTimeout = 10000
-                c.inputStream.bufferedReader().use { it.readText() }.trim()
-            } catch (e: Exception) { null }
+            val rel = try { fetchLatestPiRelease() } catch (_: Exception) { null }
+            val latest = rel?.version ?: try { fetchPiVersionFromBranch() } catch (_: Exception) { null }
+            val zipUrl = rel?.zipUrl
             main.post {
                 p.edit().putLong("pi_update_checked", now).apply()
-                if (latest == null || !latest.matches(Regex("[0-9.]{1,12}"))) {
+                if (latest == null) {
                     piUpdateBusy = false
                     if (!auto) finishUpdateProgress(
                         "Couldn't reach GitHub to check for updates. Is this device online?", false)
@@ -1140,7 +1218,7 @@ class MainActivity : Activity() {
                     if (!auto) {
                         updateDlg?.dismiss(); updateDlg = null
                         updateTitleTv = null; updateMsgTv = null; updateBar = null
-                        say("The Pi is up to date (v$have).")
+                        say("The Pi is up to date (v$have). Latest on GitHub is v$latest.")
                     }
                     return@post
                 }
@@ -1149,18 +1227,18 @@ class MainActivity : Activity() {
                 updateTitleTv = null; updateMsgTv = null; updateBar = null
                 // Don't nag on auto-checks about a version already declined.
                 if (auto && p.getString("pi_update_skip", "") == latest) return@post
-                confirmPiUpdate(have, latest, auto)
+                confirmPiUpdate(have, latest, auto, zipUrl)
             }
         }.start()
     }
 
-    private fun confirmPiUpdate(have: String, latest: String, auto: Boolean) {
+    private fun confirmPiUpdate(have: String, latest: String, auto: Boolean, zipUrl: String?) {
         android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle("Update the Pi to v$latest?")
             .setMessage("The Pi is on v$have. This downloads the latest Pi software from GitHub " +
                 "(under 1 MB) and installs it on the Pi over the USB-C or Bluetooth link. The Pi restarts " +
                 "its services and reconnects by itself.")
-            .setPositiveButton("Download & install") { _, _ -> downloadAndPushPiUpdate(latest) }
+            .setPositiveButton("Download & install") { _, _ -> downloadAndPushPiUpdate(latest, zipUrl) }
             .setNegativeButton("Not now") { _, _ ->
                 if (auto) getSharedPreferences("auxlink", MODE_PRIVATE)
                     .edit().putString("pi_update_skip", latest).apply()
@@ -1168,41 +1246,20 @@ class MainActivity : Activity() {
             .show()
     }
 
-    private fun downloadAndPushPiUpdate(latest: String) {
+    private fun downloadAndPushPiUpdate(latest: String, zipUrl: String?) {
         if (piUpdateBusy) return
         piUpdateBusy = true
         showUpdateProgress("Downloading v$latest", "Fetching from GitHub…", 0)
         Thread {
-            val zip = try {
-                val c = URL("https://codeload.github.com/$piRepo/zip/refs/heads/$piBranch")
-                    .openConnection() as HttpURLConnection
-                c.connectTimeout = 15000; c.readTimeout = 120000
-                val len = c.contentLength
-                val inp = c.inputStream
-                val buf = java.io.ByteArrayOutputStream()
-                val chunk = ByteArray(8192)
-                var read = 0
-                while (true) {
-                    val n = inp.read(chunk)
-                    if (n < 0) break
-                    buf.write(chunk, 0, n)
-                    read += n
-                    if (len > 0) {
-                        val pct = ((read.toLong() * 100) / len).toInt().coerceIn(0, 99)
-                        main.post {
-                            showUpdateProgress("Downloading v$latest",
-                                "${read / 1024} KB of ${len / 1024} KB", pct)
-                        }
-                    } else if (read % (64 * 1024) < chunk.size) {
-                        main.post {
-                            showUpdateProgress("Downloading v$latest",
-                                "${read / 1024} KB…", null)
-                        }
-                    }
-                }
-                inp.close()
-                buf.toByteArray()
-            } catch (e: Exception) { null }
+            val url = zipUrl?.takeIf { it.isNotEmpty() }
+                ?: "https://github.com/$piRepo/releases/download/pi-v$latest/auxlink-pi-update-$latest.zip"
+            var zip = try { downloadUrl(url, latest) } catch (_: Exception) { null }
+            // Older path: whole-repo zip from main (still accepted by the Pi).
+            if (zip == null || zip.size < 1000) {
+                zip = try {
+                    downloadUrl("https://codeload.github.com/$piRepo/zip/refs/heads/$piBranch", latest)
+                } catch (_: Exception) { null }
+            }
             if (zip == null || zip.size < 1000) {
                 main.post { finishUpdateProgress("Download failed — is this device online?", false) }
                 return@Thread
