@@ -324,10 +324,10 @@ def usbc_repair(force=False):
     threading.Thread(target=run, daemon=True).start()
 
 
-# USB-C: SMO reports Playing but auxlink-audio sees no PCM — force a gadget
-# re-plug (rate-limited). Avoids the "Wired selected, RMS 0" stuck state.
-# Trigger after ~15 s silence; cool-down 3 min. Status surfaces last recovery.
-USBC_SILENT = {"since": 0.0, "last_force": 0.0, "note": "", "note_at": 0.0}
+# Last USB-C recovery note for Status (manual Re-plug / Check and fix only).
+# Automatic "silent while playing → force re-plug" was removed: on some head
+# units a soft UDC toggle is not a real unplug and made a flaky link worse.
+USBC_SILENT = {"note": "", "note_at": 0.0}
 
 
 class UsbcReplug:
@@ -2319,10 +2319,10 @@ def audio_flow(player):
         usbc_detail = ("Connected" if state == "configured" else (state or "no USB-C port")) + \
             ("  ·  48 kHz 16-bit stereo sound card" if card else "  ·  sound card missing")
         usbc_st = "ok" if state == "configured" and card else "bad"
-        # Live health: silent while the app wants music → warn before full force-repair.
+        # Live health: silent while the app wants music — warn only (no auto re-plug).
         want_play = player.app_state == "Playing" or player.status == "Playing"
         if usbc_st == "ok" and want_play and not player.present and not player.phone_active:
-            usbc_detail = "Silent while playing — re-plug may help"
+            usbc_detail = "Silent while playing — use Re-plug USB-C or unplug the cable"
             usbc_st = "warn"
         if USBC_SILENT.get("note") and time.time() - USBC_SILENT.get("note_at", 0) < 120:
             usbc_detail += "  ·  " + USBC_SILENT["note"]
@@ -3030,31 +3030,6 @@ def main():
     GLib.timeout_add(500, Notify().tick)
     if MUSIC_SOURCE == "usbc":
         PHONE["link"] = PhoneLink()
-
-        def usbc_silent_watch():
-            """Playing + no sound for ~15 s → force USB-C re-plug (max every 3 min)."""
-            if player.phone_active:
-                USBC_SILENT["since"] = 0.0
-                return True
-            # Use effective Playing intent (app or status) so demoted AVRCP still recovers.
-            playing = player.app_state == "Playing" or player.status == "Playing"
-            if playing and not player.present:
-                now = time.time()
-                if USBC_SILENT["since"] <= 0:
-                    USBC_SILENT["since"] = now
-                elif (now - USBC_SILENT["since"] >= 15
-                      and now - USBC_SILENT["last_force"] >= 180):
-                    USBC_SILENT["last_force"] = now
-                    USBC_SILENT["since"] = now
-                    USBC_SILENT["note"] = "Forced USB-C re-plug (silent while playing)"
-                    USBC_SILENT["note_at"] = now
-                    log("USB-C: SMO playing but silent for 15s — forcing gadget re-plug")
-                    usbc_repair(force=True)
-            else:
-                USBC_SILENT["since"] = 0.0
-            return True
-
-        GLib.timeout_add(2000, usbc_silent_watch)
     GLib.MainLoop().run()
 
 
