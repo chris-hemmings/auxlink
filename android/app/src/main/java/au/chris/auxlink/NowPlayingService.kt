@@ -11,6 +11,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
@@ -99,6 +100,9 @@ class NowPlayingService : NotificationListenerService() {
         /** Shade notification ids for mirrored alerts (1000–1999). */
         private const val SHADE_ID_BASE = 1000
         private const val SHADE_ID_MAX = 1999
+        /** Allowlist of packages to mirror (Apps to forward). */
+        private const val KEY_ALLOWED_PKGS = "notif_allowed_pkgs"
+        private const val KEY_ALLOWLIST_READY = "notif_allowlist_ready"
         /** The running service, for the app screen's buttons. */
         @Volatile var instance: NowPlayingService? = null
         /** True while the app is in the foreground (MainActivity resumed). */
@@ -132,6 +136,70 @@ class NowPlayingService : NotificationListenerService() {
                 val icon = try { ri.loadIcon(pm) } catch (_: Exception) { null }
                 ForwardApp(pkg, label, icon)
             }.distinctBy { it.pkg }.sortedBy { it.label.lowercase() }
+        }
+
+        /**
+         * Picker list: launchable apps, plus any packages we've already seen
+         * posting a notification (so a rare non-launcher app can be enabled).
+         * System services never appear → they stay off the allowlist.
+         */
+        fun appsForForwardPicker(ctx: Context): List<ForwardApp> {
+            val launchable = forwardableApps(ctx)
+            val have = launchable.map { it.pkg }.toHashSet()
+            val extras = mutableListOf<ForwardApp>()
+            val raw = try {
+                ctx.getSharedPreferences("auxlink", MODE_PRIVATE)
+                    .getStringSet("notif_seen_apps", emptySet()) ?: emptySet()
+            } catch (_: Exception) { emptySet() }
+            val pm = ctx.packageManager
+            for (row in raw) {
+                val i = row.indexOf('\t')
+                if (i <= 0) continue
+                val pkg = row.substring(0, i)
+                if (pkg in have || pkg == ctx.packageName) continue
+                // Non-launcher system packages stay out of the picker (and
+                // off the allowlist) — those were the unmutable noise.
+                val ai = try { pm.getApplicationInfo(pkg, 0) } catch (_: Exception) { null }
+                if (ai != null && (ai.flags and ApplicationInfo.FLAG_SYSTEM) != 0) continue
+                val label = row.substring(i + 1).ifBlank { pkg }
+                val icon = try { pm.getApplicationIcon(pkg) } catch (_: Exception) { null }
+                extras += ForwardApp(pkg, "$label  ·  seen", icon)
+                have += pkg
+            }
+            return launchable + extras.sortedBy { it.label.lowercase() }
+        }
+
+        /**
+         * One-time migrate mute-list → allowlist (launchable − muted). Safe
+         * off the main thread. Call before reading [KEY_ALLOWED_PKGS] from prefs
+         * when the listener may not be running.
+         */
+        fun ensureNotifAllowlist(ctx: Context) {
+            try {
+                val p = ctx.getSharedPreferences("auxlink", MODE_PRIVATE)
+                if (p.getBoolean(KEY_ALLOWLIST_READY, false)) return
+                val muted = try {
+                    p.getStringSet("notif_muted_pkgs", emptySet())?.toSet() ?: emptySet()
+                } catch (_: Exception) { emptySet() }
+                val launchable = forwardableApps(ctx).map { it.pkg }.toSet()
+                val seeded = launchable - muted
+                p.edit()
+                    .putStringSet(KEY_ALLOWED_PKGS, seeded)
+                    .putBoolean(KEY_ALLOWLIST_READY, true)
+                    .apply()
+                Log.i(TAG, "notif allowlist seeded: ${seeded.size} apps (was mute-list)")
+            } catch (e: Exception) {
+                Log.w(TAG, "notif allowlist seed: ${e.message}")
+            }
+        }
+
+        /** Packages currently on the allowlist (seeds once if needed). */
+        fun readAllowedNotifPackages(ctx: Context): Set<String> {
+            ensureNotifAllowlist(ctx)
+            return try {
+                ctx.getSharedPreferences("auxlink", MODE_PRIVATE)
+                    .getStringSet(KEY_ALLOWED_PKGS, emptySet())?.toSet() ?: emptySet()
+            } catch (_: Exception) { emptySet() }
         }
     }
 
@@ -1038,10 +1106,10 @@ class NowPlayingService : NotificationListenerService() {
         if (mute != null) {
             val pkg = mute.optString("pkg")
             if (pkg.isNotEmpty()) {
-                val set = mutedNotifPackages().toMutableSet()
-                set.add(pkg)
-                setMutedNotifPackages(set)
-                Log.i(TAG, "Always-mute from head unit: $pkg")
+                // Allowlist: drop this app so it stops forwarding.
+                val allowed = allowedNotifPackages().toMutableSet()
+                if (allowed.remove(pkg)) setAllowedNotifPackages(allowed)
+                Log.i(TAG, "Always-mute from head unit: removed $pkg from allowlist")
             }
             return
         }
@@ -1146,14 +1214,25 @@ class NowPlayingService : NotificationListenerService() {
 
     fun isForwarderOnly() = forwarderOnly
 
-    /** Muted packages (not forwarded). Empty = forward everything seen. */
-    fun mutedNotifPackages(): Set<String> =
-        try { prefs().getStringSet("notif_muted_pkgs", emptySet())?.toSet() ?: emptySet() }
-        catch (_: Exception) { emptySet() }
+    /**
+     * Allowlist of packages to mirror. Only these are forwarded — system
+     * services and anything not selected never come through. Migrates once
+     * from the old mute-list (launchable apps minus muted).
+     */
+    fun allowedNotifPackages(): Set<String> = readAllowedNotifPackages(this)
 
-    fun setMutedNotifPackages(pkgs: Set<String>) {
-        try { prefs().edit().putStringSet("notif_muted_pkgs", pkgs.toSet()).apply() } catch (_: Exception) {}
+    fun setAllowedNotifPackages(pkgs: Set<String>) {
+        try {
+            prefs().edit()
+                .putStringSet(KEY_ALLOWED_PKGS, pkgs.toSet())
+                .putBoolean(KEY_ALLOWLIST_READY, true)
+                .apply()
+        } catch (_: Exception) {}
     }
+
+    /** True only if [pkg] was explicitly selected in Apps to forward. */
+    fun isNotifForwardAllowed(pkg: String): Boolean =
+        pkg.isNotEmpty() && pkg in allowedNotifPackages()
 
     /** Apps the forwarder has seen posting a notification (kept for diagnostics). */
     fun seenNotifApps(): List<Pair<String, String>> {
@@ -1195,7 +1274,7 @@ class NowPlayingService : NotificationListenerService() {
     fun notifDiag() = "forwarding=${if (forwardNotifs) "ON" else "off"}, " +
         "only=${if (forwarderOnly) "ON" else "off"}, seen=$notifCount, " +
         "sent=$notifSent, fail=$notifSendFail, " +
-        "muted=$notifSkippedMute, dedupe=$notifSkippedDedupe, empty=$notifSkippedEmpty, " +
+        "blocked=$notifSkippedMute, dedupe=$notifSkippedDedupe, empty=$notifSkippedEmpty, " +
         "lastSkip=$notifLastSkip, " +
         "link=${notifLink?.lastResult ?: "(forwarder not started)"}"
 
@@ -1287,9 +1366,10 @@ class NowPlayingService : NotificationListenerService() {
             packageManager.getApplicationLabel(packageManager.getApplicationInfo(sbn.packageName, 0)).toString()
         } catch (e: Exception) { sbn.packageName }
         rememberSeenApp(sbn.packageName, app)
-        if (sbn.packageName in mutedNotifPackages()) {
+        // Allowlist only — system / unselected packages never forward.
+        if (!isNotifForwardAllowed(sbn.packageName)) {
             notifSkippedMute++
-            notifLastSkip = "muted:${sbn.packageName}"
+            notifLastSkip = "not-allowed:${sbn.packageName}"
             return
         }
         val dedupeKey = sbn.packageName + "|" + title + "|" + text.take(120)

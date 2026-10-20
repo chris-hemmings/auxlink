@@ -1519,21 +1519,24 @@ class MainActivity : Activity() {
     }
 
     /**
-     * Wear-style picker: every launchable app, switch = forward (off = muted).
-     * Custom layout so Select all / none and Save stay on screen.
+     * Wear-style picker: only apps with the switch ON are mirrored.
+     * System / unlisted packages never forward. Select all / none + Save stay
+     * on screen.
      */
     private fun appsToForwardDialog() {
         say("Loading apps…")
         val prefs = getSharedPreferences("auxlink", MODE_PRIVATE)
         Thread {
-            val apps = NowPlayingService.forwardableApps(this)
+            // Seed allowlist off the UI thread (works even if listener isn't up).
+            val allowedSeed = NowPlayingService.readAllowedNotifPackages(this)
+            val apps = NowPlayingService.appsForForwardPicker(this)
             main.post {
                 if (apps.isEmpty()) {
                     say("Couldn't list apps on this phone.")
                     return@post
                 }
-                val muted = (NowPlayingService.instance?.mutedNotifPackages()
-                    ?: prefs.getStringSet("notif_muted_pkgs", emptySet()) ?: emptySet()).toMutableSet()
+                val allowed = (NowPlayingService.instance?.allowedNotifPackages()
+                    ?: allowedSeed).toMutableSet()
                 val switches = mutableListOf<android.widget.Switch>()
                 val rows = LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL
@@ -1543,12 +1546,12 @@ class MainActivity : Activity() {
                     sw.setOnCheckedChangeListener(null)
                     sw.isChecked = on
                     sw.setOnCheckedChangeListener { _, checked ->
-                        if (checked) muted.remove(pkg) else muted.add(pkg)
+                        if (checked) allowed.add(pkg) else allowed.remove(pkg)
                     }
                 }
                 for (app in apps) {
                     val sw = android.widget.Switch(this)
-                    bindSwitch(sw, app.pkg, app.pkg !in muted)
+                    bindSwitch(sw, app.pkg, app.pkg in allowed)
                     switches += sw
                     val icon = android.widget.ImageView(this).apply {
                         layoutParams = LinearLayout.LayoutParams(px(36), px(36)).apply { marginEnd = px(12) }
@@ -1582,20 +1585,21 @@ class MainActivity : Activity() {
                         typeface = Typeface.DEFAULT_BOLD
                     })
                     addView(TextView(this@MainActivity).apply {
-                        text = "Off = won't mirror. SMS/Messages is skipped automatically."
+                        text = "Only apps turned on are mirrored. System apps and anything " +
+                            "not listed never come through. SMS/Messages is skipped automatically."
                         setTextColor(text2); textSize = 12f
                         setPadding(0, px(4), 0, px(8))
                     })
                     addView(LinearLayout(this@MainActivity).apply {
                         orientation = LinearLayout.HORIZONTAL
                         addView(pillButton("Select all", false) {
-                            muted.clear()
+                            allowed.clear(); allowed.addAll(apps.map { it.pkg })
                             apps.forEachIndexed { i, a -> bindSwitch(switches[i], a.pkg, true) }
                         }.apply {
                             layoutParams = LinearLayout.LayoutParams(0, px(40), 1f).apply { marginEnd = px(6) }
                         })
                         addView(pillButton("Select none", false) {
-                            muted.clear(); muted.addAll(apps.map { it.pkg })
+                            allowed.clear()
                             apps.forEachIndexed { i, a -> bindSwitch(switches[i], a.pkg, false) }
                         }.apply {
                             layoutParams = LinearLayout.LayoutParams(0, px(40), 1f).apply { marginStart = px(6) }
@@ -1614,10 +1618,16 @@ class MainActivity : Activity() {
                         })
                         addView(pillButton("Save", true) {
                             val svc = NowPlayingService.instance
-                            if (svc != null) svc.setMutedNotifPackages(muted)
-                            else prefs.edit().putStringSet("notif_muted_pkgs", muted.toSet()).apply()
-                            say(if (muted.isEmpty()) "All apps will be forwarded."
-                                else "Forwarding all except ${muted.size} muted app${if (muted.size == 1) "" else "s"}.")
+                            if (svc != null) svc.setAllowedNotifPackages(allowed)
+                            else prefs.edit()
+                                .putStringSet("notif_allowed_pkgs", allowed.toSet())
+                                .putBoolean("notif_allowlist_ready", true)
+                                .apply()
+                            say(when (allowed.size) {
+                                0 -> "No apps selected — nothing will be mirrored."
+                                1 -> "Forwarding 1 app."
+                                else -> "Forwarding ${allowed.size} apps."
+                            })
                             dlg.dismiss()
                         }.apply {
                             layoutParams = LinearLayout.LayoutParams(
