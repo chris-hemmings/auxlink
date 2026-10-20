@@ -3,18 +3,21 @@
 # Bluetooth into a file on the SD card so a flaky reconnect after the car
 # sleeps can be reconstructed later.
 #
-#   Log file:  /var/log/auxlink/preheat.log
+#   Log file:  /var/lib/auxlink/preheat.log  (SD card; append-only across reboots)
 #   Enable:    PREHEAT_DEBUG=1 in /etc/auxlink.conf  (then restart this service)
 #   Disable:   PREHEAT_DEBUG=0  (or systemctl disable --now auxlink-preheat-debug)
 #
 # Samples every INTERVAL seconds. Writes a line when anything interesting
 # changes, plus a heartbeat every HEARTBEAT seconds so quiet periods still
 # leave a trail. Kernel USB / undervoltage lines are appended as they arrive.
+# Never truncates or rotates: a boot only appends a marker so earlier sessions
+# stay on the card (this is a temporary debug build; delete the file by hand
+# when finished).
 set -u
 
-LOG_DIR=/var/log/auxlink
+LOG_DIR=/var/lib/auxlink
 LOG=$LOG_DIR/preheat.log
-MAX_BYTES=2097152          # ~2 MB then rotate to .1
+OLD_LOG=/var/log/auxlink/preheat.log   # earlier draft path; migrated once if present
 INTERVAL=5
 HEARTBEAT=60
 KERN_RE='dwc2|udc|usb_gadget|UAC1|gadget|under-voltage|Undervoltage|throttl|Voltage normalised|usb .*disconnect|usb .*reset|configfs'
@@ -27,21 +30,20 @@ PRESENT_FILE=/run/user/$AUDIO_UID/auxlink-audio-present
 mkdir -p "$LOG_DIR"
 chmod 755 "$LOG_DIR" 2>/dev/null || true
 
-rotate() {
-  local sz
-  sz=$(stat -c%s "$LOG" 2>/dev/null || echo 0)
-  if [ "$sz" -ge "$MAX_BYTES" ]; then
-    mv -f "$LOG" "$LOG.1"
-    : > "$LOG"
-    chmod 644 "$LOG" 2>/dev/null || true
-  fi
-}
-
+# Keep history across reboots and service restarts: always append.
 emit() {
-  rotate
   printf '%s\n' "$*" >> "$LOG"
   chmod 644 "$LOG" 2>/dev/null || true
 }
+
+# One-time move from the first draft location so nothing is lost.
+if [ -f "$OLD_LOG" ] && [ ! -e "$LOG" ]; then
+  mv -f "$OLD_LOG" "$LOG"
+  rm -f "$OLD_LOG.1" 2>/dev/null || true
+elif [ -f "$OLD_LOG" ]; then
+  cat "$OLD_LOG" >> "$LOG"
+  rm -f "$OLD_LOG" "$OLD_LOG.1" 2>/dev/null || true
+fi
 
 # Decode Raspberry Pi get_throttled sticky / current bits into short tags.
 decode_throttled() {
@@ -171,7 +173,8 @@ kern_follow() {
       done
 }
 
-emit "$(date -Iseconds) [boot] auxlink-preheat-debug starting (interval=${INTERVAL}s heartbeat=${HEARTBEAT}s) ver=$(cat /usr/local/share/auxlink/VERSION 2>/dev/null || echo ?)"
+emit "---------- boot $(date -Iseconds) up=$(cut -d. -f1 /proc/uptime)s ver=$(cat /usr/local/share/auxlink/VERSION 2>/dev/null || echo ?) ----------"
+emit "$(date -Iseconds) [boot] auxlink-preheat-debug starting (interval=${INTERVAL}s heartbeat=${HEARTBEAT}s) — previous lines above are kept"
 emit "$(date -Iseconds) [boot] $(snap)"
 
 kern_follow &

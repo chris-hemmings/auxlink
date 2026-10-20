@@ -165,7 +165,7 @@ section[data-tab].off{display:none}
       <button class="ghost" onclick="termRun('journalctl -u hfp-relay -f')">Calls log</button>
       <button class="ghost" onclick="termRun('journalctl -u auxlink-pairing -u auxlink-reconnect -f')">Pairing log</button>
       <button class="ghost" onclick="termRun('journalctl --user -u obex -f')">Contacts log</button>
-      <button class="ghost" onclick="termRun('tail -f /var/log/auxlink/preheat.log')">Preheat log</button>
+      <button class="ghost" onclick="termRun('tail -f /var/lib/auxlink/preheat.log')">Preheat log</button>
       <button class="ghost" onclick="termCtrlC()">Ctrl+C</button>
       <button onclick="termCopyLast()">Copy last output</button>
       <button class="ghost" onclick="termCopyAll()">Copy all</button>

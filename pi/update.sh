@@ -93,7 +93,7 @@ systemctl restart auxlink-pairing auxlink-reconnect hfp-relay auxlink-media auxl
 if grep -q '^PREHEAT_DEBUG=1' /etc/auxlink.conf; then
   systemctl enable auxlink-preheat-debug >/dev/null 2>&1 || true
   systemctl restart auxlink-preheat-debug
-  echo "Preheat debug log: /var/log/auxlink/preheat.log (on)"
+  echo "Preheat debug log: /var/lib/auxlink/preheat.log (on, keeps across reboots)"
 else
   systemctl disable --now auxlink-preheat-debug >/dev/null 2>&1 || true
 fi
