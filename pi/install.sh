@@ -105,6 +105,12 @@ systemctl daemon-reload
 # either side; this routes its call audio over HCI (harmless if unused).
 systemctl enable sco-route-hci >/dev/null
 systemctl enable auxlink-reconnect hfp-relay auxlink-media auxlink-pairing auxlink-web auxlink-cover auxlink-usb-gadget auxlink-map bt-dongle-off avahi-daemon >/dev/null
+# Temporary overnight / preheat SD-card logger (PREHEAT_DEBUG in auxlink.conf).
+if grep -q '^PREHEAT_DEBUG=1' /etc/auxlink.conf; then
+  systemctl enable --now auxlink-preheat-debug >/dev/null 2>&1 || true
+else
+  systemctl disable --now auxlink-preheat-debug >/dev/null 2>&1 || true
+fi
 echo "ok"
 
 step "Bluetooth: power on at boot, no USB power-saving on the dongles"

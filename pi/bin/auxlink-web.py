@@ -851,6 +851,20 @@ def logs(unit):
         return out
     if unit == "kernel":
         return sh("sh", "-c", "journalctl -k -n 300 --no-pager | grep -i -E 'bluetooth|hci|rtl|usb' | tail -80")[1]
+    if unit == "preheat":
+        # Overnight / preheat SD-card log (auxlink-preheat-debug). Tail the
+        # live file and the previous rotate so a long session still fits.
+        try:
+            parts = []
+            for path in ("/var/log/auxlink/preheat.log.1", "/var/log/auxlink/preheat.log"):
+                if os.path.exists(path):
+                    parts.append(f"===== {path} =====\n")
+                    with open(path) as f:
+                        lines = f.readlines()
+                    parts.append("".join(lines[-400:]))
+            return "".join(parts) if parts else "(no preheat log yet — is PREHEAT_DEBUG=1?)"
+        except OSError as e:
+            return f"(cannot read preheat log: {e})"
     return "unknown unit"
 
 
