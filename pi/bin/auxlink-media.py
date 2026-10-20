@@ -331,29 +331,18 @@ USBC_SILENT = {"since": 0.0, "last_force": 0.0, "note": "", "note_at": 0.0}
 
 
 class UsbcReplug:
-    """MUSIC_SOURCE=usbc: toggle the gadget so Android re-claims Phone Link.
-
-    1) Cold plug / boot: Android only hands the app the CDC serial on a fresh
-       plug-in. If nothing arrives 15 s after configured, re-plug (again at
-       30 s; three tries) — original watchdog.
-    2) Sleep / preheat: the host often stays "configured" after a brief burst
-       of lines, then the link goes half-dead. The cold-plug path then never
-       fires (last_line already >= up_since). Watch for the app going quiet
-       (it heartbeats every 5 s) and re-plug without needing the app's
-       Re-plug button (which can't reach us when the link is dead).
-    """
+    """MUSIC_SOURCE=usbc: Android hands the app the Pi's USB-C side (its
+    "Always" choice) only when it sees it being plugged in. Connected while
+    the music device boots, the app never gets its link and no line arrives
+    (the app sends at least every 5 s once it has it). So if nothing has
+    arrived 15 s after the host configured the gadget, switch the gadget off
+    and on: Android sees a fresh plug-in. Again after 30 s if that came too
+    early in its boot; three tries per connection at most."""
     GADGET_UDC = "/sys/kernel/config/usb_gadget/auxlink/UDC"
-    # App holds USB closed ~35 s on no-reply so this can fire (was 30 s /
-    # 1.5 s recycle — too short for the Pi to notice).
-    STALE_SEC = 20          # app sends ≥ every 5 s when linked
-    STALE_COOLDOWN = 40     # min s between stale-path re-plugs
-    STALE_MAX = 8           # then wait for a real unplug / healthy line
 
     def __init__(self):
         self.up_since = None
-        self.tries = 0            # cold-plug attempts this configure session
-        self.stale_tries = 0      # quiet-after-live attempts
-        self.last_replug = 0.0
+        self.tries = 0
 
     @staticmethod
     def udc():
@@ -369,19 +358,6 @@ class UsbcReplug:
             log(f"USB-C replug check failed: {e}")
         return True
 
-    def replug(self, name, why, force_repair=False):
-        self.last_replug = time.time()
-        log(f"USB-C: {why}")
-        with open(self.GADGET_UDC, "w") as f:
-            f.write("\n")
-        time.sleep(0.8)
-        with open(self.GADGET_UDC, "w") as f:
-            f.write(name)
-        self.up_since = None
-        # After a few soft toggles, rebuild the gadget (stuck composite).
-        if force_repair:
-            usbc_repair(force=True)
-
     def check(self):
         name = self.udc()
         try:
@@ -392,49 +368,24 @@ class UsbcReplug:
         if state != "configured":
             if self.up_since is not None and state in ("not attached", ""):
                 self.tries = 0          # unplugged: a new connection starts over
-                self.stale_tries = 0
             self.up_since = None
             return
         if self.up_since is None:
             self.up_since = now
-
-        last = VOLUME["last_line"]
-        spoken = last >= self.up_since
-        age = (now - last) if last > 0 else 1e9
-
-        # Healthy heartbeat — allow future stale recovery.
-        if spoken and age < self.STALE_SEC:
-            self.stale_tries = 0
+        if VOLUME["last_line"] >= self.up_since or self.tries >= 3:
             return
-
-        if not spoken:
-            # Never heard from the app since this configure (cold plug / boot).
-            if self.tries >= 3:
-                return
-            wait = 15 if self.tries == 0 else 30
-            if now - self.up_since < wait:
-                return
-            self.tries += 1
-            self.replug(name,
-                        f"no word from the AuxLink app; replugging so Android "
-                        f"gives it the link (try {self.tries} of 3)",
-                        force_repair=(self.tries >= 3))
+        wait = 15 if self.tries == 0 else 30
+        if now - self.up_since < wait:
             return
-
-        # Heard from the app earlier this session, then it went quiet while USB
-        # stayed configured (Tesla preheat / sleep half-dead link).
-        if age < self.STALE_SEC:
-            return
-        if self.stale_tries >= self.STALE_MAX:
-            return
-        if now - self.last_replug < self.STALE_COOLDOWN:
-            return
-        self.stale_tries += 1
-        self.replug(name,
-                    f"app quiet for {int(age)}s (link likely half-dead after "
-                    f"sleep/preheat); replugging (try {self.stale_tries} of "
-                    f"{self.STALE_MAX})",
-                    force_repair=(self.stale_tries >= 3 and self.stale_tries % 3 == 0))
+        self.tries += 1
+        log(f"USB-C: no word from the AuxLink app; replugging so Android gives it the link "
+            f"(try {self.tries} of 3)")
+        with open(self.GADGET_UDC, "w") as f:
+            f.write("\n")
+        time.sleep(0.8)
+        with open(self.GADGET_UDC, "w") as f:
+            f.write(name)
+        self.up_since = None
 
 
 class UsbcMic:
