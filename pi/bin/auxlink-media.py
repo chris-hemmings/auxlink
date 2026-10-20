@@ -2833,12 +2833,6 @@ def main():
                 if now - VOLUME["last_line"] > 20:
                     smo_volume_max("the SMO connected")
                 VOLUME["last_line"] = now
-                # Preheat debug logger reads this for "app still talking" age.
-                try:
-                    with open("/run/auxlink/app-link", "w") as f:
-                        f.write(str(int(now)))
-                except OSError:
-                    pass
                 # USB/BT (re)linked: deliver notifs that arrived during the gap.
                 if APP_PENDING:
                     GLib.idle_add(flush_app_pending)

@@ -851,18 +851,6 @@ def logs(unit):
         return out
     if unit == "kernel":
         return sh("sh", "-c", "journalctl -k -n 300 --no-pager | grep -i -E 'bluetooth|hci|rtl|usb' | tail -80")[1]
-    if unit == "preheat":
-        # Overnight / preheat SD-card log (append-only across reboots).
-        path = "/var/lib/auxlink/preheat.log"
-        try:
-            if not os.path.exists(path):
-                return "(no preheat log yet — is PREHEAT_DEBUG=1?)"
-            with open(path) as f:
-                lines = f.readlines()
-            # Last chunk for the page; full file stays on the SD card.
-            return f"===== {path} ({len(lines)} lines; append-only) =====\n" + "".join(lines[-500:])
-        except OSError as e:
-            return f"(cannot read preheat log: {e})"
     return "unknown unit"
 
 

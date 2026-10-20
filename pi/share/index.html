@@ -165,7 +165,6 @@ section[data-tab].off{display:none}
       <button class="ghost" onclick="termRun('journalctl -u hfp-relay -f')">Calls log</button>
       <button class="ghost" onclick="termRun('journalctl -u auxlink-pairing -u auxlink-reconnect -f')">Pairing log</button>
       <button class="ghost" onclick="termRun('journalctl --user -u obex -f')">Contacts log</button>
-      <button class="ghost" onclick="termRun('tail -f /var/lib/auxlink/preheat.log')">Preheat log</button>
       <button class="ghost" onclick="termCtrlC()">Ctrl+C</button>
       <button onclick="termCopyLast()">Copy last output</button>
       <button class="ghost" onclick="termCopyAll()">Copy all</button>
@@ -360,7 +359,7 @@ function render(){const c=S.conf;$('ver').textContent=S.version?'v'+S.version:''
     (S.setup_wifi?'<button class="ghost" data-n="'+esc(n.name)+'" onclick="wifiConnect(this.dataset.n)">Join now</button>':'')+
     '<button class="ghost" data-n="'+esc(n.name)+'" onclick="wifiRemove(this.dataset.n)">Remove</button></span></div>').join('')||'<div class="k">No saved networks</div>';
   $('events').textContent=S.events.slice().reverse().join('\n')||'(none yet)';
-  if(!$('logTabs').children.length)$('logTabs').innerHTML=Object.keys(S.services).concat(['kernel','preheat']).map(u=>'<button class="ghost" onclick="logs(\''+u+'\')">'+u+'</button>').join('');
+  if(!$('logTabs').children.length)$('logTabs').innerHTML=Object.keys(S.services).concat(['kernel']).map(u=>'<button class="ghost" onclick="logs(\''+u+'\')">'+u+'</button>').join('');
 }
 async function load(){try{S=await api('state');render()}catch(e){$('sub').textContent='Cannot reach the Pi: '+e.message}}
 // ---- tabs ----

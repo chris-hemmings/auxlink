@@ -89,14 +89,6 @@ else
   systemctl restart auxlink-usb-gadget
 fi
 systemctl restart auxlink-pairing auxlink-reconnect hfp-relay auxlink-media auxlink-web auxlink-cover
-# Temporary overnight / preheat SD-card logger (see PREHEAT_DEBUG in conf).
-if grep -q '^PREHEAT_DEBUG=1' /etc/auxlink.conf; then
-  systemctl enable auxlink-preheat-debug >/dev/null 2>&1 || true
-  systemctl restart auxlink-preheat-debug
-  echo "Preheat debug log: /var/lib/auxlink/preheat.log (on, keeps across reboots)"
-else
-  systemctl disable --now auxlink-preheat-debug >/dev/null 2>&1 || true
-fi
 # The car's messages service only when it changed: while it is gone the car
 # switches "Sync Messages" off.
 if [ "$(md5sum /usr/local/bin/auxlink-map.py | cut -d' ' -f1)" != "$MAP_BEFORE" ]; then
