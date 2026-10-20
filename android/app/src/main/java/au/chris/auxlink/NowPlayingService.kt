@@ -1972,6 +1972,8 @@ class NowPlayingService : NotificationListenerService() {
             put("dur", md?.getLong(MediaMetadata.METADATA_KEY_DURATION) ?: 0L)
             put("pos", currentPosition(ps))
             put("state", state)
+            // So the Pi can restart the car stream when YouTube → Spotify etc.
+            put("pkg", c.packageName ?: "")
             put("ctl", 2)   // the Pi may send {"media": play/pause/next...} and {"volume": "max"}
         }
         val line = json.toString()
