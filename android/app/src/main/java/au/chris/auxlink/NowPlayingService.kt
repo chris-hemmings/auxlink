@@ -80,6 +80,8 @@ class NowPlayingService : NotificationListenerService() {
         @Volatile var lastRecoveryAt = 0L
         /** Last successful send to / line from the Pi (ms). */
         @Volatile var lastTraffic = 0L
+        /** Last line actually received from the Pi (not a local send). */
+        @Volatile var lastPiReplyAt = 0L
         /** Connected = the link is open, or it carried something in the last
          *  15 s (a link that blips between sends still counts). */
         fun connected() = linkOpen || System.currentTimeMillis() - lastTraffic < 15000
@@ -344,6 +346,8 @@ class NowPlayingService : NotificationListenerService() {
 
     /** Last time we recycled the USB serial claim for silent-audio recovery. */
     private var lastUsbcRecycleMs = 0L
+    /** App-side: no Pi reply while USB looks open → recycle (Pi can't hear Re-plug). */
+    private var lastNoReplyRecycleMs = 0L
 
     // Every few seconds: follow whichever player is actually playing (a
     // player already in the session list that starts playing changes no
@@ -369,6 +373,10 @@ class NowPlayingService : NotificationListenerService() {
             if (controller == null) io.execute { sendLine("{\"cmd\":\"ping\",\"ctl\":2}") }
             // Keep the Pi's idea of vehicle movement fresh (e.g. after it rebooted).
             LocationWatch.moving?.let { mv -> io.execute { sendLine("{\"moving\":$mv}") } }
+            // USB looks open but Pi never answers (Asking the Pi…): drop our
+            // serial claim so Android re-opens — Re-plug in the app can't reach
+            // a half-dead Pi. Pi also re-plugs when our heartbeat goes quiet.
+            maybeRecycleUsbNoPiReply()
             // Refresh the audio-path check shown in the notification (~every 30 s).
             if (beats % 6 == 0) request(JSONObject().put("req", "pi"))
             // Keep Android's safe-volume warning suppressed: a car (A2DP)
@@ -556,8 +564,10 @@ class NowPlayingService : NotificationListenerService() {
     /** A line from the Pi: {"call": state, "number", "name"} or {"text": {...}}. */
     private fun onPiLine(line: String) {
         val j = try { JSONObject(line) } catch (e: Exception) { return }
-        lastTraffic = System.currentTimeMillis()
-        if (j.has("pi")) { piStatus = j.optJSONObject("pi"); piStatusAt = System.currentTimeMillis(); return }
+        val now = System.currentTimeMillis()
+        lastTraffic = now
+        lastPiReplyAt = now
+        if (j.has("pi")) { piStatus = j.optJSONObject("pi"); piStatusAt = now; return }
         if (j.has("bt")) { btStatus = j.optJSONObject("bt"); onBtStatus(); return }
         if (j.has("fw_result")) { fwCb?.invoke(j.optJSONObject("fw_result") ?: JSONObject()); return }
         if (j.has("flow")) {
@@ -1679,6 +1689,28 @@ class NowPlayingService : NotificationListenerService() {
      *  foreground service, which Android (and head units' app killers) leave
      *  alone. If Android refuses (e.g. started in the background on a
      *  device that forbids it), the app still works as before. */
+    /**
+     * USB send still "works" (Connected) but nothing comes back from the Pi —
+     * typical after Tesla preheat/sleep. Recycle our CDC claim so the reader
+     * restarts; the Pi's stale-heartbeat watchdog re-plugs the gadget when
+     * our lines stop during the recycle. Does not need the Re-plug button.
+     */
+    private fun maybeRecycleUsbNoPiReply() {
+        if (forwarderOnly) return
+        if (link.findDevice() == null) return
+        // ~30 s of heartbeats so a cold start can get the first Pi reply.
+        if (beats < 6) return
+        val now = System.currentTimeMillis()
+        val quiet = lastPiReplyAt == 0L || now - lastPiReplyAt >= 25_000L
+        if (!quiet) return
+        if (now - lastNoReplyRecycleMs < 45_000L) return
+        lastNoReplyRecycleMs = now
+        Log.w(TAG, "USB open but no Pi reply — recycling serial claim")
+        lastRecoveryNote = "Recycled USB (no reply from Pi)"
+        lastRecoveryAt = now
+        io.execute { link.recycle(1500) }
+    }
+
     /**
      * Pi says sound should be playing but USB-C capture is silent: drop our
      * CDC serial claim briefly so the USB audio HAL can recover. Rate-limited.
