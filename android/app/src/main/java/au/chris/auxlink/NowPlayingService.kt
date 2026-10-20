@@ -1501,20 +1501,32 @@ class NowPlayingService : NotificationListenerService() {
         val n = size * size
         val px = IntArray(n)
         scaled.getPixels(px, 0, size, 0, 0, size, size)
-        // Sample near-edge pixels as “background” (letterbox / pad color).
+        // Letterbox punch only when edge samples agree with each other AND
+        // differ from the centre — otherwise a solid WhatsApp-style disc has
+        // the same colour at the edge and we'd erase the whole glyph.
         val samples = intArrayOf(
             px[size / 2], px[size * (size / 2)],
             px[size * (size / 2) + size - 1], px[n - size / 2]
         )
-        var br = 0; var bg = 0; var bb = 0; var bn = 0
+        val center = px[size * (size / 2) + size / 2]
+        var br = 0; var bgc = 0; var bb = 0; var bn = 0
         for (s in samples) {
             if (((s ushr 24) and 0xFF) < 128) continue
             br += (s shr 16) and 0xFF
-            bg += (s shr 8) and 0xFF
+            bgc += (s shr 8) and 0xFF
             bb += s and 0xFF
             bn++
         }
-        if (bn > 0) { br /= bn; bg /= bn; bb /= bn }
+        var punchBg = false
+        if (bn >= 3 && ((center ushr 24) and 0xFF) >= 128) {
+            br /= bn; bgc /= bn; bb /= bn
+            val cr = (center shr 16) and 0xFF
+            val cg = (center shr 8) and 0xFF
+            val cb = center and 0xFF
+            val dCenter = (cr - br) * (cr - br) + (cg - bgc) * (cg - bgc) + (cb - bb) * (cb - bb)
+            // Edges look like a shared pad colour, distinct from the logo centre.
+            punchBg = dCenter >= 45 * 45
+        }
         for (i in 0 until n) {
             val p = px[i]
             val a = (p ushr 24) and 0xFF
@@ -1522,9 +1534,8 @@ class NowPlayingService : NotificationListenerService() {
             val r = (p shr 16) and 0xFF
             val g = (p shr 8) and 0xFF
             val b = p and 0xFF
-            if (bn > 0) {
-                val dr = r - br; val dg = g - bg; val db = b - bb
-                // Flat pad/background inside the circle → transparent.
+            if (punchBg) {
+                val dr = r - br; val dg = g - bgc; val db = b - bb
                 if (dr * dr + dg * dg + db * db < 40 * 40) {
                     px[i] = 0
                     continue
