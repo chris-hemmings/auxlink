@@ -712,7 +712,10 @@ class Player(dbus.service.Object):
             pass
 
         def run():
-            log("First play since the Pi started: running Check and fix")
+            hub = load_conf().get("AUDIO_HUB", "1") == "1"
+            log("First play since the Pi started: "
+                + ("hub mode (USB-C check only; the hub self-heals the stream)"
+                   if hub else "running Check and fix"))
             if MUSIC_SOURCE == "usbc":
                 try:
                     r = subprocess.run(["/usr/local/bin/auxlink-usb-gadget.sh", "repair"],
@@ -721,6 +724,8 @@ class Player(dbus.service.Object):
                         log("  USB-C: " + line.strip())
                 except (OSError, subprocess.TimeoutExpired) as e:
                     log(f"  USB-C check failed: {e}")
+            if hub:
+                return   # hub does its own connect-time restart; skip classic stream repair
             try:
                 pw = pwd.getpwnam(AUDIO_USER)
                 r = subprocess.run(["/usr/sbin/runuser", "-u", AUDIO_USER, "--", "env",

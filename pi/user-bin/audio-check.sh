@@ -4,6 +4,13 @@
 . /usr/local/lib/auxlink/common.sh
 [ -z "$CAR" ] && { echo "No car paired yet: open the setup page and pair the car."; exit 1; }
 FIX=no; [ "$1" = "--fix" ] && FIX=yes
+# Hub pipeline active? Then the chain is  SMO/phone -> hub -> car loop, not the
+# classic single loopback: check and repair THAT topology, and never touch the
+# classic "smo_capture" loop (it does not exist in hub mode).
+HUB=auxlink_hub
+HUB_ON=no
+[ "${AUDIO_HUB:-1}" = 1 ] && timeout 5 pactl list sinks short 2>/dev/null | grep -qw "$HUB" && HUB_ON=yes
+[ $HUB_ON = yes ] && echo "Note: the audio hub is active (AUDIO_HUB=1); checking the hub pipeline."
 ok()   { printf '  \033[32mOK\033[0m    %s\n' "$*"; }
 bad()  { printf '  \033[31mFAIL\033[0m  %s\n' "$*"; PROBLEM=yes; }
 warn() { printf '  \033[33mWARN\033[0m  %s\n' "$*"; }
@@ -56,7 +63,23 @@ if [ "$(timeout 5 pactl get-sink-mute "$SINK" | awk '{print $2}')" = yes ]; then
 else ok "volume $(timeout 5 pactl get-sink-volume "$SINK" | grep -o '[0-9]*%' | head -1) (follows the car)"; fi
 
 echo "5. Links inside the Pi"
-if [ $PHONE_SRC = yes ]; then
+if [ $HUB_ON = yes ]; then
+  # Hub topology:  input -> smo_to_hub -> hub ; hub.monitor -> to_tesla_cap -> car
+  links=$(timeout 5 pw-link -l 2>/dev/null); feed_ok=no; mon_ok=no; out_ok=no
+  echo "$links" | grep -A2 "^$I2S:capture_FL" | grep -q "smo_to_hub:" && feed_ok=yes
+  echo "$links" | grep -A2 "^${HUB}:monitor_FL" | grep -q "to_tesla_cap:" && mon_ok=yes
+  echo "$links" | grep -A2 "^to_tesla:output_FL" | grep -q "bluez_output" && out_ok=yes
+  [ $mon_ok = yes ] && ok "hub -> car loop" || bad "hub monitor not linked to the car loop"
+  [ $out_ok = yes ] && ok "car loop -> car" || bad "car loop not linked to the car"
+  if [ $PHONE_SRC = yes ]; then ok "SMO feed idle (the phone is the source)"
+  elif [ $feed_ok = yes ]; then ok "music input -> hub"
+  else warn "music input not feeding the hub (idle while paused is normal)"; fi
+  if [ $FIX = yes ] && { [ $mon_ok = no ] || [ $out_ok = no ]; }; then
+    # Drop the hub car loop; auxlink-audio rebuilds it cleanly. Never touch the
+    # classic smo_capture loop (it does not exist in hub mode).
+    echo "        fixing: rebuilding the hub car loop"
+    pkill -f "[n]ode.name=to_tesla_cap"; sleep 3; fi
+elif [ $PHONE_SRC = yes ]; then
   ok "SMO loopback idle (the phone is the source; it plays straight to the car)"
 else
   links=$(timeout 5 pw-link -l 2>/dev/null); in_ok=no; out_ok=no
@@ -78,9 +101,15 @@ else warn "stream is '$ts' (car not taking audio)"; fi
 
 if [ $FIX = yes ]; then
   echo "7. Nudging the stream (pause/resume)"
+  # Nudge the car sink WITH music flowing (a car that resumes to silence stays
+  # silent), then drop the car-facing loop so auxlink-audio starts a fresh one.
   timeout 5 pactl suspend-sink "$SINK" 1; sleep 0.5; timeout 5 pactl suspend-sink "$SINK" 0
-  # A suspend silences the loopback's right channel: have auxlink-audio start a fresh one.
-  pkill -f "[n]ode.name=smo_capture"; sleep 3
+  if [ $HUB_ON = yes ]; then
+    pkill -f "[n]ode.name=to_tesla_cap"    # hub car loop; auxlink-audio rebuilds it
+  else
+    pkill -f "[n]ode.name=smo_capture"     # classic loop
+  fi
+  sleep 3
   ok "done; listen now"
 fi
 echo

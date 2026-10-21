@@ -360,6 +360,27 @@ hub_stream() {
     sleep 1; return
   fi
 
+  # Play pressed in the car / Fix sound (the manual "play-pause" fix): restart
+  # the car stream once so a stream the car took silently plays. KEPT even when
+  # the automatic heals below are bypassed.
+  now=$(date +%s)
+  if [ "$RECHECK_AT" -gt 0 ] && [ "$now" -ge "$RECHECK_AT" ]; then
+    if [ "$PRESENT" = 1 ] || smo_playing; then
+      r=$RECHECK; RECHECK=""; RECHECK_AT=0
+      hub_restart_once "$r"; return
+    fi
+    RECHECK_AT=$now               # wait for music before restarting
+  fi
+
+  # ---- automatic heals ----
+  # Bypassed by default (HUB_HEALS=0): while the hub keeps the car stream open
+  # and running, these preventive rebuilds (link re-check, car suspend/resume,
+  # stereo re-check, transport nudge) should not be needed. The code is kept,
+  # not removed - set HUB_HEALS=1 to run them again if a scenario turns up that
+  # needs them. The manual kick above and the connect / after-call restarts are
+  # unaffected either way.
+  if [ "${HUB_HEALS:-0}" != 1 ]; then sleep 2; return; fi
+
   if ! hub_linked; then
     UNLINKED=$((UNLINKED + 1))
     if [ "$UNLINKED" -ge 2 ]; then
@@ -380,14 +401,6 @@ hub_stream() {
     kill "$CAR_LOOP" 2>/dev/null; CAR_LOOP=""; sleep 0.3; return
   fi
 
-  now=$(date +%s)
-  if [ "$RECHECK_AT" -gt 0 ] && [ "$now" -ge "$RECHECK_AT" ]; then
-    if [ "$PRESENT" = 1 ] || smo_playing; then
-      r=$RECHECK; RECHECK=""; RECHECK_AT=0
-      hub_restart_once "$r"; return
-    fi
-    RECHECK_AT=$now               # wait for music before restarting
-  fi
   # Both channels really reaching the car? (silence reads as fine)
   if [ "$now" -ge "$NEXT_STEREO" ]; then
     NEXT_STEREO=$((now + 60))
