@@ -72,12 +72,17 @@ stream_hold() { echo "${STREAM_HOLD_SEC:-20}"; }
 HOLD_UNTIL=0
 LOOP=""; LOOP_SINK_ID=""; LOOP_INPUT=""; LOOP_STARTED=0; UNLINKED=0; GONE=2; NO_CARD=0; NOT_ACTIVE=0; LAST_NUDGE=0
 CONNECTED_AT=0; WAITING_SAID=""; NEXT_STEREO=0; STEREO_BAD=0; STOPPED_FOR=""; CAR_SUSP=0
-# Hub pipeline (AUDIO_HUB=1): the SMO feeds a null sink ($HUB) and the phone
-# plays straight to the car; one permanent loopback carries the hub to the car
-# and stops only
-# for a call, so pauses and source switches never drop the car's A2DP stream.
+# Hub pipeline (AUDIO_HUB=1): the SMO feeds a null sink ($HUB) and one permanent
+# loopback carries the hub to the car; it stops only for a call, so pauses and
+# source switches never drop the car's A2DP stream. The phone's own media goes
+# to the car through its OWN loopback (phone -> car), always consumed, so its
+# A2DP transport never suspends and it keeps playing through an SMO pause.
 HUB=auxlink_hub
 FEED_LOOP=""; FEED_INPUT=""; CAR_LOOP=""; CAR_LOOP_SINK_ID=""; CAR_LOOP_STARTED=0
+# The phone's own media goes to the car through OUR loopback (phone -> car), so
+# its A2DP transport is always consumed and never suspends. PHONE_SRC is its
+# bluez_input node, found each loop.
+PHONE_LOOP=""; PHONE_LOOP_SRC=""; PHONE_LOOP_SINK_ID=""; PHONE_SRC=""
 HUB_MODE=""   # which path ran last iteration (1=hub, 0=classic), to switch cleanly
 HUB_FRESH=0   # recreate the hub once per start so property changes take effect
 XQ_FAILS=0   # SBC-XQ attempts since this script started (never reset by a disconnect)
@@ -109,6 +114,34 @@ monitor.bluez.rules = [
   sleep 3
 }
 
+# In hub mode the phone's own media must NOT be auto-routed by WirePlumber: we
+# loop it to the car ourselves (phone -> car) so its A2DP transport is always
+# consumed and never suspends/mutes. Mark its input role=input + autoconnect
+# off so only our loopback consumes it (no double audio). Removed (and the
+# phone auto-routes normally again) when AUDIO_HUB=0.
+PHONE_WP_RULE=${XDG_CONFIG_HOME:-$HOME/.config}/wireplumber/wireplumber.conf.d/84-auxlink-phone.conf
+phone_wp_rule() {
+  local want=""
+  if [ "${AUDIO_HUB:-1}" = 1 ] && [ -n "$PHONE" ]; then
+    want="# Written by auxlink-audio: the phone's media is an input we loop back to
+# the car ourselves; don't let WirePlumber auto-route it.
+monitor.bluez.rules = [
+  {
+    matches = [ { node.name = \"~bluez_input.${PHONE//:/_}.*\" } ]
+    actions = { update-props = { bluez5.media-source-role = \"input\", node.autoconnect = false } }
+  }
+]"
+  fi
+  local have; have=$(cat "$PHONE_WP_RULE" 2>/dev/null)
+  [ "$have" = "$want" ] && return
+  if [ -n "$want" ]; then mkdir -p "$(dirname "$PHONE_WP_RULE")"; printf '%s\n' "$want" > "$PHONE_WP_RULE"
+  else rm -f "$PHONE_WP_RULE"; fi
+  echo "Phone routing rule changed: restarting WirePlumber to apply it"
+  stop_loop
+  systemctl --user restart wireplumber
+  sleep 3
+}
+
 # A phone call, or the car's mic borrowed for voice search (the car is in
 # call mode for that too).
 car_busy() { in_call || [ "$(cat /run/auxlink/mic-active 2>/dev/null)" = 1 ]; }
@@ -129,6 +162,7 @@ stop_loop() {
   # no input, sink recreated, EXIT) tears the hub pipeline down too.
   [ -n "$FEED_LOOP" ] && kill "$FEED_LOOP" 2>/dev/null; FEED_LOOP=""; FEED_INPUT=""
   [ -n "$CAR_LOOP" ] && kill "$CAR_LOOP" 2>/dev/null; CAR_LOOP=""; CAR_LOOP_SINK_ID=""
+  [ -n "$PHONE_LOOP" ] && kill "$PHONE_LOOP" 2>/dev/null; PHONE_LOOP=""; PHONE_LOOP_SRC=""; PHONE_LOOP_SINK_ID=""
 }
 linked() {
   local links; links=$(timeout 5 pw-link -l 2>/dev/null)
@@ -305,24 +339,34 @@ hub_restart_once() {
   for _ in $(seq 20); do hub_linked && break; sleep 0.1; done
   hub_silence 0
 }
-# Keep the phone's own media playing to the CAR sink, not the hub. The hub
-# stops mixing the phone out ~3s after the SMO feed goes idle (the phone keeps
-# playing but goes silent at the car). The car sink is driven continuously by
-# the car loop, so a phone stream placed there is always mixed and output and
-# stays audible. (New streams follow the default sink = car; this catches a
-# stream WirePlumber already placed on the hub.)
-move_phone_to_car() {
-  [ -n "$PHONE" ] && [ -n "$SINK_ID" ] || return
-  local line idx cur
-  line=$(pactl list sink-inputs 2>/dev/null | awk -v ph="bluez_input.${PHONE//:/_}" '
-    /^Sink Input #/{idx=substr($3,2); sink=""}
-    /^[ \t]*Sink:/{sink=$2}
-    /node\.name = / && index($0, ph){print idx, sink; exit}')
-  [ -n "$line" ] || return
-  idx=${line%% *}; cur=${line##* }
-  if [ -n "$idx" ] && [ "$cur" != "$SINK_ID" ]; then
-    echo "Hub: moving the phone's media onto the car (was sink $cur)"
-    pactl move-sink-input "$idx" "$SINK_ID" 2>/dev/null
+# The phone's own media -> the car, via OUR loopback. The car sink is driven
+# continuously by the car loop, so this loopback is always consumed and the
+# phone's A2DP transport never suspends - it keeps playing through an SMO pause
+# instead of going silent (which is what happened when it rode the hub, whose
+# mix stalls once the SMO feed is idle). Adaptive, so it bridges the phone's
+# clock to the car's. Media mode still mutes it via the phone source mute.
+start_phone_loop() {
+  pw-loopback -c 2 -m '[ FL FR ]' \
+    --capture-props="target.object=$PHONE_SRC node.name=phone_to_car_cap audio.position=[ FL FR ]" \
+    --playback-props="target.object=$SINK node.name=phone_to_car audio.position=[ FL FR ]" &
+  PHONE_LOOP=$!; PHONE_LOOP_SRC=$PHONE_SRC; PHONE_LOOP_SINK_ID=$SINK_ID
+  echo "Hub: phone -> car loop up ($PHONE_SRC)"
+}
+# Keep the phone->car loop running whenever the phone is streaming A2DP (its
+# bluez_input exists). Rebuild it if the phone's node or the car sink changed.
+manage_phone_loop() {
+  [ -n "$PHONE" ] && [ -n "$SINK" ] || return
+  PHONE_SRC=$(pactl list sources short 2>/dev/null | awk -v m="bluez_input.${PHONE//:/_}" 'index($2,m)==1{print $2; exit}')
+  if [ -z "$PHONE_SRC" ]; then
+    [ -n "$PHONE_LOOP" ] && { echo "Hub: phone stopped streaming; dropping the phone->car loop"; \
+      kill "$PHONE_LOOP" 2>/dev/null; PHONE_LOOP=""; PHONE_LOOP_SRC=""; PHONE_LOOP_SINK_ID=""; }
+    return
+  fi
+  if [ -z "$PHONE_LOOP" ] || ! kill -0 "$PHONE_LOOP" 2>/dev/null \
+     || [ "$PHONE_SRC" != "$PHONE_LOOP_SRC" ] || [ "$SINK_ID" != "$PHONE_LOOP_SINK_ID" ]; then
+    [ -n "$PHONE_LOOP" ] && kill "$PHONE_LOOP" 2>/dev/null; PHONE_LOOP=""
+    pkill -f "[n]ode.name=phone_to_car" 2>/dev/null && sleep 0.3
+    start_phone_loop
   fi
 }
 # One iteration of the hub pipeline (returns to let the main loop re-run the
@@ -330,7 +374,7 @@ move_phone_to_car() {
 # SINK_STATE and handled connect/card/profile/disconnect.
 hub_stream() {
   check_sound
-  move_phone_to_car
+  manage_phone_loop
   # SMO -> hub feed: up whenever the input is present and the phone has NOT
   # taken over (then the SMO must be silent to the car; the phone plays straight
   # to the car on its own). It carries silence when the SMO is paused - fine,
@@ -477,6 +521,7 @@ trap 'stop_loop; unmute_input' EXIT
 while true; do
   . /etc/auxlink.conf; CARD=bluez_card.${CAR//:/_}; CAR_RE=${CAR//:/[:_]}
   wp_rule
+  phone_wp_rule
   # Media mode: mute the phone's A2DP media so it doesn't blend into the car
   # (auxlink-media sets /run/auxlink/phone-mute). Re-applied each loop so it
   # survives the phone reconnecting (a fresh node comes up unmuted). Only the
@@ -606,6 +651,7 @@ while true; do
     pkill -f "[n]ode.name=smo_capture" 2>/dev/null
     pkill -f "[n]ode.name=to_tesla_cap" 2>/dev/null
     pkill -f "[n]ode.name=smo_hub_out" 2>/dev/null
+    pkill -f "[n]ode.name=phone_to_car" 2>/dev/null
     HUB_MODE=$want_hub
   fi
   if [ "$want_hub" = 1 ] && ensure_hub; then
