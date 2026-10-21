@@ -186,7 +186,7 @@ PRESENT_FILE = _present_file()
 # source doesn't play into a stream the car isn't playing yet.
 STREAM_READY_FILE = os.path.join(os.path.dirname(PRESENT_FILE), "auxlink-stream-ready") if PRESENT_FILE else ""
 POST_CALL_WINDOW = 30.0   # s after a call in which a play waits for the stream
-PLAY_WAIT_MAX = 8.0       # s: play anyway if the stream isn't ready by then
+PLAY_WAIT_MAX = 2.0       # s: play anyway if the stream isn't ready by then
 MIC_REQUEST_FILE = "/run/auxlink/mic"   # read by hfp-relay
 MIC_SOCKET = "/run/auxlink/mic.sock"    # hfp-relay sends the car's mic here
 MIC_TIMEOUT = 1.5    # s without a "mic on" refresh from the XIAO = closed
@@ -661,8 +661,17 @@ class Player(dbus.service.Object):
             if self.app_state == "Playing":
                 return "Paused"
             return self.app_state
-        # Eager mode (default): app Playing OR sound — but demote after ~10 s
-        # of silence so a stuck MediaSession does not leave the car on Playing.
+        # Eager mode (default). An explicit Paused/Stopped from the app is
+        # trusted at once, so a pause shows on the car immediately instead of
+        # waiting ~6 s for the sound detector to go quiet. Detected sound only
+        # PROMOTES to Playing when the app isn't already saying Playing (apps
+        # like YouTube that under-report) - it never holds Playing against a
+        # real pause.
+        if self.app_state in ("Paused", "Stopped"):
+            self.silent_play_since = 0.0
+            return self.app_state
+        # app Playing OR sound — but demote after ~10 s of silence so a stuck
+        # MediaSession does not leave the car on Playing.
         if self.app_state == "Playing" or sound:
             if self.app_state == "Playing" and not sound:
                 if self.silent_play_since <= 0:
@@ -1049,7 +1058,7 @@ class Player(dbus.service.Object):
         late = time.time() - self.pending_play > PLAY_WAIT_MAX
         if ready or late:
             self.pending_play = 0.0
-            smo_key(b"P", "play (car stream ready)" if ready else "play (stream not ready after 8 s)")
+            smo_key(b"P", "play (car stream ready)" if ready else f"play (stream not ready after {PLAY_WAIT_MAX:g} s)")
             self.ignore_smo_until = time.monotonic() + 2.5
 
     def resume_after_call(self):
