@@ -902,6 +902,16 @@ class Player(dbus.service.Object):
     def maybe_kick_on_player_switch(self, info, state):
         """If the SMO's MediaSession package changed while music should play,
         touch audio-kick so auxlink-audio recreates the car stream."""
+        # Hub mode: the car's A2DP session never changes on an app switch (the
+        # permanent hub->car loop stays up; only what feeds the hub changes), so
+        # a restart is unnecessary and only causes a pause. Just remember the new
+        # package in case the mode is switched back to classic later.
+        if load_conf().get("AUDIO_HUB", "1") == "1":
+            pkg = str(info.get("pkg") or "").strip()
+            if pkg:
+                self.media_pkg = pkg
+            self.pending_pkg_kick = None
+            return
         pkg = str(info.get("pkg") or "").strip()
         if pkg and pkg != self.media_pkg:
             prev = self.media_pkg
