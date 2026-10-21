@@ -76,6 +76,7 @@ CONNECTED_AT=0; WAITING_SAID=""; NEXT_STEREO=0; STEREO_BAD=0; STOPPED_FOR=""; CA
 HUB=auxlink_hub
 FEED_LOOP=""; FEED_INPUT=""; CAR_LOOP=""; CAR_LOOP_SINK_ID=""; CAR_LOOP_STARTED=0
 HUB_MODE=""   # which path ran last iteration (1=hub, 0=classic), to switch cleanly
+HUB_FRESH=0   # recreate the hub once per start so property changes take effect
 XQ_FAILS=0   # SBC-XQ attempts since this script started (never reset by a disconnect)
 INPUT=""; INPUT_SAID=""
 # A Bluetooth music source must become an INPUT (not a stream WirePlumber
@@ -225,10 +226,25 @@ stereo_ok() {
 # monitor to the car. The car loop stops only for a call, so pauses and
 # SMO<->phone switches never drop the car's A2DP stream.
 ensure_hub() {
+  # Once per start, drop any hub left from a previous run so it is recreated
+  # with the current properties (the module survives an auxlink-audio restart).
+  if [ "$HUB_FRESH" = 0 ]; then
+    for m in $(pactl list short modules 2>/dev/null | awk '/module-null-sink/ && /sink_name=auxlink_hub/ {print $1}'); do
+      pactl unload-module "$m" 2>/dev/null
+    done
+    HUB_FRESH=1; sleep 0.3
+  fi
   if ! pactl list short modules 2>/dev/null | grep -q "sink_name=$HUB"; then
+    # node.always-process keeps the hub mixing on its own clock, so a quiet SMO
+    # feed can't stall it and silence the phone that's also mixed in.
     pactl load-module module-null-sink sink_name=$HUB rate=48000 channels=2 \
-      channel_map=front-left,front-right sink_properties="node.description=AuxLink-hub" >/dev/null 2>&1
+      channel_map=front-left,front-right sink_properties=node.always-process=true >/dev/null 2>&1
     sleep 0.5
+    # If the property was rejected, the sink won't exist; retry plain so we
+    # still get a hub (better than falling back to the classic suspend path).
+    pactl list sinks short 2>/dev/null | grep -qw "$HUB" || \
+      pactl load-module module-null-sink sink_name=$HUB rate=48000 channels=2 \
+        channel_map=front-left,front-right >/dev/null 2>&1
   fi
   pactl list sinks short 2>/dev/null | grep -qw "$HUB" || return 1
   # Make the hub the default sink so the phone's A2DP auto-routes INTO it (the
