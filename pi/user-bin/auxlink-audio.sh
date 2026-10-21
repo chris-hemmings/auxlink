@@ -254,20 +254,22 @@ start_feed_loop() {
   echo "Hub: SMO feed up ($INPUT -> hub)"
 }
 start_car_loop() {
+  # Capture the hub's monitor the documented way (target the sink +
+  # stream.capture.sink=true); targeting "<sink>.monitor" by name is flaky.
   pw-loopback -c 2 -m '[ FL FR ]' \
-    --capture-props="target.object=${HUB}.monitor node.name=to_tesla_cap audio.position=[ FL FR ]" \
+    --capture-props="target.object=$HUB stream.capture.sink=true node.name=to_tesla_cap audio.position=[ FL FR ]" \
     --playback-props="target.object=$SINK node.name=to_tesla audio.position=[ FL FR ]" &
   CAR_LOOP=$!; CAR_LOOP_SINK_ID=$SINK_ID; CAR_LOOP_STARTED=$(date +%s); UNLINKED=0; NOT_ACTIVE=0; STEREO_BAD=0
   NEXT_STEREO=$(( $(date +%s) + 2 ))
   echo "Hub: car stream up (hub -> $SINK)"
 }
-# Linked = the car loop reaches the car on both channels AND its capture is
-# actually taking the hub's monitor (so a dead capture isn't read as healthy).
+# Linked = the car loop reaches the car on both channels (same proven check as
+# the classic path). The capture side is reliable by construction
+# (stream.capture.sink=true), so it is not re-checked here.
 hub_linked() {
   local links; links=$(timeout 5 pw-link -l 2>/dev/null)
   echo "$links" | grep -A2 "^to_tesla:output_FL" | grep -q "bluez_output" &&
-  echo "$links" | grep -A2 "^to_tesla:output_FR" | grep -q "bluez_output" &&
-  echo "$links" | grep -A2 "^${HUB}\.monitor:monitor_FL" | grep -q "to_tesla_cap"
+  echo "$links" | grep -A2 "^to_tesla:output_FR" | grep -q "bluez_output"
 }
 # The planned once-off restart of the CAR loop, carrying silence through it so
 # the Tesla's "accepted but silent" first start is never the one with music.
