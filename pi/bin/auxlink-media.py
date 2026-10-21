@@ -162,6 +162,11 @@ PAUSE_FOR_CALLS = CONF.get("PAUSE_FOR_CALLS", "1") == "1"
 # waits for sound, the sound waits for the source. Play the source at once then.
 WAIT_FOR_AUDIO = CONF.get("WAIT_FOR_AUDIO", "0") == "1"
 COVER_CURRENT = "/run/auxlink/cover/current"  # 7-digit handle of the art to show
+# A music-symbol placeholder shown as the cover when the phone's own media is
+# the now-playing source but no artwork is available for it. Served under a
+# fixed handle outside the SMO's art-handle range (1000002..1900000).
+COVER_PLACEHOLDER_SRC = "/usr/local/share/auxlink/music-note.jpg"
+COVER_PLACEHOLDER_HANDLE = "2000000"
 # "1" while the SMO plays, "0" when paused/stopped: auxlink-audio runs the car's
 # music stream only while this says 1, so the car sees a pause and a fresh
 # start like it does with a phone. Written after the car is told the status.
@@ -186,7 +191,7 @@ PRESENT_FILE = _present_file()
 # source doesn't play into a stream the car isn't playing yet.
 STREAM_READY_FILE = os.path.join(os.path.dirname(PRESENT_FILE), "auxlink-stream-ready") if PRESENT_FILE else ""
 POST_CALL_WINDOW = 30.0   # s after a call in which a play waits for the stream
-PLAY_WAIT_MAX = 8.0       # s: play anyway if the stream isn't ready by then
+PLAY_WAIT_MAX = 2.0       # s: play anyway if the stream isn't ready by then
 MIC_REQUEST_FILE = "/run/auxlink/mic"   # read by hfp-relay
 MIC_SOCKET = "/run/auxlink/mic.sock"    # hfp-relay sends the car's mic here
 MIC_TIMEOUT = 1.5    # s without a "mic on" refresh from the XIAO = closed
@@ -558,6 +563,10 @@ class Player(dbus.service.Object):
         self.ignore_smo_until = 0.0   # after we press a key, ignore stale reports briefly
         self.in_call = False
         self.phone_active = False      # the phone's media owns the car audio (not the SMO)
+        self.phone_mix_playing = False # mix mode: the phone's media is playing into the car mix
+        self.mix_phone_meta = False    # mix mode: show the phone's now-playing (SMO paused)
+        self.smo_img_handle = ""       # the SMO's current art handle, to restore after the phone shows
+        self.smo_meta = ("", "", "", 0)  # the SMO's last track (title, artist, album, length_us)
         self.smo_was_playing = False   # was the SMO playing when the phone took over?
         self.paused_for_call = False
         self.resume_timer = None
@@ -588,6 +597,12 @@ class Player(dbus.service.Object):
         # new file under the current handle isn't even announced). Start
         # from the clock, which moves on between restarts.
         self.art_seq = int(time.time()) % 899999
+        # The phone's own now-playing artwork, sent by the phone app over the
+        # notif link (handles in a separate 2000002+ range; 2000000 is the
+        # placeholder, the SMO uses 1000002..1900000).
+        self.phone_img_handle = ""
+        self.phone_art_id = ""
+        self.phone_art_seq = (int(time.time()) + 300000) % 899999
 
     # ---------- what the car sees ----------
     def metadata(self):
@@ -641,16 +656,59 @@ class Player(dbus.service.Object):
     def publish(self, track_changed=False):
         if track_changed:
             self.track += 1  # new trackid -> BlueZ sends AVRCP TRACK_CHANGED
+        if getattr(self, "_last_pub_status", None) != self.status:
+            self._last_pub_status = self.status
+            log(f"[car] PlaybackStatus -> {self.status}")
         self.PropertiesChanged(IFACE, dbus.Dictionary({
             "Metadata": self.metadata(),
             "PlaybackStatus": self.status,
             "Position": dbus.Int64(self.position_us),
         }, signature="sv"), [])
+
+    def reannounce_art(self):
+        """After the car reconnects, re-issue the current cover art under a NEW
+        handle so the car refetches it. The car fetches the image only when the
+        handle CHANGES - a bare track-change with the same handle is ignored
+        (which is why the previous approach didn't work, but a real next-song,
+        with a new handle, did). So copy the current image to a fresh handle and
+        announce that. No-op if there is no art. One-shot GLib callback."""
+        if not self.img_handle:
+            return False
+        cover_dir = os.path.dirname(COVER_CURRENT)
+        try:
+            with open(os.path.join(cover_dir, self.img_handle + ".jpg"), "rb") as f:
+                jpeg = f.read()
+        except OSError:
+            log("Car reconnected; re-announcing art (no image file; track nudge only)")
+            self.publish(track_changed=True)
+            return False
+        try:
+            self.art_seq = self.art_seq % 899999 + 1
+            handle = f"{1000001 + self.art_seq:07d}"
+            path = os.path.join(cover_dir, handle + ".jpg")
+            with open(path + ".tmp", "wb") as f:
+                f.write(jpeg)
+            os.replace(path + ".tmp", path)
+            with open(COVER_CURRENT + ".tmp", "w") as f:
+                f.write(handle)
+            os.replace(COVER_CURRENT + ".tmp", COVER_CURRENT)
+            self.img_handle = handle
+            log(f"Car reconnected; re-announcing cover art as image {handle}")
+            self.publish(track_changed=True)
+        except OSError as e:
+            log(f"Re-announce art failed: {e}")
+        return False
         self.write_play_state()
 
     def effective_state(self):
         if MUSIC_SOURCE == "bluetooth":
             return self.app_state    # follows the source's own stream already
+        # Mix mode: the phone's media is mixed into the one A2DP stream to the
+        # car. While it plays, keep the car "Playing" even if the SMO is paused
+        # - otherwise the Tesla, seeing Paused, mutes the whole stream and the
+        # phone goes silent too.
+        if self.phone_mix_playing:
+            return "Playing"
         sound = self.present and time.monotonic() >= self.ignore_sound_until
         # WAIT_FOR_AUDIO: only advertise Playing when real PCM is present.
         # MediaSession alone must not tell the car "Playing" (silent stream).
@@ -661,8 +719,17 @@ class Player(dbus.service.Object):
             if self.app_state == "Playing":
                 return "Paused"
             return self.app_state
-        # Eager mode (default): app Playing OR sound — but demote after ~10 s
-        # of silence so a stuck MediaSession does not leave the car on Playing.
+        # Eager mode (default). An explicit Paused/Stopped from the app is
+        # trusted at once, so a pause shows on the car immediately instead of
+        # waiting ~6 s for the sound detector to go quiet. Detected sound only
+        # PROMOTES to Playing when the app isn't already saying Playing (apps
+        # like YouTube that under-report) - it never holds Playing against a
+        # real pause.
+        if self.app_state in ("Paused", "Stopped"):
+            self.silent_play_since = 0.0
+            return self.app_state
+        # app Playing OR sound — but demote after ~10 s of silence so a stuck
+        # MediaSession does not leave the car on Playing.
         if self.app_state == "Playing" or sound:
             if self.app_state == "Playing" and not sound:
                 if self.silent_play_since <= 0:
@@ -712,7 +779,10 @@ class Player(dbus.service.Object):
             pass
 
         def run():
-            log("First play since the Pi started: running Check and fix")
+            hub = load_conf().get("AUDIO_HUB", "1") == "1"
+            log("First play since the Pi started: "
+                + ("hub mode (USB-C check only; the hub self-heals the stream)"
+                   if hub else "running Check and fix"))
             if MUSIC_SOURCE == "usbc":
                 try:
                     r = subprocess.run(["/usr/local/bin/auxlink-usb-gadget.sh", "repair"],
@@ -721,6 +791,8 @@ class Player(dbus.service.Object):
                         log("  USB-C: " + line.strip())
                 except (OSError, subprocess.TimeoutExpired) as e:
                     log(f"  USB-C check failed: {e}")
+            if hub:
+                return   # hub does its own connect-time restart; skip classic stream repair
             try:
                 pw = pwd.getpwnam(AUDIO_USER)
                 r = subprocess.run(["/usr/sbin/runuser", "-u", AUDIO_USER, "--", "env",
@@ -764,7 +836,8 @@ class Player(dbus.service.Object):
         try:
             os.makedirs(cover_dir, exist_ok=True)
             if not data:
-                if os.path.exists(COVER_CURRENT):
+                self.smo_img_handle = ""
+                if not self._phone_shows() and os.path.exists(COVER_CURRENT):
                     os.remove(COVER_CURRENT)
                 log("Album art: none for this track")
             else:
@@ -778,22 +851,30 @@ class Player(dbus.service.Object):
                 with open(path + ".tmp", "wb") as f:
                     f.write(jpeg)
                 os.replace(path + ".tmp", path)
-                with open(COVER_CURRENT + ".tmp", "w") as f:
-                    f.write(handle)
-                os.replace(COVER_CURRENT + ".tmp", COVER_CURRENT)
+                self.smo_img_handle = handle
+                # While the phone's media is the shown source, keep its cover up;
+                # just remember the SMO's handle to restore afterwards.
+                if not self._phone_shows():
+                    with open(COVER_CURRENT + ".tmp", "w") as f:
+                        f.write(handle)
+                    os.replace(COVER_CURRENT + ".tmp", COVER_CURRENT)
                 log(f"Album art: {len(jpeg) // 1024} KB as image {handle}")
             self.art_id = art_id
         except (OSError, ValueError) as e:
             log(f"Could not store album art: {e}")
             return
-        # Keep the one the car may still be fetching; drop anything older.
+        # Keep the one the car may still be fetching (and the SMO handle we are
+        # holding for restore, plus the placeholder); drop anything older.
+        keep = {old, self.current_handle_file(), self.smo_img_handle,
+                self.phone_img_handle, self.img_handle, COVER_PLACEHOLDER_HANDLE}
         for f in os.listdir(cover_dir):
-            if f.endswith(".jpg") and f[:-4] not in (old, self.current_handle_file()):
+            if f.endswith(".jpg") and f[:-4] not in keep:
                 try:
                     os.remove(os.path.join(cover_dir, f))
                 except OSError:
                     pass
-        self.cover_check()
+        if not self._phone_shows():
+            self.cover_check()
 
     @staticmethod
     def current_handle_file():
@@ -801,6 +882,103 @@ class Player(dbus.service.Object):
             return open(COVER_CURRENT).read().strip()
         except OSError:
             return ""
+
+    def _phone_shows(self):
+        """The phone's media is the now-playing source on the car: it took over,
+        or it is playing in mix mode while the SMO is paused."""
+        return self.phone_active or self.mix_phone_meta
+
+    def set_phone_cover(self):
+        """Set the car's cover to the phone's own artwork (sent by the phone app)
+        if we have it, otherwise the music-symbol placeholder. Caller publishes."""
+        cover_dir = os.path.dirname(COVER_CURRENT)
+        target = self.phone_img_handle
+        if not (target and os.path.isfile(os.path.join(cover_dir, target + ".jpg"))):
+            target = COVER_PLACEHOLDER_HANDLE
+            dst = os.path.join(cover_dir, target + ".jpg")
+            try:
+                if not os.path.exists(dst) and os.path.exists(COVER_PLACEHOLDER_SRC):
+                    os.makedirs(cover_dir, exist_ok=True)
+                    with open(COVER_PLACEHOLDER_SRC, "rb") as s, open(dst + ".tmp", "wb") as d:
+                        d.write(s.read())
+                    os.replace(dst + ".tmp", dst)
+            except OSError as e:
+                log(f"Placeholder cover failed: {e}")
+                return
+        if self.img_handle != target:
+            try:
+                with open(COVER_CURRENT + ".tmp", "w") as f:
+                    f.write(target)
+                os.replace(COVER_CURRENT + ".tmp", COVER_CURRENT)
+                self.img_handle = target
+            except OSError as e:
+                log(f"Phone cover failed: {e}")
+
+    def phone_art(self, info):
+        """The phone app sent its own now-playing artwork over the notif link:
+        {art: base64 JPEG (or ""), art_id}. Store it so set_phone_cover() shows
+        it instead of the placeholder while the phone is the now-playing source."""
+        if not isinstance(info, dict):
+            return
+        art_id = str(info.get("art_id") or "")
+        if art_id == self.phone_art_id:
+            return
+        self.phone_art_id = art_id
+        cover_dir = os.path.dirname(COVER_CURRENT)
+        data = info.get("art") or ""
+        old = self.phone_img_handle
+        try:
+            if not data:
+                self.phone_img_handle = ""
+            else:
+                jpeg = base64.b64decode(data)
+                if jpeg[:2] != b"\xff\xd8":
+                    log("Phone art is not a JPEG; ignored")
+                    return
+                self.phone_art_seq = self.phone_art_seq % 899999 + 1
+                handle = f"{2000001 + self.phone_art_seq:07d}"
+                os.makedirs(cover_dir, exist_ok=True)
+                path = os.path.join(cover_dir, handle + ".jpg")
+                with open(path + ".tmp", "wb") as f:
+                    f.write(jpeg)
+                os.replace(path + ".tmp", path)
+                self.phone_img_handle = handle
+                log(f"Phone album art: {len(jpeg) // 1024} KB as image {handle}")
+        except (OSError, ValueError) as e:
+            log(f"Could not store phone art: {e}")
+            return
+        if old and old != self.phone_img_handle:
+            try:
+                os.remove(os.path.join(cover_dir, old + ".jpg"))
+            except OSError:
+                pass
+        # If the phone is the shown source right now, update the cover at once.
+        if self._phone_shows():
+            self.set_phone_cover()
+            self.publish(track_changed=True)
+
+    def restore_smo_cover(self):
+        """Put the SMO's own cover handle back after the phone was showing."""
+        h = self.smo_img_handle
+        try:
+            if h and os.path.isfile(os.path.join(os.path.dirname(COVER_CURRENT), h + ".jpg")):
+                with open(COVER_CURRENT + ".tmp", "w") as f:
+                    f.write(h)
+                os.replace(COVER_CURRENT + ".tmp", COVER_CURRENT)
+                self.img_handle = h
+            else:
+                if os.path.exists(COVER_CURRENT):
+                    os.remove(COVER_CURRENT)
+                self.img_handle = ""
+        except OSError:
+            pass
+
+    def show_smo_meta(self):
+        """Put the SMO's own now-playing (text + cover) back on the car."""
+        self.title, self.artist, self.album, self.length_us = self.smo_meta
+        self.restore_smo_cover()
+        self.status = self.effective_state()
+        self.publish(track_changed=True)
 
     # ---------- SMO state (JSON lines from the app) ----------
     def check_played(self, pressed, seq):
@@ -838,8 +1016,13 @@ class Player(dbus.service.Object):
         if state in ("Playing", "Paused", "Stopped") and state != self.status:
             self.status = state
             status_changed = True
-        if track_changed or status_changed:
-            self.publish(track_changed)
+        # Show the phone's own artwork (if the phone app sent it) or the
+        # music-symbol placeholder while the phone is the source.
+        art_was = self.img_handle
+        self.set_phone_cover()
+        art_changed = self.img_handle != art_was
+        if track_changed or status_changed or art_changed:
+            self.publish(track_changed or art_changed)
             log(f"[phone] {self.title} - {self.artist} [{self.status}]")
 
     def phone_take(self):
@@ -855,15 +1038,17 @@ class Player(dbus.service.Object):
         if not self.phone_active:
             return
         self.phone_active = False
-        # Re-publish whatever the SMO is now (its app keeps reporting state).
-        self.status = self.effective_state()
-        self.publish()
+        # Put the SMO's own now-playing (text + cover) back on the car.
+        self.show_smo_meta()
         log("Phone media released; the SMO has the car audio again")
         # Tesla often keeps a silent A2DP session after phone → SMO handoff.
         # Kick once (same as Fix sound) so the car takes a fresh stream.
         GLib.timeout_add(800, lambda: (Player.kick_audio() or False))
 
     def smo_update(self, info):
+        new = (str(info.get("title") or ""), str(info.get("artist") or ""),
+               str(info.get("album") or ""), int(info.get("dur") or 0) * 1000)
+        self.smo_meta = new   # the SMO's latest track, remembered in every mode
         if self.phone_active:
             # The phone owns the car audio: remember the SMO's play intent (for
             # resume), but don't let its track info / state reach the car.
@@ -871,8 +1056,18 @@ class Player(dbus.service.Object):
             if state in ("Playing", "Paused", "Stopped"):
                 self.app_seen = (time.monotonic(), state)
             return
-        new = (str(info.get("title") or ""), str(info.get("artist") or ""),
-               str(info.get("album") or ""), int(info.get("dur") or 0) * 1000)
+        if self.mix_phone_meta:
+            # Mix mode, SMO paused: the phone's now-playing is on the car. Keep
+            # the SMO's state current but don't overwrite the phone until the SMO
+            # actually plays again.
+            state = info.get("state")
+            if state in ("Playing", "Paused", "Stopped"):
+                self.app_seen = (time.monotonic(), state)
+                self.app_state = state
+            if state != "Playing":
+                return
+            self.mix_phone_meta = False
+            self.restore_smo_cover()
         track_changed = new != (self.title, self.artist, self.album, self.length_us)
         self.title, self.artist, self.album, self.length_us = new
         if "pos" in info:
@@ -897,6 +1092,16 @@ class Player(dbus.service.Object):
     def maybe_kick_on_player_switch(self, info, state):
         """If the SMO's MediaSession package changed while music should play,
         touch audio-kick so auxlink-audio recreates the car stream."""
+        # Hub mode: the car's A2DP session never changes on an app switch (the
+        # permanent hub->car loop stays up; only what feeds the hub changes), so
+        # a restart is unnecessary and only causes a pause. Just remember the new
+        # package in case the mode is switched back to classic later.
+        if load_conf().get("AUDIO_HUB", "1") == "1":
+            pkg = str(info.get("pkg") or "").strip()
+            if pkg:
+                self.media_pkg = pkg
+            self.pending_pkg_kick = None
+            return
         pkg = str(info.get("pkg") or "").strip()
         if pkg and pkg != self.media_pkg:
             prev = self.media_pkg
@@ -1034,7 +1239,7 @@ class Player(dbus.service.Object):
         late = time.time() - self.pending_play > PLAY_WAIT_MAX
         if ready or late:
             self.pending_play = 0.0
-            smo_key(b"P", "play (car stream ready)" if ready else "play (stream not ready after 8 s)")
+            smo_key(b"P", "play (car stream ready)" if ready else f"play (stream not ready after {PLAY_WAIT_MAX:g} s)")
             self.ignore_smo_until = time.monotonic() + 2.5
 
     def resume_after_call(self):
@@ -1647,6 +1852,35 @@ def phone_media_monitor(bus, om, player):
                     if resume or player.app_state == "Playing" or player.present:
                         app_send({"media": "play"})
         write_phone_mute(mute_phone)
+        # Mix mode: while the phone plays into the car mix, keep the car
+        # "Playing" (see effective_state) so pausing the SMO doesn't make the
+        # Tesla mute the whole stream - the phone included. Re-publish when it
+        # flips so the car follows promptly.
+        mix_playing = (mixes_phone_and_smo(SOURCE_OVERRIDE) and playing_now
+                       and not player.phone_active and not player.in_call)
+        if mix_playing != player.phone_mix_playing:
+            player.phone_mix_playing = mix_playing
+            log(f"Mix: phone media {'playing' if mix_playing else 'stopped'} "
+                f"(override={SOURCE_OVERRIDE}, phone_status={'playing' if playing_now else 'not'})")
+            if not player.phone_active:
+                want = player.effective_state()
+                if want != player.status:
+                    player.status = want
+                    player.publish()
+        # Show the phone's own now-playing (text + its art, or the music-symbol
+        # placeholder) while it plays and the SMO is paused in mix mode. The SMO
+        # taking the display back when it plays again is handled in smo_update;
+        # here we hand it back when the phone itself stops.
+        show_meta = mix_playing and player.app_state != "Playing"
+        if show_meta:
+            if not player.mix_phone_meta:
+                player.mix_phone_meta = True
+                log("Mix: SMO paused, phone playing - showing the phone's now-playing")
+            player.phone_update(phone_info(props))
+        elif player.mix_phone_meta:
+            player.mix_phone_meta = False
+            log("Mix: phone no longer the shown source - back to the SMO")
+            player.show_smo_meta()
         if player.phone_active:
             player.phone_update(phone_info(props))
         return True
@@ -2598,9 +2832,10 @@ class NotifLink(dbus.service.Object):
     that line to the phone so the forwarder can fire the Notification.Action
     (reply / mark read) on the original notification."""
 
-    def __init__(self, bus, relay):
+    def __init__(self, bus, relay, on_phoneart=None):
         super().__init__(bus, NOTIF_PATH)
         self.relay = relay
+        self.on_phoneart = on_phoneart   # the phone app's own now-playing artwork
         self.sock = None
         self.watch = None
         self.buf = bytearray()
@@ -2650,6 +2885,8 @@ class NotifLink(dbus.service.Object):
                 continue
             if isinstance(info, dict) and "notif" in info:
                 self.relay({"notif": info["notif"]})
+            elif isinstance(info, dict) and "phoneart" in info and self.on_phoneart:
+                self.on_phoneart(info["phoneart"])
         return True
 
     def to_phone(self, obj):
@@ -2714,6 +2951,29 @@ def main():
     om.connect_to_signal("InterfacesRemoved", removed)
     if not registered:
         log(f"Car adapter {CAR_ADAPTER} not present yet; waiting for it")
+
+    # When the car reconnects (leave the car and come back) it re-reads the
+    # now-playing text but doesn't refetch the cover image until the next track
+    # change, so the art is missing until then. Watch the car's Connected
+    # property and re-announce the art once the link has settled.
+    car_dev = "dev_" + CONF.get("CAR", "").upper().replace(":", "_") if CONF.get("CAR") else ""
+    car_conn = {"up": None}
+
+    def car_props_changed(iface, changed, invalidated, path=None):
+        if iface != "org.bluez.Device1" or not car_dev or car_dev not in (path or ""):
+            return
+        if "Connected" in changed:
+            up = bool(changed["Connected"])
+            was = car_conn["up"]
+            car_conn["up"] = up
+            if up and was is not True:   # (re)connected
+                for delay in (4000, 9000):   # two tries: land after the car re-subscribes
+                    GLib.timeout_add(delay, player.reannounce_art)
+
+    if car_dev:
+        bus.add_signal_receiver(car_props_changed, signal_name="PropertiesChanged",
+                                dbus_interface="org.freedesktop.DBus.Properties",
+                                bus_name=BLUEZ, path_keyword="path", arg0="org.bluez.Device1")
 
     buf = bytearray()
     mic = {"on": False, "seen": 0.0}
@@ -2948,7 +3208,7 @@ def main():
     # mirror its notifications). Always on, regardless of the music source.
     # Pin a fixed RFCOMM channel so BlueZ actually listens and publishes SDP;
     # auth is relaxed so a bonded phone can open the channel directly.
-    notif_link = NotifLink(bus, app_send)
+    notif_link = NotifLink(bus, app_send, player.phone_art)
     NOTIF_LINK["link"] = notif_link
     try:
         dbus.Interface(bus.get_object(BLUEZ, "/org/bluez"), "org.bluez.ProfileManager1") \
