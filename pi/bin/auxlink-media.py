@@ -642,6 +642,9 @@ class Player(dbus.service.Object):
     def publish(self, track_changed=False):
         if track_changed:
             self.track += 1  # new trackid -> BlueZ sends AVRCP TRACK_CHANGED
+        if getattr(self, "_last_pub_status", None) != self.status:
+            self._last_pub_status = self.status
+            log(f"[car] PlaybackStatus -> {self.status}")
         self.PropertiesChanged(IFACE, dbus.Dictionary({
             "Metadata": self.metadata(),
             "PlaybackStatus": self.status,
@@ -1696,6 +1699,8 @@ def phone_media_monitor(bus, om, player):
                        and not player.phone_active and not player.in_call)
         if mix_playing != player.phone_mix_playing:
             player.phone_mix_playing = mix_playing
+            log(f"Mix: phone media {'playing' if mix_playing else 'stopped'} "
+                f"(override={SOURCE_OVERRIDE}, phone_status={'playing' if playing_now else 'not'})")
             if not player.phone_active:
                 want = player.effective_state()
                 if want != player.status:
