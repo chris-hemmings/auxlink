@@ -652,13 +652,37 @@ class Player(dbus.service.Object):
         }, signature="sv"), [])
 
     def reannounce_art(self):
-        """Re-send a TRACK_CHANGED so the car refetches the current cover art.
-        The car only fetches the image on a track change; after it reconnects
-        it re-reads the text but keeps no art until the next song, so we nudge
-        it once the link is back. No-op if there is no art. One-shot GLib cb."""
-        if self.img_handle:
-            log("Car reconnected; re-announcing cover art")
+        """After the car reconnects, re-issue the current cover art under a NEW
+        handle so the car refetches it. The car fetches the image only when the
+        handle CHANGES - a bare track-change with the same handle is ignored
+        (which is why the previous approach didn't work, but a real next-song,
+        with a new handle, did). So copy the current image to a fresh handle and
+        announce that. No-op if there is no art. One-shot GLib callback."""
+        if not self.img_handle:
+            return False
+        cover_dir = os.path.dirname(COVER_CURRENT)
+        try:
+            with open(os.path.join(cover_dir, self.img_handle + ".jpg"), "rb") as f:
+                jpeg = f.read()
+        except OSError:
+            log("Car reconnected; re-announcing art (no image file; track nudge only)")
             self.publish(track_changed=True)
+            return False
+        try:
+            self.art_seq = self.art_seq % 899999 + 1
+            handle = f"{1000001 + self.art_seq:07d}"
+            path = os.path.join(cover_dir, handle + ".jpg")
+            with open(path + ".tmp", "wb") as f:
+                f.write(jpeg)
+            os.replace(path + ".tmp", path)
+            with open(COVER_CURRENT + ".tmp", "w") as f:
+                f.write(handle)
+            os.replace(COVER_CURRENT + ".tmp", COVER_CURRENT)
+            self.img_handle = handle
+            log(f"Car reconnected; re-announcing cover art as image {handle}")
+            self.publish(track_changed=True)
+        except OSError as e:
+            log(f"Re-announce art failed: {e}")
         return False
         self.write_play_state()
 
