@@ -335,6 +335,7 @@ class NowPlayingService : NotificationListenerService() {
     private var artLine = ""         // {"art":...} line for the current artwork
     private var artSentId = ""
     private var artSentAt = 0L
+    private var phoneArtSentId = ""  // forwarder: the phone's own art sent to the Pi
 
     private val callback = object : MediaController.Callback() {
         override fun onMetadataChanged(metadata: MediaMetadata?) = push()
@@ -1109,9 +1110,11 @@ class NowPlayingService : NotificationListenerService() {
         try { prefs().edit().putBoolean("notif_forward", on).apply() } catch (e: Exception) {}
         if (on) {
             armNotifForwardGate("forwarding on")
+            phoneArtSentId = ""   // re-send the phone's art to the Pi on (re)connect
             if (notifLink == null) {
                 notifLink = BtLink(this, BtLink.NOTIF_UUID) { line -> onNotifLinkLine(line) }
             }
+            main.post { pushPhoneArt() }
         } else {
             notifLink?.close(); notifLink = null
             synchronized(heldActions) { heldActions.clear() }
@@ -2002,6 +2005,7 @@ class NowPlayingService : NotificationListenerService() {
     }
 
     private fun push() {
+        pushPhoneArt()            // forwarder: send this phone's own art to the Pi
         if (forwarderOnly) return
         val c = controller ?: return
         val md = c.metadata
@@ -2044,6 +2048,23 @@ class NowPlayingService : NotificationListenerService() {
                 if (!sendLine(artJson)) artSentId = ""   // try again next push
             }
         }
+    }
+
+    /** Forwarder (phone): send this phone's own now-playing artwork to the Pi
+     *  over the notif link, so the car can show it when the phone is the source.
+     *  One send per track (deduped by art id); runs in all modes while
+     *  forwarding is on (it is how the Pi gets the phone's artwork - the phone's
+     *  text already comes to the Pi over AVRCP). */
+    private fun pushPhoneArt() {
+        if (!forwardNotifs) return
+        val link = notifLink ?: return
+        val md = controller?.metadata ?: return
+        val (id, artJson) = artFor(md)
+        if (id == phoneArtSentId) return
+        val line = try {
+            JSONObject().put("phoneart", JSONObject(artJson)).toString()
+        } catch (_: Exception) { return }
+        notifIo.execute { if (link.send(line)) phoneArtSentId = id }
     }
 
     /** (id, line) for the current track's artwork; cached per track. */
