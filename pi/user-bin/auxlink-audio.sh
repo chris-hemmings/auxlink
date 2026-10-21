@@ -19,13 +19,15 @@
 #                          then stop + suspend (car sees pause)
 #   * call / phone media -> stop immediately (phone media does not suspend)
 #
-# AUDIO_HUB=1 (default) runs a different, more phone-like topology: the SMO and
-# the phone both feed one null sink ($HUB) and a single PERMANENT loopback
-# carries its monitor to the car. That car loop stops ONLY for a call - a plain
-# pause or an SMO<->phone source switch just changes what the hub carries, so
-# the car's A2DP stream never stops/suspends and so never loses the right
-# channel. The classic single-loopback path below runs when AUDIO_HUB=0 or if
-# the hub cannot be created (automatic fallback). See the hub_stream function.
+# AUDIO_HUB=1 (default) runs a different, more phone-like topology: the SMO
+# feeds a null sink ($HUB) and a single PERMANENT loopback carries its monitor
+# to the car. That car loop stops ONLY for a call - a plain pause or an
+# SMO<->phone source switch just changes what the SMO feeds in, so the car's
+# A2DP stream never stops/suspends and so never loses the right channel. The
+# phone's own media plays STRAIGHT to the car (its own stream, as before the
+# hub), mixing in at the car - so pausing the SMO never affects it. The classic
+# single-loopback path below runs when AUDIO_HUB=0 or if the hub cannot be
+# created (automatic fallback). See the hub_stream function.
 # While streaming, both channels are checked every 60 s: a suspend/resume of
 # the car's output (the car can do that too) leaves a running pw-loopback
 # with a silent RIGHT channel until it is recreated.
@@ -70,8 +72,9 @@ stream_hold() { echo "${STREAM_HOLD_SEC:-20}"; }
 HOLD_UNTIL=0
 LOOP=""; LOOP_SINK_ID=""; LOOP_INPUT=""; LOOP_STARTED=0; UNLINKED=0; GONE=2; NO_CARD=0; NOT_ACTIVE=0; LAST_NUDGE=0
 CONNECTED_AT=0; WAITING_SAID=""; NEXT_STEREO=0; STEREO_BAD=0; STOPPED_FOR=""; CAR_SUSP=0
-# Hub pipeline (AUDIO_HUB=1): the SMO and the phone both feed a null sink
-# ($HUB); one permanent loopback carries its monitor to the car and stops only
+# Hub pipeline (AUDIO_HUB=1): the SMO feeds a null sink ($HUB) and the phone
+# plays straight to the car; one permanent loopback carries the hub to the car
+# and stops only
 # for a call, so pauses and source switches never drop the car's A2DP stream.
 HUB=auxlink_hub
 FEED_LOOP=""; FEED_INPUT=""; CAR_LOOP=""; CAR_LOOP_SINK_ID=""; CAR_LOOP_STARTED=0
@@ -247,9 +250,13 @@ ensure_hub() {
         channel_map=front-left,front-right >/dev/null 2>&1
   fi
   pactl list sinks short 2>/dev/null | grep -qw "$HUB" || return 1
-  # Make the hub the default sink so the phone's A2DP auto-routes INTO it (the
-  # same place the SMO feeds), not straight to the car.
-  [ "$(pactl get-default-sink 2>/dev/null)" = "$HUB" ] || pactl set-default-sink "$HUB" >/dev/null 2>&1
+  # Keep the CAR as the default sink so the phone's own media plays STRAIGHT to
+  # the car - its own independent stream, as before the hub - instead of being
+  # routed through the hub (where a quiet SMO feed would stall it and cut it
+  # out). The hub carries ONLY the SMO; the SMO feed and the car loop target
+  # their nodes explicitly, so they don't depend on the default sink.
+  [ -n "$SINK" ] && [ "$(pactl get-default-sink 2>/dev/null)" != "$SINK" ] && \
+    pactl set-default-sink "$SINK" >/dev/null 2>&1
   return 0
 }
 remove_hub() {
@@ -304,9 +311,9 @@ hub_restart_once() {
 hub_stream() {
   check_sound
   # SMO -> hub feed: up whenever the input is present and the phone has NOT
-  # taken over (then the SMO must be silent to the car; the phone feeds the hub
-  # via the default-sink route). It carries silence when the SMO is paused -
-  # fine, the car loop below stays up regardless.
+  # taken over (then the SMO must be silent to the car; the phone plays straight
+  # to the car on its own). It carries silence when the SMO is paused - fine,
+  # the car loop below stays up regardless.
   if phone_media; then
     [ -n "$FEED_LOOP" ] && { echo "Hub: phone took over; dropping the SMO feed"; kill "$FEED_LOOP" 2>/dev/null; FEED_LOOP=""; FEED_INPUT=""; }
   elif [ -z "$FEED_LOOP" ] || ! kill -0 "$FEED_LOOP" 2>/dev/null || [ "$INPUT" != "$FEED_INPUT" ]; then
