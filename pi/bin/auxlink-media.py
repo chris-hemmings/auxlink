@@ -647,6 +647,16 @@ class Player(dbus.service.Object):
             "PlaybackStatus": self.status,
             "Position": dbus.Int64(self.position_us),
         }, signature="sv"), [])
+
+    def reannounce_art(self):
+        """Re-send a TRACK_CHANGED so the car refetches the current cover art.
+        The car only fetches the image on a track change; after it reconnects
+        it re-reads the text but keeps no art until the next song, so we nudge
+        it once the link is back. No-op if there is no art. One-shot GLib cb."""
+        if self.img_handle:
+            log("Car reconnected; re-announcing cover art")
+            self.publish(track_changed=True)
+        return False
         self.write_play_state()
 
     def effective_state(self):
@@ -2758,6 +2768,29 @@ def main():
     om.connect_to_signal("InterfacesRemoved", removed)
     if not registered:
         log(f"Car adapter {CAR_ADAPTER} not present yet; waiting for it")
+
+    # When the car reconnects (leave the car and come back) it re-reads the
+    # now-playing text but doesn't refetch the cover image until the next track
+    # change, so the art is missing until then. Watch the car's Connected
+    # property and re-announce the art once the link has settled.
+    car_dev = "dev_" + CONF.get("CAR", "").upper().replace(":", "_") if CONF.get("CAR") else ""
+    car_conn = {"up": None}
+
+    def car_props_changed(iface, changed, invalidated, path=None):
+        if iface != "org.bluez.Device1" or not car_dev or car_dev not in (path or ""):
+            return
+        if "Connected" in changed:
+            up = bool(changed["Connected"])
+            was = car_conn["up"]
+            car_conn["up"] = up
+            if up and was is not True:   # (re)connected
+                for delay in (4000, 9000):   # two tries: land after the car re-subscribes
+                    GLib.timeout_add(delay, player.reannounce_art)
+
+    if car_dev:
+        bus.add_signal_receiver(car_props_changed, signal_name="PropertiesChanged",
+                                dbus_interface="org.freedesktop.DBus.Properties",
+                                bus_name=BLUEZ, path_keyword="path", arg0="org.bluez.Device1")
 
     buf = bytearray()
     mic = {"on": False, "seen": 0.0}
