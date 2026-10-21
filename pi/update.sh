@@ -29,6 +29,7 @@ install -D -m 644 "$HERE/share/index.html" /usr/local/share/auxlink/index.html
 # The version shown on the setup page (an update zip without one keeps the old).
 [ -f "$HERE/VERSION" ] && install -D -m 644 "$HERE/VERSION" /usr/local/share/auxlink/VERSION
 install -D -m 644 "$HERE/share/cover-test.jpg" /usr/local/share/auxlink/cover-test.jpg
+install -D -m 644 "$HERE/share/auxlink-music-note.jpg" /usr/local/share/auxlink/music-note.jpg
 printf 'd /run/auxlink 0755 root root -\nf /run/auxlink/events.log 0666 root root -\nd /run/auxlink/outbox 1777 root root -\n' > /etc/tmpfiles.d/auxlink.conf
 systemd-tmpfiles --create /etc/tmpfiles.d/auxlink.conf 2>/dev/null || true
 chmod 666 /run/auxlink/events.log 2>/dev/null || true   # user services add to Recent events
