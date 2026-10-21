@@ -597,6 +597,12 @@ class Player(dbus.service.Object):
         # new file under the current handle isn't even announced). Start
         # from the clock, which moves on between restarts.
         self.art_seq = int(time.time()) % 899999
+        # The phone's own now-playing artwork, sent by the phone app over the
+        # notif link (handles in a separate 2000002+ range; 2000000 is the
+        # placeholder, the SMO uses 1000002..1900000).
+        self.phone_img_handle = ""
+        self.phone_art_id = ""
+        self.phone_art_seq = (int(time.time()) + 300000) % 899999
 
     # ---------- what the car sees ----------
     def metadata(self):
@@ -860,7 +866,7 @@ class Player(dbus.service.Object):
         # Keep the one the car may still be fetching (and the SMO handle we are
         # holding for restore, plus the placeholder); drop anything older.
         keep = {old, self.current_handle_file(), self.smo_img_handle,
-                self.img_handle, COVER_PLACEHOLDER_HANDLE}
+                self.phone_img_handle, self.img_handle, COVER_PLACEHOLDER_HANDLE}
         for f in os.listdir(cover_dir):
             if f.endswith(".jpg") and f[:-4] not in keep:
                 try:
@@ -882,26 +888,74 @@ class Player(dbus.service.Object):
         or it is playing in mix mode while the SMO is paused."""
         return self.phone_active or self.mix_phone_meta
 
-    def use_placeholder_cover(self):
-        """Show the music-symbol placeholder as the cover (phone media with no
-        artwork of its own yet), served under a fixed handle. No-op if already
-        shown. Caller publishes."""
-        if self.img_handle == COVER_PLACEHOLDER_HANDLE:
-            return
+    def set_phone_cover(self):
+        """Set the car's cover to the phone's own artwork (sent by the phone app)
+        if we have it, otherwise the music-symbol placeholder. Caller publishes."""
         cover_dir = os.path.dirname(COVER_CURRENT)
-        dst = os.path.join(cover_dir, COVER_PLACEHOLDER_HANDLE + ".jpg")
+        target = self.phone_img_handle
+        if not (target and os.path.isfile(os.path.join(cover_dir, target + ".jpg"))):
+            target = COVER_PLACEHOLDER_HANDLE
+            dst = os.path.join(cover_dir, target + ".jpg")
+            try:
+                if not os.path.exists(dst) and os.path.exists(COVER_PLACEHOLDER_SRC):
+                    os.makedirs(cover_dir, exist_ok=True)
+                    with open(COVER_PLACEHOLDER_SRC, "rb") as s, open(dst + ".tmp", "wb") as d:
+                        d.write(s.read())
+                    os.replace(dst + ".tmp", dst)
+            except OSError as e:
+                log(f"Placeholder cover failed: {e}")
+                return
+        if self.img_handle != target:
+            try:
+                with open(COVER_CURRENT + ".tmp", "w") as f:
+                    f.write(target)
+                os.replace(COVER_CURRENT + ".tmp", COVER_CURRENT)
+                self.img_handle = target
+            except OSError as e:
+                log(f"Phone cover failed: {e}")
+
+    def phone_art(self, info):
+        """The phone app sent its own now-playing artwork over the notif link:
+        {art: base64 JPEG (or ""), art_id}. Store it so set_phone_cover() shows
+        it instead of the placeholder while the phone is the now-playing source."""
+        if not isinstance(info, dict):
+            return
+        art_id = str(info.get("art_id") or "")
+        if art_id == self.phone_art_id:
+            return
+        self.phone_art_id = art_id
+        cover_dir = os.path.dirname(COVER_CURRENT)
+        data = info.get("art") or ""
+        old = self.phone_img_handle
         try:
-            os.makedirs(cover_dir, exist_ok=True)
-            if not os.path.exists(dst) and os.path.exists(COVER_PLACEHOLDER_SRC):
-                with open(COVER_PLACEHOLDER_SRC, "rb") as s, open(dst + ".tmp", "wb") as d:
-                    d.write(s.read())
-                os.replace(dst + ".tmp", dst)
-            with open(COVER_CURRENT + ".tmp", "w") as f:
-                f.write(COVER_PLACEHOLDER_HANDLE)
-            os.replace(COVER_CURRENT + ".tmp", COVER_CURRENT)
-            self.img_handle = COVER_PLACEHOLDER_HANDLE
-        except OSError as e:
-            log(f"Placeholder cover failed: {e}")
+            if not data:
+                self.phone_img_handle = ""
+            else:
+                jpeg = base64.b64decode(data)
+                if jpeg[:2] != b"\xff\xd8":
+                    log("Phone art is not a JPEG; ignored")
+                    return
+                self.phone_art_seq = self.phone_art_seq % 899999 + 1
+                handle = f"{2000001 + self.phone_art_seq:07d}"
+                os.makedirs(cover_dir, exist_ok=True)
+                path = os.path.join(cover_dir, handle + ".jpg")
+                with open(path + ".tmp", "wb") as f:
+                    f.write(jpeg)
+                os.replace(path + ".tmp", path)
+                self.phone_img_handle = handle
+                log(f"Phone album art: {len(jpeg) // 1024} KB as image {handle}")
+        except (OSError, ValueError) as e:
+            log(f"Could not store phone art: {e}")
+            return
+        if old and old != self.phone_img_handle:
+            try:
+                os.remove(os.path.join(cover_dir, old + ".jpg"))
+            except OSError:
+                pass
+        # If the phone is the shown source right now, update the cover at once.
+        if self._phone_shows():
+            self.set_phone_cover()
+            self.publish(track_changed=True)
 
     def restore_smo_cover(self):
         """Put the SMO's own cover handle back after the phone was showing."""
@@ -962,11 +1016,10 @@ class Player(dbus.service.Object):
         if state in ("Playing", "Paused", "Stopped") and state != self.status:
             self.status = state
             status_changed = True
-        # The phone has no artwork of its own over Bluetooth yet, so show the
-        # music-symbol placeholder while it is the source. (When the phone app
-        # starts sending its own art, that will replace this.)
+        # Show the phone's own artwork (if the phone app sent it) or the
+        # music-symbol placeholder while the phone is the source.
         art_was = self.img_handle
-        self.use_placeholder_cover()
+        self.set_phone_cover()
         art_changed = self.img_handle != art_was
         if track_changed or status_changed or art_changed:
             self.publish(track_changed or art_changed)
@@ -2779,9 +2832,10 @@ class NotifLink(dbus.service.Object):
     that line to the phone so the forwarder can fire the Notification.Action
     (reply / mark read) on the original notification."""
 
-    def __init__(self, bus, relay):
+    def __init__(self, bus, relay, on_phoneart=None):
         super().__init__(bus, NOTIF_PATH)
         self.relay = relay
+        self.on_phoneart = on_phoneart   # the phone app's own now-playing artwork
         self.sock = None
         self.watch = None
         self.buf = bytearray()
@@ -2831,6 +2885,8 @@ class NotifLink(dbus.service.Object):
                 continue
             if isinstance(info, dict) and "notif" in info:
                 self.relay({"notif": info["notif"]})
+            elif isinstance(info, dict) and "phoneart" in info and self.on_phoneart:
+                self.on_phoneart(info["phoneart"])
         return True
 
     def to_phone(self, obj):
@@ -3152,7 +3208,7 @@ def main():
     # mirror its notifications). Always on, regardless of the music source.
     # Pin a fixed RFCOMM channel so BlueZ actually listens and publishes SDP;
     # auth is relaxed so a bonded phone can open the channel directly.
-    notif_link = NotifLink(bus, app_send)
+    notif_link = NotifLink(bus, app_send, player.phone_art)
     NOTIF_LINK["link"] = notif_link
     try:
         dbus.Interface(bus.get_object(BLUEZ, "/org/bluez"), "org.bluez.ProfileManager1") \
