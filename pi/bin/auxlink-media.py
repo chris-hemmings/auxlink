@@ -558,6 +558,7 @@ class Player(dbus.service.Object):
         self.ignore_smo_until = 0.0   # after we press a key, ignore stale reports briefly
         self.in_call = False
         self.phone_active = False      # the phone's media owns the car audio (not the SMO)
+        self.phone_mix_playing = False # mix mode: the phone's media is playing into the car mix
         self.smo_was_playing = False   # was the SMO playing when the phone took over?
         self.paused_for_call = False
         self.resume_timer = None
@@ -651,6 +652,12 @@ class Player(dbus.service.Object):
     def effective_state(self):
         if MUSIC_SOURCE == "bluetooth":
             return self.app_state    # follows the source's own stream already
+        # Mix mode: the phone's media is mixed into the one A2DP stream to the
+        # car. While it plays, keep the car "Playing" even if the SMO is paused
+        # - otherwise the Tesla, seeing Paused, mutes the whole stream and the
+        # phone goes silent too.
+        if self.phone_mix_playing:
+            return "Playing"
         sound = self.present and time.monotonic() >= self.ignore_sound_until
         # WAIT_FOR_AUDIO: only advertise Playing when real PCM is present.
         # MediaSession alone must not tell the car "Playing" (silent stream).
@@ -1671,6 +1678,19 @@ def phone_media_monitor(bus, om, player):
                     if resume or player.app_state == "Playing" or player.present:
                         app_send({"media": "play"})
         write_phone_mute(mute_phone)
+        # Mix mode: while the phone plays into the car mix, keep the car
+        # "Playing" (see effective_state) so pausing the SMO doesn't make the
+        # Tesla mute the whole stream - the phone included. Re-publish when it
+        # flips so the car follows promptly.
+        mix_playing = (mixes_phone_and_smo(SOURCE_OVERRIDE) and playing_now
+                       and not player.phone_active and not player.in_call)
+        if mix_playing != player.phone_mix_playing:
+            player.phone_mix_playing = mix_playing
+            if not player.phone_active:
+                want = player.effective_state()
+                if want != player.status:
+                    player.status = want
+                    player.publish()
         if player.phone_active:
             player.phone_update(phone_info(props))
         return True
