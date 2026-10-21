@@ -305,11 +305,32 @@ hub_restart_once() {
   for _ in $(seq 20); do hub_linked && break; sleep 0.1; done
   hub_silence 0
 }
+# Keep the phone's own media playing to the CAR sink, not the hub. The hub
+# stops mixing the phone out ~3s after the SMO feed goes idle (the phone keeps
+# playing but goes silent at the car). The car sink is driven continuously by
+# the car loop, so a phone stream placed there is always mixed and output and
+# stays audible. (New streams follow the default sink = car; this catches a
+# stream WirePlumber already placed on the hub.)
+move_phone_to_car() {
+  [ -n "$PHONE" ] && [ -n "$SINK_ID" ] || return
+  local line idx cur
+  line=$(pactl list sink-inputs 2>/dev/null | awk -v ph="bluez_input.${PHONE//:/_}" '
+    /^Sink Input #/{idx=substr($3,2); sink=""}
+    /^[ \t]*Sink:/{sink=$2}
+    /node\.name = / && index($0, ph){print idx, sink; exit}')
+  [ -n "$line" ] || return
+  idx=${line%% *}; cur=${line##* }
+  if [ -n "$idx" ] && [ "$cur" != "$SINK_ID" ]; then
+    echo "Hub: moving the phone's media onto the car (was sink $cur)"
+    pactl move-sink-input "$idx" "$SINK_ID" 2>/dev/null
+  fi
+}
 # One iteration of the hub pipeline (returns to let the main loop re-run the
 # shared prologue). The shared prologue has already set INPUT/SINK/SINK_ID/
 # SINK_STATE and handled connect/card/profile/disconnect.
 hub_stream() {
   check_sound
+  move_phone_to_car
   # SMO -> hub feed: up whenever the input is present and the phone has NOT
   # taken over (then the SMO must be silent to the car; the phone plays straight
   # to the car on its own). It carries silence when the SMO is paused - fine,
