@@ -1854,9 +1854,14 @@ class Notify:
         self.store_mtime = t
         for m in reversed(self.messages()):
             h = m.get("handle")
-            if h in self.seen:
+            if not h or h in self.seen:
                 continue
             self.seen.add(h)
+            # Inbox backfill on MAP reconnect sets notify=False so old SMS
+            # don't flood the head unit. Only live new texts (notify True /
+            # missing on older store entries) pop up.
+            if m.get("notify") is False:
+                continue
             sender = m.get("sender") or self.name_of(m.get("number", "")) or m.get("number", "")
             app_send({"text": {"from": sender, "number": m.get("number", ""), "body": m.get("text", "")}})
 
