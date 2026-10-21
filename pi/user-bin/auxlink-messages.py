@@ -322,6 +322,10 @@ class Messages:
             for handle, props in listing:
                 if self.known(handle):
                     continue
+                # Backfill only: these already exist on the phone. Do not
+                # pop them on the head unit (same idea as ignoring the shade
+                # dump when notification forwarding reconnects). Real new
+                # texts come through fetch() with notify=True.
                 self.messages.append({
                     "handle": handle, "folder": "inbox",
                     "time": str(props.get("Timestamp", "")),
@@ -329,10 +333,11 @@ class Messages:
                     "number": str(props.get("SenderAddress", "")),
                     "text": str(props.get("Subject", "")),
                     "read": bool(props.get("Read", False)),
+                    "notify": False,
                 })
                 new += 1
             self.save()
-            log(f"Inbox: {len(listing)} recent messages ({new} new to the Pi)")
+            log(f"Inbox: {len(listing)} recent messages ({new} new to the Pi, no popup)")
             self.sync_sent(mas)
         except dbus.DBusException as e:
             log(f"Could not list the inbox: {e.get_dbus_message()}")
@@ -456,7 +461,8 @@ class Messages:
             name, number, body = parse_bmessage(text)
             self.messages.append({"handle": handle, "folder": "inbox",
                                   "time": time.strftime("%Y%m%dT%H%M%S"), "ts": time.time(),
-                                  "sender": name, "number": number, "text": body, "read": False})
+                                  "sender": name, "number": number, "text": body, "read": False,
+                                  "notify": True})
             self.save()
             who = name or number or "unknown"
             preview = body.replace("\n", " ")
