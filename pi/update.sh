@@ -23,6 +23,17 @@ while IFS= read -r line; do
 done < "$HERE/etc/auxlink.conf"
 echo "Settings kept${added:+; added:$added}"
 
+# The SMO ducker (AUDIO_DUCK) needs swh-plugins. Best effort and time-limited:
+# without internet the update carries on and the ducker just stays off.
+if [ ! -e /usr/lib/ladspa/sc3_1427.so ] && ! ls /usr/lib/*/ladspa/sc3_1427.so >/dev/null 2>&1; then
+  echo "Installing swh-plugins (for the SMO ducker)..."
+  { timeout 120 apt-get install -y -q swh-plugins >/dev/null 2>&1 ||
+    { timeout 120 apt-get update -q >/dev/null 2>&1 &&
+      timeout 120 apt-get install -y -q swh-plugins >/dev/null 2>&1; }; } &&
+    echo "swh-plugins installed" ||
+    echo "swh-plugins not installed (no internet?): the ducker stays off until 'sudo apt install swh-plugins'"
+fi
+
 install -D -m 644 "$HERE/lib/common.sh" /usr/local/lib/auxlink/common.sh
 install -D -m 644 "$HERE/lib/auxconf.py" /usr/local/lib/auxlink/auxconf.py
 install -D -m 644 "$HERE/share/index.html" /usr/local/share/auxlink/index.html
