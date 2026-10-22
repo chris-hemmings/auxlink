@@ -32,6 +32,9 @@
 # loopback's RIGHT channel silent until it is recreated. The car loop is
 # rebuilt on heals; the phone loop must be dropped at the same moments (and
 # on car resume even when HUB_HEALS=0) or phone audio stays left-only.
+# AUDIO_DUCK=1 (hub mode only) puts a ducker between the SMO feed and the hub:
+# the SMO dips while the phone makes a sound, instead of the two adding up at
+# the car (heard as the volume jumping for a second). See ensure_duck.
 #
 # A car can also accept a stream and play SILENCE with everything on the Pi
 # looking healthy, which nothing here can detect: the Tesla does that to a
@@ -85,6 +88,14 @@ FEED_LOOP=""; FEED_INPUT=""; CAR_LOOP=""; CAR_LOOP_SINK_ID=""; CAR_LOOP_STARTED=
 # bluez_input node, found each loop.
 PHONE_LOOP=""; PHONE_LOOP_SRC=""; PHONE_LOOP_SINK_ID=""; PHONE_SRC=""
 NEXT_PHONE_STEREO=0; PHONE_STEREO_BAD=0
+# Ducker (AUDIO_DUCK=1): $DUCK is a filter-chain sink run by its own pipewire
+# process (DUCK_PROC). The SMO feed targets it instead of the hub, and the
+# phone's audio is copied into it (SIDE_LOOP) as the key that turns it down.
+DUCK=auxlink_duck
+DUCK_CONF=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/auxlink-duck.conf
+DUCK_PROC=""; DUCK_RATIO_ON=""; DUCK_SAID=""; DUCK_FAILED_AT=0
+SIDE_LOOP=""; SIDE_LOOP_SRC=""; SIDE_LOOP_DUCK=""
+FEED_KEY=""   # where the SMO feed goes ("<sink>:<ducker pid>"), to rebuild it on a change
 HUB_MODE=""   # which path ran last iteration (1=hub, 0=classic), to switch cleanly
 HUB_FRESH=0   # recreate the hub once per start so property changes take effect
 XQ_FAILS=0   # SBC-XQ attempts since this script started (never reset by a disconnect)
@@ -165,6 +176,7 @@ stop_loop() {
   [ -n "$FEED_LOOP" ] && kill "$FEED_LOOP" 2>/dev/null; FEED_LOOP=""; FEED_INPUT=""
   [ -n "$CAR_LOOP" ] && kill "$CAR_LOOP" 2>/dev/null; CAR_LOOP=""; CAR_LOOP_SINK_ID=""
   [ -n "$PHONE_LOOP" ] && kill "$PHONE_LOOP" 2>/dev/null; PHONE_LOOP=""; PHONE_LOOP_SRC=""; PHONE_LOOP_SINK_ID=""
+  FEED_KEY=""; stop_side_loop
 }
 linked() {
   local links; links=$(timeout 5 pw-link -l 2>/dev/null)
@@ -305,12 +317,148 @@ remove_hub() {
 # Mute/unmute the hub's monitor, so the car loop carries silence during a
 # planned restart (the car only needs the stream to stop and start again).
 hub_silence() { timeout 5 pactl set-source-mute "${HUB}.monitor" "$1" >/dev/null 2>&1; }
+# The SMO feed: into the ducker when it is up ($1 = $DUCK), else the hub.
 start_feed_loop() {
+  local to=${1:-$HUB} remix=""
+  # Into the 4-channel ducker, stay on FL/FR (see ensure_duck).
+  [ "$to" = "$DUCK" ] && remix="stream.dont-remix=true "
   pw-loopback -c 2 -m '[ FL FR ]' \
     --capture-props="target.object=$INPUT node.name=smo_to_hub audio.position=[ FL FR ]" \
-    --playback-props="target.object=$HUB node.name=smo_hub_out audio.position=[ FL FR ]" &
+    --playback-props="target.object=$to node.name=smo_hub_out ${remix}audio.position=[ FL FR ]" &
   FEED_LOOP=$!; FEED_INPUT=$INPUT
-  echo "Hub: SMO feed up ($INPUT -> hub)"
+  echo "Hub: SMO feed up ($INPUT -> $([ "$to" = "$DUCK" ] && echo "ducker -> ")hub)"
+}
+
+# ===== Ducker (AUDIO_DUCK=1, hub mode) =================================
+# The phone's own sounds (Maps prompts, notifications, Both-mode media) reach
+# the car through the phone->car loop and add onto the SMO's music at full
+# level, heard as the volume jumping for a second. The ducker turns the SMO
+# down while the phone makes a sound, like a radio talk-over: a filter-chain
+# sink between the SMO feed and the hub running a sidechain compressor
+# (swh-plugins' sc3), keyed by a copy of the phone's audio. The music is on
+# FL/FR, the phone key on RL/RR (AUX positions arrive zeroed inside the
+# filter). Both streams into it need stream.dont-remix, or PipeWire upmixes
+# each onto all four channels: the music keys itself and the phone leaks into
+# the music. The key only turns the SMO down; the phone still plays through
+# its own loop. Higher DUCK_RATIO = deeper dip (2: ~10 dB under a loud
+# notification, ~3 dB under a quiet one). It reacts in ~5 ms and recovers over
+# ~0.4 s. If the plugin is missing or the ducker won't start, the SMO feeds
+# the hub directly, as before.
+write_duck_conf() {
+  local ratio
+  ratio=$(awk -v r="$1" 'BEGIN{ r += 0; if (r < 1) r = 1; if (r > 10) r = 10; print r }')
+  cat > "$DUCK_CONF" <<EOF
+# Written by auxlink-audio: the SMO ducker (AUDIO_DUCK). Regenerated each start.
+context.properties = { log.level = 0 }
+context.spa-libs = {
+  audio.convert.* = audioconvert/libspa-audioconvert
+  support.*       = support/libspa-support
+}
+context.modules = [
+  { name = libpipewire-module-rt flags = [ ifexists nofail ] }
+  { name = libpipewire-module-protocol-native }
+  { name = libpipewire-module-client-node }
+  { name = libpipewire-module-adapter }
+  { name = libpipewire-module-filter-chain
+    args = {
+      node.description = "AuxLink ducker"
+      media.name       = "AuxLink ducker"
+      filter.graph = {
+        nodes = [
+          # The phone's left + right, summed into the compressor's one key input.
+          { type = builtin name = key label = mixer
+            control = { "Gain 1" = 1.0 "Gain 2" = 1.0 } }
+          # Chain balance 1 = compress on the key (the phone), not the music.
+          { type = ladspa name = duck plugin = sc3_1427 label = sc3
+            control = { "Attack time (ms)" = 5 "Release time (ms)" = 400
+                        "Threshold level (dB)" = -30 "Ratio (1:n)" = $ratio
+                        "Knee radius (dB)" = 3 "Makeup gain (dB)" = 0
+                        "Chain balance" = 1 } }
+        ]
+        links   = [ { output = "key:Out" input = "duck:Sidechain" } ]
+        inputs  = [ "duck:Left input" "duck:Right input" "key:In 1" "key:In 2" ]
+        outputs = [ "duck:Left output" "duck:Right output" ]
+      }
+      capture.props = {
+        node.name      = $DUCK
+        media.class    = Audio/Sink
+        audio.channels = 4
+        audio.position = [ FL FR RL RR ]
+        priority.session = 1
+      }
+      playback.props = {
+        node.name      = ${DUCK}_out
+        audio.channels = 2
+        audio.position = [ FL FR ]
+        target.object  = $HUB
+        node.passive   = true
+      }
+    }
+  }
+]
+EOF
+}
+duck_plugin() { ls /usr/lib/ladspa/sc3_1427.so /usr/lib/*/ladspa/sc3_1427.so 2>/dev/null | head -1; }
+stop_side_loop() {
+  [ -n "$SIDE_LOOP" ] && kill "$SIDE_LOOP" 2>/dev/null
+  SIDE_LOOP=""; SIDE_LOOP_SRC=""; SIDE_LOOP_DUCK=""
+  pkill -f "[n]ode.name=phone_key_cap" 2>/dev/null || true
+}
+stop_duck() {
+  stop_side_loop
+  [ -n "$DUCK_PROC" ] && kill "$DUCK_PROC" 2>/dev/null
+  DUCK_PROC=""; DUCK_RATIO_ON=""
+  pkill -f "[a]uxlink-duck.conf" 2>/dev/null || true
+}
+# Up = 0 (start it if needed); 1 = the SMO should feed the hub directly.
+ensure_duck() {
+  if [ "${AUDIO_DUCK:-1}" != 1 ]; then
+    [ -n "$DUCK_PROC" ] && { echo "Ducker: off (AUDIO_DUCK=0)"; stop_duck; }
+    return 1
+  fi
+  if [ -z "$(duck_plugin)" ]; then
+    [ "$DUCK_SAID" != noplugin ] && echo "Ducker: unavailable, swh-plugins is not installed" \
+      "(sudo apt install swh-plugins); the phone mixes in at full level"
+    DUCK_SAID=noplugin; return 1
+  fi
+  local ratio=${DUCK_RATIO:-2}
+  [ -n "$DUCK_PROC" ] && kill -0 "$DUCK_PROC" 2>/dev/null && [ "$ratio" = "$DUCK_RATIO_ON" ] && return 0
+  # A failed start is retried once a minute, not every pass.
+  [ "$DUCK_SAID" = failed ] && [ $(( $(date +%s) - DUCK_FAILED_AT )) -lt 60 ] && return 1
+  [ -n "$DUCK_PROC" ] && echo "Ducker: restarting (stopped, or DUCK_RATIO changed)"
+  stop_duck
+  write_duck_conf "$ratio"
+  pipewire -c "$DUCK_CONF" >/dev/null 2>&1 &
+  DUCK_PROC=$!
+  for _ in $(seq 30); do pactl list sinks short 2>/dev/null | grep -qw "$DUCK" && break; sleep 0.1; done
+  if ! pactl list sinks short 2>/dev/null | grep -qw "$DUCK"; then
+    echo "Ducker: could not start; the SMO feeds the hub directly"
+    stop_duck; DUCK_SAID=failed; DUCK_FAILED_AT=$(date +%s)
+    return 1
+  fi
+  DUCK_RATIO_ON=$ratio; DUCK_SAID=""
+  echo "Ducker: up (the SMO dips while the phone makes a sound; ratio 1:$ratio)"
+}
+# The phone's audio -> the ducker's key (RL/RR). Alongside the phone->car
+# loop, never instead of it; it doesn't touch the car sink, so the car's
+# suspend/resume (right-channel) rebuilds don't apply to it.
+start_side_loop() {
+  pw-loopback -c 2 -m '[ FL FR ]' \
+    --capture-props="target.object=$PHONE_SRC node.name=phone_key_cap audio.position=[ FL FR ]" \
+    --playback-props="target.object=$DUCK node.name=phone_key stream.dont-remix=true audio.position=[ RL RR ]" &
+  SIDE_LOOP=$!; SIDE_LOOP_SRC=$PHONE_SRC; SIDE_LOOP_DUCK=$DUCK_PROC
+  echo "Ducker: keyed by the phone ($PHONE_SRC)"
+}
+manage_side_loop() {
+  if [ -z "$DUCK_PROC" ]; then
+    [ -n "$SIDE_LOOP" ] && stop_side_loop
+    return
+  fi
+  if [ -z "$SIDE_LOOP" ] || ! kill -0 "$SIDE_LOOP" 2>/dev/null \
+     || [ "$PHONE_SRC" != "$SIDE_LOOP_SRC" ] || [ "$DUCK_PROC" != "$SIDE_LOOP_DUCK" ]; then
+    stop_side_loop
+    start_side_loop
+  fi
 }
 start_car_loop() {
   # Capture the hub's monitor the documented way (target the sink +
@@ -379,6 +527,7 @@ manage_phone_loop() {
   if [ -z "$PHONE_SRC" ]; then
     [ -n "$PHONE_LOOP" ] && { echo "Hub: phone stopped streaming; dropping the phone->car loop"; \
       drop_phone_loop; }
+    [ -n "$SIDE_LOOP" ] && stop_side_loop
     return
   fi
   if [ -z "$PHONE_LOOP" ] || ! kill -0 "$PHONE_LOOP" 2>/dev/null \
@@ -387,23 +536,29 @@ manage_phone_loop() {
     sleep 0.3
     start_phone_loop
   fi
+  manage_side_loop
 }
 # One iteration of the hub pipeline (returns to let the main loop re-run the
 # shared prologue). The shared prologue has already set INPUT/SINK/SINK_ID/
 # SINK_STATE and handled connect/card/profile/disconnect.
 hub_stream() {
   check_sound
+  # Before the phone loops: the ducker's key loop needs it up.
+  if ensure_duck; then feed_to=$DUCK; else feed_to=$HUB; fi
   manage_phone_loop
   # SMO -> hub feed: up whenever the input is present and the phone has NOT
   # taken over (then the SMO must be silent to the car; the phone plays straight
   # to the car on its own). It carries silence when the SMO is paused - fine,
-  # the car loop below stays up regardless.
+  # the car loop below stays up regardless. Rebuilt when the ducker comes,
+  # goes or restarts (its sink is a new node then).
   if phone_media; then
-    [ -n "$FEED_LOOP" ] && { echo "Hub: phone took over; dropping the SMO feed"; kill "$FEED_LOOP" 2>/dev/null; FEED_LOOP=""; FEED_INPUT=""; }
-  elif [ -z "$FEED_LOOP" ] || ! kill -0 "$FEED_LOOP" 2>/dev/null || [ "$INPUT" != "$FEED_INPUT" ]; then
+    [ -n "$FEED_LOOP" ] && { echo "Hub: phone took over; dropping the SMO feed"; kill "$FEED_LOOP" 2>/dev/null; FEED_LOOP=""; FEED_INPUT=""; FEED_KEY=""; }
+  elif [ -z "$FEED_LOOP" ] || ! kill -0 "$FEED_LOOP" 2>/dev/null || [ "$INPUT" != "$FEED_INPUT" ] \
+       || [ "$feed_to:$DUCK_PROC" != "$FEED_KEY" ]; then
     [ -n "$FEED_LOOP" ] && kill "$FEED_LOOP" 2>/dev/null; FEED_LOOP=""
     pkill -f "[n]ode.name=smo_hub_out" 2>/dev/null && sleep 0.3
-    start_feed_loop
+    start_feed_loop "$feed_to"
+    FEED_KEY="$feed_to:$DUCK_PROC"
   fi
 
   # Play pressed in the car while streaming: restart the car loop so it isn't
@@ -564,7 +719,7 @@ hub_stream() {
   sleep 2
 }
 
-trap 'stop_loop; unmute_input' EXIT
+trap 'stop_loop; stop_duck; unmute_input' EXIT
 
 while true; do
   . /etc/auxlink.conf; CARD=bluez_card.${CAR//:/_}; CAR_RE=${CAR//:/[:_]}
@@ -700,6 +855,7 @@ while true; do
     pkill -f "[n]ode.name=to_tesla_cap" 2>/dev/null
     pkill -f "[n]ode.name=smo_hub_out" 2>/dev/null
     pkill -f "[n]ode.name=phone_to_car" 2>/dev/null
+    stop_duck      # hub mode starts a fresh one; classic mode has none
     HUB_MODE=$want_hub
   fi
   if [ "$want_hub" = 1 ] && ensure_hub; then
@@ -707,6 +863,7 @@ while true; do
     continue
   fi
   remove_hub
+  [ -n "$DUCK_PROC" ] && stop_duck
 
   # ---- should music be streaming right now? ----
   check_sound

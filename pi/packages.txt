@@ -10,6 +10,7 @@ python3-gi
 uhubctl
 device-tree-compiler
 sox
+swh-plugins
 pulseaudio-utils
 alsa-utils
 network-manager
