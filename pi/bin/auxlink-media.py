@@ -1871,7 +1871,15 @@ def phone_media_monitor(bus, om, player):
         # placeholder) while it plays and the SMO is paused in mix mode. The SMO
         # taking the display back when it plays again is handled in smo_update;
         # here we hand it back when the phone itself stops.
-        show_meta = mix_playing and player.app_state != "Playing"
+        # Only hand the car's display to the phone when the SMO is REALLY not the
+        # music source: the app isn't Playing AND no real SMO sound is arriving.
+        # app_state alone is too loose - apps like YouTube under-report Playing,
+        # so while live SMO audio plays the phone's AVRCP (still "Playing" from a
+        # short burst) would wrongly park the phone cover / music-note placeholder
+        # over the SMO's own now-playing. present is the SMO input sound flag
+        # (the XIAO/I2S line), so the phone's own audio never trips it.
+        smo_is_source = player.app_state == "Playing" or player.present
+        show_meta = mix_playing and not smo_is_source
         if show_meta:
             if not player.mix_phone_meta:
                 player.mix_phone_meta = True
