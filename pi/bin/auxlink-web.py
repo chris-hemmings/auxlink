@@ -42,7 +42,7 @@ EDITABLE = {
     "SETUP_WIFI_MINUTES": r"\d{1,3}", "WEB_PASSWORD": r"[^\s'\"]{0,63}", "WIFI_OFF_ON_CAR_DISCONNECT": r"[01]",
     "SETUP_BUTTON_GPIO": r"\d{0,2}", "SOURCE_NAME": r"[\w .\-]{1,30}",
     # Car behaviour (defaults tuned on a Tesla; other cars may want others)
-    "CAR_CALLS": r"[01]", "CAR_MIC_MODE": r"call|vr", "SBC_XQ": r"[01]", "WAIT_FOR_AUDIO": r"[01]", "AUDIO_HUB": r"[01]", "HUB_HEALS": r"[01]", "STREAM_HOLD_SEC": r"\d{1,3}", "SMO_VOLUME_MAX": r"[01]", "DEV_TERMINAL": r"[01]", "MESSAGES": r"[01]", "SMO_NOTIFY": r"[01]", "CAR_OFF_DROPS_PHONE": r"[01]", "CAR_OFF_PHONE_DELAY": r"\d{1,4}", "CAR_OFF_REQUIRE_STILL": r"[01]", "PAUSE_ON_CAR_OFF": r"[01]", "PHONE_MEDIA_PRIORITY": r"[01]", "PHONE_MEDIA_DEBOUNCE": r"\d{1,2}", "SOURCE_OVERRIDE": r"media|both|merge|phone|auto",
+    "CAR_CALLS": r"[01]", "CAR_MIC_MODE": r"call|vr", "SBC_XQ": r"[01]", "WAIT_FOR_AUDIO": r"[01]", "SMO_VOLUME_MAX": r"[01]", "DEV_TERMINAL": r"[01]", "MESSAGES": r"[01]", "SMO_NOTIFY": r"[01]", "CAR_OFF_DROPS_PHONE": r"[01]", "CAR_OFF_PHONE_DELAY": r"\d{1,4}", "CAR_OFF_REQUIRE_STILL": r"[01]", "PAUSE_ON_CAR_OFF": r"[01]", "PHONE_MEDIA_PRIORITY": r"[01]", "PHONE_MEDIA_DEBOUNCE": r"\d{1,2}", "SOURCE_OVERRIDE": r"media|both|merge|phone|auto",
 }
 ROLE_KEYS = {"car": ("CAR", "CAR_ADAPTER"), "phone": ("PHONE", "PHONE_ADAPTER"),
              "source": ("SOURCE", "SOURCE_ADAPTER")}
