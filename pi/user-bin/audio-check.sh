@@ -75,12 +75,13 @@ if [ $HUB_ON = yes ]; then
   elif [ $feed_ok = yes ]; then ok "music input -> hub"
   else warn "music input not feeding the hub (idle while paused is normal)"; fi
   if [ $FIX = yes ] && { [ $mon_ok = no ] || [ $out_ok = no ]; }; then
-    # Drop the hub car loop; auxlink-audio rebuilds it cleanly. Never touch the
-    # classic smo_capture loop (it does not exist in hub mode).
-    echo "        fixing: rebuilding the hub car loop"
-    pkill -f "[n]ode.name=to_tesla_cap"; sleep 3; fi
+    # Drop the hub car + phone loops; auxlink-audio rebuilds them cleanly.
+    echo "        fixing: rebuilding the hub car and phone loops"
+    pkill -f "[n]ode.name=to_tesla_cap"
+    pkill -f "[n]ode.name=phone_to_car"
+    sleep 3; fi
 elif [ $PHONE_SRC = yes ]; then
-  ok "SMO loopback idle (the phone is the source; it plays straight to the car)"
+  ok "SMO loopback idle (the phone is the source; hub mode uses phone->car loop)"
 else
   links=$(timeout 5 pw-link -l 2>/dev/null); in_ok=no; out_ok=no
   echo "$links" | grep -A2 "^$I2S:capture_FL" | grep -q "smo_capture:" &&
@@ -106,6 +107,7 @@ if [ $FIX = yes ]; then
   timeout 5 pactl suspend-sink "$SINK" 1; sleep 0.5; timeout 5 pactl suspend-sink "$SINK" 0
   if [ $HUB_ON = yes ]; then
     pkill -f "[n]ode.name=to_tesla_cap"    # hub car loop; auxlink-audio rebuilds it
+    pkill -f "[n]ode.name=phone_to_car"    # phone->car loop (same suspend mono quirk)
   else
     pkill -f "[n]ode.name=smo_capture"     # classic loop
   fi
