@@ -229,11 +229,74 @@ sound_now() {
   rms=$(sox "$f" -n stat 2>&1 | awk '/RMS +amplitude/ {print $3}')
   [ -n "$rms" ] && awk "BEGIN{exit !($rms > 0.0003)}"
 }
+# A level meter that stays attached to the music input, so check_sound reads a
+# file instead of starting pw-record + sox (and adding a node to the audio
+# graph) every few seconds. 8 kHz mono is plenty to tell sound from the SMO's
+# digital silence. METER_FILE holds the last second (epoch) sound was seen.
+# If it keeps dying (e.g. a pw-record that can't write raw to a pipe), fall
+# back to sampling with sound_now as before.
+METER_FILE=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/auxlink-level
+METER=""; METER_INPUT=""; METER_STARTED=0; METER_FAILS=0; METER_OFF=0
+METER_PY='
+import array, os, sys, time
+path = sys.argv[1]
+def put(t):
+    with open(path + ".tmp", "w") as f:
+        f.write("%d\n" % t)
+    os.replace(path + ".tmp", path)
+put(0)
+last = 0
+while True:
+    b = sys.stdin.buffer.read(800)            # 50 ms
+    if not b:
+        break
+    a = array.array("h")
+    a.frombytes(b[:len(b) & ~1])
+    if a and (max(a) > 9 or min(a) < -9):     # ~ the old 0.0003 RMS threshold
+        now = int(time.time())
+        if now != last:
+            put(now)
+            last = now
+'
+start_meter() {
+  pkill -f "[n]ode.name=auxlink_meter" 2>/dev/null
+  rm -f "$METER_FILE"
+  pw-record --target "$INPUT" --rate 8000 --channels 1 --format s16 \
+            -P node.name=auxlink_meter -P node.dont-reconnect=true - 2>/dev/null |
+    python3 -c "$METER_PY" "$METER_FILE" &
+  METER=$!; METER_INPUT=$INPUT; METER_STARTED=$(date +%s)
+}
+stop_meter() {
+  [ -n "$METER" ] && kill "$METER" 2>/dev/null
+  METER=""; METER_INPUT=""
+  pkill -f "[n]ode.name=auxlink_meter" 2>/dev/null || true
+}
+# Keep the meter on the current input; false = use sound_now instead.
+meter_ok() {
+  [ "$METER_OFF" = 1 ] && return 1
+  if [ -n "$METER" ] && kill -0 "$METER" 2>/dev/null && [ "$METER_INPUT" = "$INPUT" ]; then
+    return 0
+  fi
+  if [ -n "$METER" ] && [ "$METER_INPUT" = "$INPUT" ] && [ $(( $(date +%s) - METER_STARTED )) -lt 10 ]; then
+    METER_FAILS=$((METER_FAILS + 1))       # died soon after starting
+    if [ "$METER_FAILS" -ge 3 ]; then
+      echo "Level meter keeps stopping; sampling the input every few seconds instead"
+      METER_OFF=1; stop_meter; return 1
+    fi
+  fi
+  stop_meter
+  start_meter
+}
 # Updates PRESENT (sound seen within the last 6 s) and its file.
 check_sound() {
-  local now; now=$(date +%s)
-  [ "$now" -lt "$NEXT_LEVEL" ] && return
-  if sound_now; then LAST_SOUND=$now; fi
+  local now t; now=$(date +%s)
+  if meter_ok; then
+    t=$(cat "$METER_FILE" 2>/dev/null)
+    [ -n "$t" ] && [ "$t" -gt "$LAST_SOUND" ] 2>/dev/null && LAST_SOUND=$t
+  else
+    [ "$now" -lt "$NEXT_LEVEL" ] && return
+    if sound_now; then LAST_SOUND=$now; fi
+  fi
   local was=$PRESENT
   if [ $((now - LAST_SOUND)) -lt 6 ]; then PRESENT=1; else PRESENT=0; fi
   if [ "$PRESENT" != "$was" ] || [ ! -f "$PRESENT_FILE" ]; then
@@ -383,7 +446,7 @@ manage_phone_loop() {
     [ -n "$PHONE_LOOP" ] && drop_phone_loop "car sink suspended"
     return
   fi
-  PHONE_SRC=$(pactl list sources short 2>/dev/null | awk -v m="bluez_input.${PHONE//:/_}" 'index($2,m)==1{print $2; exit}')
+  PHONE_SRC=$(echo "$SOURCES" | awk -v m="bluez_input.${PHONE//:/_}" 'index($2,m)==1{print $2; exit}')
   if [ -z "$PHONE_SRC" ]; then
     [ -n "$PHONE_LOOP" ] && { echo "Hub: phone stopped streaming; dropping the phone->car loop"; \
       drop_phone_loop; }
@@ -599,19 +662,23 @@ hub_stream() {
   sleep 2
 }
 
-trap 'stop_loop; unmute_input' EXIT
+trap 'stop_loop; stop_meter; unmute_input' EXIT
+INPUT_CACHE=""; INPUT_CACHE_FOR=""; NEXT_PROFILE=0
 
 while true; do
   . /etc/auxlink.conf; CARD=bluez_card.${CAR//:/_}; CAR_RE=${CAR//:/[:_]}
   wp_rule
   phone_wp_rule
+  # Every source, once per pass (the phone mute, the music input check and
+  # manage_phone_loop all read it) instead of a pactl call for each.
+  SOURCES=$(timeout 5 pactl list sources short 2>/dev/null)
   # Media mode: mute the phone's A2DP media so it doesn't blend into the car
   # (auxlink-media sets /run/auxlink/phone-mute). Re-applied each loop so it
   # survives the phone reconnecting (a fresh node comes up unmuted). Only the
   # phone's media source; its call audio (HFP) is separate and unaffected.
   if [ -n "$PHONE" ]; then
     want_mute=$(cat /run/auxlink/phone-mute 2>/dev/null || echo 0)
-    pnode=$(pactl list sources short 2>/dev/null | awk -v m="bluez_input.${PHONE//:/_}" 'index($2,m)==1{print $2; exit}')
+    pnode=$(echo "$SOURCES" | awk -v m="bluez_input.${PHONE//:/_}" 'index($2,m)==1{print $2; exit}')
     if [ -n "$pnode" ]; then
       cur=$(pactl get-source-mute "$pnode" 2>/dev/null | awk '{print ($2=="yes")?1:0}')
       [ -n "$cur" ] && [ "$cur" != "$want_mute" ] && pactl set-source-mute "$pnode" "$want_mute" 2>/dev/null
@@ -629,7 +696,14 @@ while true; do
   # signal for "SMO disconnected". A Bluetooth source's input only exists
   # while it is connected, and the USB-C one only once the port is in
   # gadget mode.
-  INPUT=$(music_input)
+  # The full lookup (music_input reads every source's properties) only when
+  # the input we had is gone or the source setting changed.
+  if [ -n "$INPUT_CACHE" ] && [ "$INPUT_CACHE_FOR" = "${MUSIC_SOURCE:-wired}" ] &&
+     echo "$SOURCES" | awk -v n="$INPUT_CACHE" '$2 == n {f = 1} END {exit !f}'; then
+    INPUT=$INPUT_CACHE
+  else
+    INPUT=$(music_input); INPUT_CACHE=$INPUT; INPUT_CACHE_FOR=${MUSIC_SOURCE:-wired}
+  fi
   if [ -z "$INPUT" ]; then
     case "${MUSIC_SOURCE:-wired}" in
       bluetooth) why="Waiting for the Bluetooth music source${SOURCE:+ ($SOURCE)} to connect" ;;
@@ -642,7 +716,7 @@ while true; do
     if [ "$PRESENT" = 1 ]; then
       PRESENT=0; LAST_SOUND=0; echo 0 > "$PRESENT_FILE"; echo "No sound from the SMO"
     fi
-    stop_loop
+    stop_loop; stop_meter
     # A Bluetooth source closes its stream on pause: look again quickly, so
     # play is heard at once.
     if [ "${MUSIC_SOURCE:-wired}" = bluetooth ]; then sleep 0.5; else sleep 3; fi
@@ -654,7 +728,7 @@ while true; do
     stop_loop
   fi
 
-  if ! $BT "$CAR_ADAPTER" "$CAR" connected 2>/dev/null; then
+  if ! bt_connected "$CAR_ADAPTER" "$CAR" 2>/dev/null; then
     GONE=$((GONE + 1))
     if [ "$GONE" -eq 2 ]; then
       [ -n "$LOOP" ] && echo "Car disconnected"
@@ -669,6 +743,7 @@ while true; do
     # stream silently, like after a call: start it the same way (a muted
     # first start, then the real one), so it plays either way.
     RECHECK="the car just connected"; RECHECK_AT=0
+    NEXT_PROFILE=0
   fi
   GONE=0
 
@@ -680,6 +755,7 @@ while true; do
       timeout 25 $BT "$CAR_ADAPTER" "$CAR" connect "$A2DP_SINK_UUID" >/dev/null 2>&1
       NO_CARD=0
     fi
+    NEXT_PROFILE=0
     sleep 2; continue
   fi
   NO_CARD=0
@@ -689,20 +765,25 @@ while true; do
   # pressure, but the Tesla DISCONNECTS when the profile is switched to it,
   # so it is opt-in and tried at most twice per Pi boot, not per connection
   # (a per-connection retry would knock the car off again on every connect).
-  CARDINFO=$(timeout 5 pactl list cards | sed -n "/Name: $CARD/,/^Card #/p")
-  ACTIVE=$(echo "$CARDINFO" | awk -F': ' '/Active Profile/ {print $2; exit}')
-  WANT=a2dp-sink
-  if [ "${SBC_XQ:-0}" = 1 ] && [ "$XQ_FAILS" -lt 2 ] &&
-     echo "$CARDINFO" | grep -q "a2dp-sink-sbc_xq:.*available: yes"; then
-    WANT=a2dp-sink-sbc_xq
-  fi
-  if [ "$ACTIVE" != "$WANT" ] && { [[ "$ACTIVE" != a2dp* ]] || ! in_call; }; then
-    echo "Switching the car to $WANT"
-    # Count every SBC-XQ attempt (per boot): a car that refuses it, or
-    # quietly stays on SBC, gets plain SBC after two tries.
-    [ "$WANT" = a2dp-sink-sbc_xq ] && XQ_FAILS=$((XQ_FAILS + 1))
-    timeout 5 pactl set-card-profile "$CARD" "$WANT" 2>/dev/null
-    sleep 2; continue
+  # The full card listing is the heaviest call here, so once the profile is
+  # right it is only re-checked every 30 s (and at once after a reconnect).
+  if [ "$(date +%s)" -ge "$NEXT_PROFILE" ]; then
+    CARDINFO=$(timeout 5 pactl list cards | sed -n "/Name: $CARD/,/^Card #/p")
+    ACTIVE=$(echo "$CARDINFO" | awk -F': ' '/Active Profile/ {print $2; exit}')
+    WANT=a2dp-sink
+    if [ "${SBC_XQ:-0}" = 1 ] && [ "$XQ_FAILS" -lt 2 ] &&
+       echo "$CARDINFO" | grep -q "a2dp-sink-sbc_xq:.*available: yes"; then
+      WANT=a2dp-sink-sbc_xq
+    fi
+    if [ "$ACTIVE" != "$WANT" ] && { [[ "$ACTIVE" != a2dp* ]] || ! in_call; }; then
+      echo "Switching the car to $WANT"
+      # Count every SBC-XQ attempt (per boot): a car that refuses it, or
+      # quietly stays on SBC, gets plain SBC after two tries.
+      [ "$WANT" = a2dp-sink-sbc_xq ] && XQ_FAILS=$((XQ_FAILS + 1))
+      timeout 5 pactl set-card-profile "$CARD" "$WANT" 2>/dev/null
+      sleep 2; continue
+    fi
+    [ "$ACTIVE" = "$WANT" ] && NEXT_PROFILE=$(( $(date +%s) + 30 ))
   fi
 
   LINE=$(car_sink_line)

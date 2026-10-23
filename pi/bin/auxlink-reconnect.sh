@@ -36,6 +36,13 @@ moving_now() {
 # connects by itself first), then backing off 60 s -> 5 min.
 CAR_FIRST_WAIT=45; CAR_MIN_WAIT=60; CAR_MAX_WAIT=300
 car_next=$(( $(date +%s) + CAR_FIRST_WAIT )); car_wait=$CAR_MIN_WAIT
+# Calls the Pi makes to a missing phone: 1 min apart, doubling to 5 min. Each
+# attempt pages the phone for several seconds, which takes radio time from the
+# car's music stream; a phone that's in the car reconnects by itself anyway.
+# Back to quick tries when the car (re)connects - that's when the phone is
+# most likely to be around.
+PHONE_MIN_WAIT=30; PHONE_MAX_WAIT=300
+phone_wait=$PHONE_MIN_WAIT
 missing=0; restarts=0; phone_next=0
 
 while true; do
@@ -43,23 +50,23 @@ while true; do
   . /etc/auxlink.conf      # pick up a newly paired car/phone without a restart
   [ -z "$PHONE" ] || [ -z "$PHONE_ADAPTER" ] && PHONE_ENABLED=0
   phone_missing=no
-  if [ "$PHONE_ENABLED" = 1 ] && ! $BT "$PHONE_ADAPTER" present 2>/dev/null; then phone_missing=yes; fi
-  if [ "$phone_missing" = yes ] && $BT "$CAR_ADAPTER" "$CAR" connected 2>/dev/null; then
+  if [ "$PHONE_ENABLED" = 1 ] && ! bt_present "$PHONE_ADAPTER" 2>/dev/null; then phone_missing=yes; fi
+  if [ "$phone_missing" = yes ] && bt_connected "$CAR_ADAPTER" "$CAR" 2>/dev/null; then
     [ "$phone_warned" = no ] && echo "Phone adapter missing; leaving it alone while the car is connected"
     phone_warned=yes; phone_missing=no
   else
     phone_warned=no
   fi
 
-  if ! $BT "$CAR_ADAPTER" present 2>/dev/null || [ "$phone_missing" = yes ]; then
+  if ! bt_present "$CAR_ADAPTER" 2>/dev/null || [ "$phone_missing" = yes ]; then
     missing=$((missing + 1))
     limit=4
-    $BT "$CAR_ADAPTER" present 2>/dev/null && limit=12      # only the phone side is gone
+    bt_present "$CAR_ADAPTER" 2>/dev/null && limit=12      # only the phone side is gone
     if [ "$missing" -ge "$limit" ]; then
       missing=0; restarts=$((restarts + 1))
       # A USB power cycle only helps a missing USB dongle, not the built-in chip.
       usb_missing=no
-      ! $BT "$CAR_ADAPTER" present 2>/dev/null && [ "${CAR_ADAPTER_BUS:-usb}" != builtin ] && usb_missing=yes
+      ! bt_present "$CAR_ADAPTER" 2>/dev/null && [ "${CAR_ADAPTER_BUS:-usb}" != builtin ] && usb_missing=yes
       [ "$phone_missing" = yes ] && [ "${PHONE_ADAPTER_BUS:-usb}" != builtin ] && usb_missing=yes
       if [ "$restarts" -ge 1 ] && [ "$usb_missing" = yes ]; then
         echo "Bluetooth adapter missing; power-cycling USB"
@@ -73,22 +80,25 @@ while true; do
       sleep 5
       continue
     fi
-    $BT "$CAR_ADAPTER" present 2>/dev/null || { sleep 5; continue; }
+    bt_present "$CAR_ADAPTER" 2>/dev/null || { sleep 5; continue; }
   else
     missing=0; restarts=0
   fi
 
   # Keep both adapters on, with fixed names (a reset can leave "auxlink #2").
-  $BT "$CAR_ADAPTER" power >/dev/null 2>&1
-  $BT "$CAR_ADAPTER" alias "$CAR_NAME" 2>/dev/null
+  bt_power "$CAR_ADAPTER" >/dev/null 2>&1
+  bt_alias "$CAR_ADAPTER" "$CAR_NAME" 2>/dev/null
   if [ "$PHONE_ENABLED" = 1 ]; then
-    $BT "$PHONE_ADAPTER" power >/dev/null 2>&1
-    $BT "$PHONE_ADAPTER" alias "$PHONE_NAME" 2>/dev/null
+    bt_power "$PHONE_ADAPTER" >/dev/null 2>&1
+    bt_alias "$PHONE_ADAPTER" "$PHONE_NAME" 2>/dev/null
   fi
 
   # --- Car ---
-  if $BT "$CAR_ADAPTER" "$CAR" connected; then
-    [ "$car_was" = no ] && echo "Car connected"
+  if bt_connected "$CAR_ADAPTER" "$CAR"; then
+    if [ "$car_was" = no ]; then
+      echo "Car connected"
+      phone_wait=$PHONE_MIN_WAIT; phone_next=0   # look for the phone again soon
+    fi
     car_was=yes; car_seen=yes; car_down_since=0
     echo 1 > "$CAR_CONN_FLAG" 2>/dev/null
     # Car is back: let the phone reconnect (the phone section does the connect).
@@ -140,8 +150,8 @@ while true; do
 
   # --- Bluetooth music source (every ~60 s; sources reconnect by themselves too) ---
   if [ "${MUSIC_SOURCE:-wired}" = bluetooth ] && [ -n "$SOURCE" ] && [ -n "$SOURCE_ADAPTER" ] &&
-     $BT "$SOURCE_ADAPTER" present 2>/dev/null; then
-    if $BT "$SOURCE_ADAPTER" "$SOURCE" connected; then
+     bt_present "$SOURCE_ADAPTER" 2>/dev/null; then
+    if bt_connected "$SOURCE_ADAPTER" "$SOURCE"; then
       [ "$source_was" = no ] && echo "Music source connected"
       source_was=yes
       # Connected, but maybe only its headset link (voice search): an Android
@@ -171,22 +181,29 @@ while true; do
   # back, and drop it again if something reconnected it - until the car returns
   # (the car section removes the flag).
   if [ "$PHONE_ENABLED" = 1 ] && [ "${CAR_OFF_DROPS_PHONE:-0}" = 1 ] && [ -f "$CAR_OFF_FLAG" ]; then
-    if $BT "$PHONE_ADAPTER" present 2>/dev/null && $BT "$PHONE_ADAPTER" "$PHONE" connected 2>/dev/null; then
+    if bt_present "$PHONE_ADAPTER" 2>/dev/null && bt_connected "$PHONE_ADAPTER" "$PHONE" 2>/dev/null; then
       $BT "$PHONE_ADAPTER" "$PHONE" disconnect >/dev/null 2>&1
       [ "$phone_was" = yes ] && echo "Car off: phone disconnected"
     fi
     phone_was=no
-  elif [ "$PHONE_ENABLED" = 1 ] && $BT "$PHONE_ADAPTER" present 2>/dev/null; then
-    if $BT "$PHONE_ADAPTER" "$PHONE" connected; then
+  elif [ "$PHONE_ENABLED" = 1 ] && bt_present "$PHONE_ADAPTER" 2>/dev/null; then
+    if bt_connected "$PHONE_ADAPTER" "$PHONE"; then
       [ "$phone_was" = no ] && echo "Phone connected"
-      phone_was=yes
+      phone_was=yes; phone_wait=$PHONE_MIN_WAIT
     else
-      [ "$phone_was" = yes ] && echo "Phone disconnected, will keep trying"
+      if [ "$phone_was" = yes ]; then
+        echo "Phone disconnected, will keep trying (less often while it stays away)"
+        phone_wait=$PHONE_MIN_WAIT; phone_next=0
+      fi
       phone_was=no
       now=$(date +%s)
       if [ "$now" -ge "$phone_next" ]; then
-        phone_next=$((now + 30))
-        timeout 25 $BT "$PHONE_ADAPTER" "$PHONE" connect >/dev/null 2>&1 && echo "Reconnected to phone"
+        if timeout 25 $BT "$PHONE_ADAPTER" "$PHONE" connect >/dev/null 2>&1; then
+          echo "Reconnected to phone"; phone_wait=$PHONE_MIN_WAIT
+        else
+          phone_wait=$((phone_wait * 2)); [ "$phone_wait" -gt "$PHONE_MAX_WAIT" ] && phone_wait=$PHONE_MAX_WAIT
+        fi
+        phone_next=$(( $(date +%s) + phone_wait ))
       fi
     fi
   fi

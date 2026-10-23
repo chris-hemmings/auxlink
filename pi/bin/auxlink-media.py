@@ -3132,9 +3132,12 @@ def main():
                 elif "fw" in info:
                     handle_fw(info["fw"])
                 elif info.get("req") == "pi":
-                    app_send({"pi": pi_status()})
-
+                    # All off the main loop: pi_status runs several nmcli
+                    # calls, and this loop also carries the wheel buttons,
+                    # now-playing and the car-mic audio for voice search.
                     def more():
+                        pi = pi_status()
+                        GLib.idle_add(lambda: (app_send({"pi": pi}), False)[-1])
                         bt, flow = bt_status(), audio_flow(player)
                         GLib.idle_add(lambda: (app_send({"bt": bt}), app_send({"flow": flow}), False)[-1])
                     threading.Thread(target=more, daemon=True).start()
