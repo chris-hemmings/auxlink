@@ -93,6 +93,23 @@ class UsbLink(private val context: Context, private val onLine: ((String) -> Uni
             }
             off += n
         }
+        // CDC (the Pi's USB-C serial): a transfer whose length is a multiple of
+        // the endpoint packet size never completes. ttyGS0 holds that line until
+        // a short packet arrives, so a now-playing or call line that lands on
+        // the boundary sits there until the next send. A zero-length packet is
+        // the short packet. The XIAO's vendor endpoint delivers each packet on
+        // its own and does not need this.
+        if (iface?.interfaceClass == UsbConstants.USB_CLASS_CDC_DATA) {
+            val mps = ep?.maxPacketSize ?: 0
+            if (mps > 0 && bytes.size % mps == 0) {
+                try {
+                    val z = conn!!.bulkTransfer(ep, ByteArray(1), 0, 250)
+                    if (z < 0) Log.w(TAG, "CDC zero-length packet failed")
+                } catch (e: Exception) {
+                    Log.w(TAG, "CDC zero-length packet failed: ${e.message}")
+                }
+            }
+        }
         return true
     }
 

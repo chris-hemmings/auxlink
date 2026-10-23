@@ -83,8 +83,8 @@ FEED_LOOP=""; FEED_INPUT=""; CAR_LOOP=""; CAR_LOOP_SINK_ID=""; CAR_LOOP_STARTED=
 # The phone's own media goes to the car through OUR loopback (phone -> car), so
 # its A2DP transport is always consumed and never suspends. PHONE_SRC is its
 # bluez_input node, found each loop.
-PHONE_LOOP=""; PHONE_LOOP_SRC=""; PHONE_LOOP_SINK_ID=""; PHONE_SRC=""
-NEXT_PHONE_STEREO=0; PHONE_STEREO_BAD=0
+PHONE_LOOP=""; PHONE_LOOP_SRC=""; PHONE_LOOP_SINK_ID=""; PHONE_LOOP_STARTED=0; PHONE_SRC=""
+NEXT_PHONE_STEREO=0; PHONE_STEREO_BAD=0; PHONE_HEAL_COUNT=0
 HUB_MODE=""   # which path ran last iteration (1=hub, 0=classic), to switch cleanly
 HUB_FRESH=0   # recreate the hub once per start so property changes take effect
 XQ_FAILS=0   # SBC-XQ attempts since this script started (never reset by a disconnect)
@@ -261,9 +261,10 @@ stereo_ok() {
 }
 
 # ===== Hub pipeline (AUDIO_HUB=1) =====================================
-# A null sink both sources mix into; one permanent loopback carries its
-# monitor to the car. The car loop stops only for a call, so pauses and
-# SMO<->phone switches never drop the car's A2DP stream.
+# The SMO feeds a null sink ($HUB); one permanent loopback carries that hub
+# to the car and stops only for a call, so pauses and source switches never
+# drop the car's A2DP stream. The phone's own media is a separate loopback
+# into the same car sink (manage_phone_loop), not mixed through the hub.
 ensure_hub() {
   # Once per start, drop any hub left from a previous run so it is recreated
   # with the current properties (the module survives an auxlink-audio restart).
@@ -337,7 +338,7 @@ drop_phone_loop() {
   [ -n "$PHONE_LOOP" ] || { pkill -f "[n]ode.name=phone_to_car" 2>/dev/null || true; return 0; }
   [ -n "${1:-}" ] && echo "Hub: dropping phone->car loop ($1)"
   kill "$PHONE_LOOP" 2>/dev/null
-  PHONE_LOOP=""; PHONE_LOOP_SRC=""; PHONE_LOOP_SINK_ID=""
+  PHONE_LOOP=""; PHONE_LOOP_SRC=""; PHONE_LOOP_SINK_ID=""; PHONE_LOOP_STARTED=0
   pkill -f "[n]ode.name=phone_to_car" 2>/dev/null || true
   PHONE_STEREO_BAD=0
   NEXT_PHONE_STEREO=$(( $(date +%s) + 2 ))
@@ -367,14 +368,21 @@ start_phone_loop() {
     --capture-props="target.object=$PHONE_SRC node.name=phone_to_car_cap audio.position=[ FL FR ]" \
     --playback-props="target.object=$SINK node.name=phone_to_car audio.position=[ FL FR ]" &
   PHONE_LOOP=$!; PHONE_LOOP_SRC=$PHONE_SRC; PHONE_LOOP_SINK_ID=$SINK_ID
+  PHONE_LOOP_STARTED=$(date +%s)
   PHONE_STEREO_BAD=0
   NEXT_PHONE_STEREO=$(( $(date +%s) + 2 ))
   echo "Hub: phone -> car loop up ($PHONE_SRC)"
 }
 # Keep the phone->car loop running whenever the phone is streaming A2DP (its
 # bluez_input exists). Rebuild it if the phone's node or the car sink changed.
+# Never attach while the car sink is suspended: a suspend under a live
+# pw-loopback leaves that loop's right channel silent until it is recreated.
 manage_phone_loop() {
   [ -n "$PHONE" ] && [ -n "$SINK" ] || return
+  if [ "$SINK_STATE" = SUSPENDED ]; then
+    [ -n "$PHONE_LOOP" ] && drop_phone_loop "car sink suspended"
+    return
+  fi
   PHONE_SRC=$(pactl list sources short 2>/dev/null | awk -v m="bluez_input.${PHONE//:/_}" 'index($2,m)==1{print $2; exit}')
   if [ -z "$PHONE_SRC" ]; then
     [ -n "$PHONE_LOOP" ] && { echo "Hub: phone stopped streaming; dropping the phone->car loop"; \
@@ -392,6 +400,7 @@ manage_phone_loop() {
 # shared prologue). The shared prologue has already set INPUT/SINK/SINK_ID/
 # SINK_STATE and handled connect/card/profile/disconnect.
 hub_stream() {
+  HUB_PASS_AT=$(date +%s)
   check_sound
   manage_phone_loop
   # SMO -> hub feed: up whenever the input is present and the phone has NOT
@@ -427,7 +436,14 @@ hub_stream() {
       echo "Hub: stopping the car stream: $WHY"
       kill "$CAR_LOOP" 2>/dev/null; CAR_LOOP=""; CAR_LOOP_SINK_ID=""
       case "$WHY" in "the car is still connecting"|"the call just ended") ;;
-        *) timeout 5 pactl suspend-sink "$SINK" 1 ;; esac
+        *)
+          # Drop the phone loop before the suspend. manage_phone_loop may
+          # have just attached it while the sink was still running;
+          # suspending under that loop leaves the phone left-only.
+          [ -n "$PHONE_LOOP" ] && drop_phone_loop "car stream stopped ($WHY)"
+          timeout 5 pactl suspend-sink "$SINK" 1
+          ;;
+      esac
     fi
     if [ "$WHY" != "$WAITING_SAID" ]; then
       case "$WHY" in "the car is still connecting"|"the call just ended") ;; *) echo "Hub: not streaming: $WHY" ;; esac
@@ -486,8 +502,14 @@ hub_stream() {
     CAR_SUSP=1
   elif [ "$CAR_SUSP" = 1 ]; then
     CAR_SUSP=0
-    echo "Hub: car resumed its stream; rebuilding phone->car loop to keep both channels"
-    drop_phone_loop "car resumed"
+    PHONE_HEAL_COUNT=0
+    # manage_phone_loop drops the loop while the sink is suspended and, on
+    # this pass, starts a new one onto the resumed sink. Only an older loop
+    # (started before this pass) is the left-only one.
+    if [ -n "$PHONE_LOOP" ] && [ "$PHONE_LOOP_STARTED" -lt "$HUB_PASS_AT" ]; then
+      echo "Hub: car resumed its stream; rebuilding phone->car loop to keep both channels"
+      drop_phone_loop "car resumed"
+    fi
     if [ "${HUB_HEALS:-0}" = 1 ]; then
       echo "Hub: also rebuilding the car loop"
       kill "$CAR_LOOP" 2>/dev/null; CAR_LOOP=""; sleep 0.3; return
@@ -501,18 +523,31 @@ hub_stream() {
   # and on hub_restart_once always run. Set HUB_HEALS=1 to run the rest again.
   if [ "${HUB_HEALS:-0}" != 1 ]; then
     # Backstop: when the phone is the audible source, sample the car sink and
-    # rebuild the phone loop if the right channel is gone (SMO stereo can mask
-    # phone mono when both are mixing, so only check while SMO is not playing).
-    if [ -n "$PHONE_LOOP" ] && { phone_media || ! smo_playing; } && [ "$now" -ge "$NEXT_PHONE_STEREO" ]; then
+    # rebuild the phone loop if the right channel is gone. SMO stereo masks
+    # phone mono, so only check while no SMO PCM is arriving (PRESENT). Do not
+    # use smo_playing()/PLAY_FILE: both/merge holds that at 1 while the phone
+    # plays, so the car does not mute the mix — which skipped this check
+    # exactly when the phone was the only sound. A genuinely mono phone source
+    # looks the same as the bug, so stop rebuilding after three misses and
+    # look again in five minutes instead of glitching every few seconds.
+    if [ -n "$PHONE_LOOP" ] && { phone_media || [ "$PRESENT" != 1 ]; } && [ "$now" -ge "$NEXT_PHONE_STEREO" ]; then
       NEXT_PHONE_STEREO=$((now + 30))
       if stereo_ok "$SINK"; then
         PHONE_STEREO_BAD=0
+        PHONE_HEAL_COUNT=0
       else
         PHONE_STEREO_BAD=$((PHONE_STEREO_BAD + 1))
         if [ "$PHONE_STEREO_BAD" -ge 2 ]; then
-          echo "Hub: right channel silent while phone is the source; rebuilding phone->car loop"
-          drop_phone_loop "phone stereo heal"
-          PHONE_STEREO_BAD=0
+          PHONE_HEAL_COUNT=$((PHONE_HEAL_COUNT + 1))
+          if [ "$PHONE_HEAL_COUNT" -le 3 ]; then
+            echo "Hub: right channel silent while phone is the source; rebuilding phone->car loop"
+            drop_phone_loop "phone stereo heal"
+          else
+            echo "Hub: phone still left-only after 3 rebuilds; leaving it and checking again in 5 min"
+            NEXT_PHONE_STEREO=$((now + 300))
+            PHONE_STEREO_BAD=0
+            PHONE_HEAL_COUNT=0
+          fi
         else
           NEXT_PHONE_STEREO=$((now + 2))
         fi

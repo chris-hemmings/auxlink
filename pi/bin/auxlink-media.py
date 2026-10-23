@@ -2633,9 +2633,16 @@ def audio_flow(player):
                         {"active": "Streaming", "pending": "Starting", "idle": "Idle"}.get(tstate, "Connected"),
                         codec, spec) if x),
                     "bad" if not connected else ("ok" if tstate == "active" else ("idle" if not playing else "warn"))))
-    # Playing with sound, or paused and quiet, is consistent; anything else is worth a look.
-    out.append(item("output", "Car is told", player.status,
-                    "ok" if playing == bool(sound) else "warn"))
+    # Playing with sound, or paused and quiet, is consistent. Mix mode holds
+    # the car on Playing while the phone is the only sound, so a quiet SMO
+    # then is expected, not a fault.
+    told = player.status
+    if player.phone_mix_playing and not sound:
+        told = "Playing (phone in the mix; music device is quiet)"
+    elif player.phone_active:
+        told = player.status + " (phone is the source)"
+    told_ok = playing == bool(sound) or player.phone_mix_playing or player.phone_active
+    out.append(item("output", "Car is told", told, "ok" if told_ok else "warn"))
     return out
 
 
