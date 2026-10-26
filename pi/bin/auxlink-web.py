@@ -1024,7 +1024,16 @@ class Handler(BaseHTTPRequestHandler):
         could use them. auxlink-media on the Pi itself (the app link) is
         trusted, so the app's own updates keep working. Replies 403 and
         returns True when refused."""
-        if name not in RISKY and not (name == "config" and str((body or {}).get("DEV_TERMINAL", "")) == "1"):
+        if name == "config":
+            # The page saves every setting at once, so only switching the
+            # terminal ON counts - not a save that leaves it as it was - and a
+            # save that sets the page password at the same time is fine.
+            b = body or {}
+            turning_on = (str(b.get("DEV_TERMINAL", "")) == "1"
+                          and auxconf.load().get("DEV_TERMINAL", "0") != "1")
+            if not turning_on or str(b.get("WEB_PASSWORD", "")):
+                return False
+        elif name not in RISKY:
             return False
         if auxconf.load().get("WEB_PASSWORD", "") or self.client_address[0] in ("127.0.0.1", "::1"):
             return False
