@@ -419,7 +419,7 @@ class UsbcMic:
     def card():
         try:
             for line in open("/proc/asound/cards"):
-                if "UAC1" in line and "[" in line:
+                if re.search(r"UAC[12]", line) and "[" in line:
                     return line.split("[", 1)[0].strip()
         except OSError:
             pass
@@ -459,7 +459,7 @@ class UsbcMic:
             line = line.strip()
             if line.startswith("Name: "):
                 name = line[6:]
-            elif line.startswith("alsa.card_name") and "UAC1" in line:
+            elif line.startswith("alsa.card_name") and re.search(r"UAC[12]", line):
                 return name
         return None
 
@@ -2560,7 +2560,7 @@ def audio_flow(player):
             except OSError:
                 pass
         try:
-            card = "UAC1" in open("/proc/asound/cards").read().replace("_", "")
+            card = bool(re.search(r"UAC[12]", open("/proc/asound/cards").read()))
         except OSError:
             card = False
         usbc_detail = ("Connected" if state == "configured" else (state or "no USB-C port")) + \
