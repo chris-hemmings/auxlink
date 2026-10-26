@@ -116,6 +116,7 @@ def persist_override(value):
         log(f"Cannot save SOURCE_OVERRIDE: {e}")
 PORT = {"usbc": "/dev/ttyGS0", "bluetooth": None}.get(MUSIC_SOURCE, CONF.get("SERIAL_PORT", "/dev/serial0"))
 HID_DEV = "/dev/hidg0"
+HID_SAID = [False]
 # MUSIC_SOURCE=bluetooth: the now-playing app (if installed on the source)
 # connects to this Bluetooth serial service and sends the same JSON lines it
 # sends over USB - which adds album art. While it is connected its info is
@@ -511,6 +512,13 @@ def hid_key(cmd):
     """USB-C source: press and release a media key on the gadget keyboard."""
     usage = KEY_USAGE.get(cmd)
     if usage is None:
+        return
+    if not os.path.exists(HID_DEV):
+        # No media keys on the gadget (USBC_MEDIA_KEYS=0, the default, so the
+        # SMO doesn't take the Pi for a headset): Phone Link does it instead.
+        if not HID_SAID[0]:
+            log("No USB media keys (USBC_MEDIA_KEYS=0): car buttons go through Phone Link only")
+            HID_SAID[0] = True
         return
 
     def write(report):

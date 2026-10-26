@@ -14,6 +14,13 @@ UID_U=$(id -u "$U")
 HERE=$(cd "$(dirname "$0")" && pwd)
 asuser() { runuser -u "$U" -- env XDG_RUNTIME_DIR=/run/user/$UID_U "$@"; }
 
+# 2.0.48/49 made the USB-C sound card UAC2 by default (USBC_AUDIO_CLASS=2),
+# which carried no sound on the SMO. UAC2 is opt-in now: put those Pis back
+# on UAC1 once (recognised by the media-keys setting not existing yet).
+if grep -q '^USBC_AUDIO_CLASS=2' /etc/auxlink.conf && ! grep -q '^USBC_MEDIA_KEYS=' /etc/auxlink.conf; then
+  sed -i 's/^USBC_AUDIO_CLASS=2/USBC_AUDIO_CLASS=1/' /etc/auxlink.conf
+  echo "USB-C sound card back to UAC1 (takes effect at the next reboot)"
+fi
 # Settings: keep every value, add any this release introduced.
 added=""
 while IFS= read -r line; do
