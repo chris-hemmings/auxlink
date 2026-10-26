@@ -40,6 +40,16 @@ class BtLink(private val context: Context, private val serviceUuid: UUID = APP_U
         private const val RETRY_MS = 20_000L
         /** Notification forwarder: reconnect quickly after phone↔Pi drop. */
         private const val NOTIF_RETRY_MS = 3_000L
+        /** After a device first appears bonded while the app is running, wait
+         *  this long before opening a service channel to it. A just-finished
+         *  pairing is BONDED on Android a moment before the Pi has adopted and
+         *  trusted it; connecting in that gap makes the Pi reject the
+         *  still-untrusted service request, which aborts the bond (Android's
+         *  "just connect" pairing race). Devices already bonded when the app
+         *  starts are treated as settled, so normal reconnects aren't delayed. */
+        private const val BOND_SETTLE_MS = 20_000L
+        /** Cap on the exponential back-off between failed connect attempts. */
+        private const val MAX_RETRY_MS = 60_000L
         private const val TAG = "SmoBtLink"
         /** What the last attempt did, shown on the app's screen. */
         @Volatile var lastTry: String = "(not tried yet)"
@@ -55,6 +65,12 @@ class BtLink(private val context: Context, private val serviceUuid: UUID = APP_U
     private var out: OutputStream? = null
     private var nextTry = 0L
     private var lastGood: String? = null
+    /** Consecutive failed connect sweeps, for the back-off below. */
+    private var consecFails = 0
+    /** address -> elapsedRealtime a device was first seen bonded (0 = it was
+     *  already bonded when we started, so it needs no settle wait). */
+    private val bondedSince = HashMap<String, Long>()
+    private var bondSeeded = false
     private val retryMs =
         if (serviceUuid == NOTIF_UUID) NOTIF_RETRY_MS else RETRY_MS
     /** This instance's last attempt (not shared like the companion lastTry). */
@@ -109,7 +125,20 @@ class BtLink(private val context: Context, private val serviceUuid: UUID = APP_U
         val bt = (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
             ?: return emptyList()
         if (!bt.isEnabled) return emptyList()
-        val bonded = bt.bondedDevices?.toList() ?: return emptyList()
+        val allBonded = (bt.bondedDevices?.toList() ?: return emptyList())
+            .filter { it.bondState == BluetoothDevice.BOND_BONDED }
+        // Bond-settle guard: a device that only just became bonded (a pairing
+        // in progress) is skipped for BOND_SETTLE_MS so we never open a
+        // service channel into a half-finished bond and abort it. Devices that
+        // were already bonded at start-up are seeded as settled.
+        val now = SystemClock.elapsedRealtime()
+        if (!bondSeeded) { allBonded.forEach { bondedSince[it.address] = 0L }; bondSeeded = true }
+        bondedSince.keys.retainAll(allBonded.map { it.address }.toSet())
+        val bonded = allBonded.filter { d ->
+            val t = bondedSince.getOrPut(d.address) { now }
+            t == 0L || now - t >= BOND_SETTLE_MS
+        }
+        if (bonded.isEmpty()) return emptyList()
         val target = ParcelUuid(serviceUuid)
         fun named(d: BluetoothDevice): Boolean {
             val names = listOfNotNull(d.name, if (Build.VERSION.SDK_INT >= 30) d.alias else null)
@@ -175,10 +204,23 @@ class BtLink(private val context: Context, private val serviceUuid: UUID = APP_U
     @Synchronized
     fun open(): Boolean {
         if (!permitted() || SystemClock.elapsedRealtime() < nextTry) return false
-        nextTry = SystemClock.elapsedRealtime() + retryMs
-        val tried = mutableListOf<String>()
         val list = candidates()
-        if (list.isEmpty()) { lastTry = "no paired devices (or Bluetooth off)"; lastResult = lastTry }
+        if (list.isEmpty()) {
+            // Nothing eligible yet: no paired device, or a just-bonded one is
+            // still in its settle window. Re-check soon and do NOT count it as
+            // a connect failure (that would push the back-off out and delay the
+            // first real connection once it settles).
+            nextTry = SystemClock.elapsedRealtime() + retryMs
+            lastTry = "no paired devices (or waiting/Bluetooth off)"; lastResult = lastTry
+            return false
+        }
+        // Back off further after each failed sweep (3s, 6, 12, 24, 48, cap) so
+        // a device that keeps refusing - or an RFCOMM that can't hold while the
+        // phone is busy on a call - isn't hammered, which can destabilise the
+        // phone↔Pi link and its call audio. Reset to the base on a success.
+        val backoff = minOf(retryMs shl minOf(consecFails, 4), MAX_RETRY_MS)
+        nextTry = SystemClock.elapsedRealtime() + backoff
+        val tried = mutableListOf<String>()
         for (dev in list) {
             try {
                 val s = openSocket(dev)
@@ -208,6 +250,7 @@ class BtLink(private val context: Context, private val serviceUuid: UUID = APP_U
                 }
                 deviceName = dev.name ?: dev.address
                 lastGood = dev.address
+                consecFails = 0
                 val via = channelFor(serviceUuid)?.let { "ch$it" } ?: "uuid"
                 lastTry = "connected to $deviceName ($via)"; lastResult = lastTry
                 Log.i(TAG, "Connected to $deviceName over Bluetooth ($via)")
@@ -218,6 +261,7 @@ class BtLink(private val context: Context, private val serviceUuid: UUID = APP_U
                 lastTry = tried.joinToString("\n"); lastResult = lastTry
             }
         }
+        consecFails++
         return false
     }
 
