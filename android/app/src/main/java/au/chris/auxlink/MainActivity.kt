@@ -21,6 +21,7 @@ import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowInsets
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ProgressBar
@@ -202,13 +203,38 @@ class MainActivity : Activity() {
                 tabBar.addView(this, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             }
         }
-        setContentView(LinearLayout(this).apply {
+        val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(bg)
             addView(content, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
             addView(tabBar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT))
-        })
+        }
+        // Android 15+ draws apps targeting SDK 35 edge to edge: without this the
+        // status bar sits over the header and the navigation buttons over the
+        // tabs. The tab bar's background runs under the navigation bar (its
+        // buttons get padding instead); with the keyboard up, the whole screen
+        // lifts above it (adjustResize no longer does that edge to edge). On
+        // older Android the window already fits the bars and these are 0.
+        val tabPadBottom = tabBar.paddingBottom
+        root.setOnApplyWindowInsetsListener { v, insets ->
+            val l: Int; val t: Int; val r: Int; val b: Int; val ime: Int
+            if (Build.VERSION.SDK_INT >= 30) {
+                val bars = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
+                l = bars.left; t = bars.top; r = bars.right; b = bars.bottom
+                ime = insets.getInsets(WindowInsets.Type.ime()).bottom
+            } else {
+                @Suppress("DEPRECATION")
+                val w = intArrayOf(insets.systemWindowInsetLeft, insets.systemWindowInsetTop,
+                    insets.systemWindowInsetRight, insets.systemWindowInsetBottom)
+                l = w[0]; t = w[1]; r = w[2]; b = w[3]
+                ime = 0
+            }
+            v.setPadding(l, t, r, maxOf(0, ime - b))
+            tabBar.setPadding(tabBar.paddingLeft, tabBar.paddingTop, tabBar.paddingRight, tabPadBottom + b)
+            insets
+        }
+        setContentView(root)
         applyRoleChrome()
         maybeAskDeviceRole()
         // Back where you left off; the status screen until setup is done.
