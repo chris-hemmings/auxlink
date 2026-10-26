@@ -1310,6 +1310,11 @@ class NowPlayingService : NotificationListenerService() {
     @Volatile private var notifSkippedMute = 0
     @Volatile private var notifSkippedDedupe = 0
     @Volatile private var notifSkippedEmpty = 0
+    @Volatile private var notifSkippedStale = 0
+    /** Keys read / cleared on the phone (onNotificationRemoved), newest last. */
+    private val removedNotifKeys = LinkedHashSet<String>()
+    /** A forward that couldn't go out within this long isn't news any more. */
+    private val NOTIF_MAX_AGE_MS = 60_000L
     @Volatile private var notifSendFail = 0
     @Volatile private var notifSent = 0
     @Volatile private var notifLastSkip = ""
@@ -1320,6 +1325,15 @@ class NowPlayingService : NotificationListenerService() {
         try { forwardNotification(sbn) } catch (e: Exception) { Log.w(TAG, "forward: ${e.message}") }
     }
 
+    /** Read / cleared on the phone: a forward still waiting to go is dropped. */
+    override fun onNotificationRemoved(sbn: android.service.notification.StatusBarNotification) {
+        if (!forwardNotifs) return
+        synchronized(removedNotifKeys) {
+            removedNotifKeys += sbn.key
+            while (removedNotifKeys.size > 200) removedNotifKeys.remove(removedNotifKeys.first())
+        }
+    }
+
     /** A one-line status for the app's screen (so we can tell what's happening
      *  without a logcat): is forwarding on, how many notifications were seen,
      *  and what the last Bluetooth attempt did. */
@@ -1327,6 +1341,7 @@ class NowPlayingService : NotificationListenerService() {
         "only=${if (forwarderOnly) "ON" else "off"}, seen=$notifCount, " +
         "sent=$notifSent, fail=$notifSendFail, " +
         "blocked=$notifSkippedMute, dedupe=$notifSkippedDedupe, empty=$notifSkippedEmpty, " +
+        "stale=$notifSkippedStale, " +
         "lastSkip=$notifLastSkip, " +
         "link=${notifLink?.lastResult ?: "(forwarder not started)"}"
 
@@ -1354,7 +1369,15 @@ class NowPlayingService : NotificationListenerService() {
             notifLink = BtLink(this, BtLink.NOTIF_UUID) { onNotifLinkLine(it) }
             notifLink
         } ?: return false
+        val wasOpen = link.isOpen()
         if (link.send(line)) return true
+        // Couldn't even connect: the Pi isn't in range (car off). Leave the
+        // back-off alone. A forced second sweep here took the single forwarder
+        // thread ~30-90 s per notification, so a backlog built up while the
+        // car was off and all of it went to the car on the next connect.
+        if (!wasOpen) return false
+        // An open socket that failed to write: the phone↔Pi link just dropped
+        // (zombie RFCOMM). Reconnect once.
         link.close()
         link.retryNow()
         try { Thread.sleep(400) } catch (_: InterruptedException) {}
@@ -1442,7 +1465,22 @@ class NowPlayingService : NotificationListenerService() {
             .put("nid", sbn.key).put("actions", actions)
             .put("icon", appIconPng(sbn.packageName))
         val line = JSONObject().put("notif", o).toString()
+        val key = sbn.key
+        val queuedAt = SystemClock.elapsedRealtime()
+        synchronized(removedNotifKeys) { removedNotifKeys.remove(key) }   // posted (again): live
         notifIo.execute {
+            // Only what is still news: nothing that waited behind earlier
+            // sends for over a minute, and nothing read or cleared since.
+            if (SystemClock.elapsedRealtime() - queuedAt > NOTIF_MAX_AGE_MS) {
+                notifSkippedStale++
+                notifLastSkip = "stale:${sbn.packageName}"
+                return@execute
+            }
+            if (synchronized(removedNotifKeys) { key in removedNotifKeys }) {
+                notifSkippedStale++
+                notifLastSkip = "cleared:${sbn.packageName}"
+                return@execute
+            }
             if (sendNotifLine(line)) {
                 notifSent++
                 notifLastSkip = ""
