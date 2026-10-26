@@ -22,8 +22,18 @@ def load(path=PATH):
     return conf
 
 
+# The shell scripts source this file (some as root), so a value must never
+# carry anything bash would expand or end the quotes with. Inside the double
+# quotes save() uses, that is $, `, \, " and line breaks; ' is refused too so
+# no quoting can be mixed up.
+UNSAFE = re.compile(r"[$`\\\"'\r\n]")
+
+
 def save(updates, path=PATH):
     """Change or add keys, keeping every other line and comment as it was."""
+    for k, v in updates.items():
+        if UNSAFE.search(str(v)):
+            raise ValueError(f"{k} cannot contain $ ` \\ \" ' or line breaks")
     lines = open(path).read().splitlines() if os.path.exists(path) else []
     done = set()
     def fmt(k, v):

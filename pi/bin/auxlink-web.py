@@ -38,9 +38,10 @@ EDITABLE = {
     "CAR_NAME": r"[\w .\-]{1,30}", "PHONE_NAME": r"[\w .\-]{1,30}",
     "PHONE_ENABLED": r"[01]", "AUTO_PAIRABLE": r"[01]",   # PAUSE_FOR_CALLS hardcoded on
     "CONTACTS_SYNC": r"[01]", "CALL_RESUME_DELAY": r"\d{1,2}(\.\d)?", "CALL_SETTLE": r"\d{1,2}",
-    "SETUP_WIFI_SSID": r"[\w\-]{1,32}", "SETUP_WIFI_PASS": r"[^\s'\"]{8,63}",
-    "SETUP_WIFI_MINUTES": r"\d{1,3}", "WEB_PASSWORD": r"[^\s'\"]{0,63}", "WIFI_OFF_ON_CAR_DISCONNECT": r"[01]",
-    "SETUP_BUTTON_GPIO": r"\d{0,2}", "SOURCE_NAME": r"[\w .\-]{1,30}",
+    # Passwords: no $ ` \ " ' (the file is sourced by bash; see auxconf.save).
+    "SETUP_WIFI_SSID": r"[\w\-]{1,32}", "SETUP_WIFI_PASS": r"[^\s'\"$`\\]{8,63}",
+    "SETUP_WIFI_MINUTES": r"\d{1,3}", "WEB_PASSWORD": r"[^\s'\"$`\\]{0,63}", "WIFI_OFF_ON_CAR_DISCONNECT": r"[01]",
+    "SETUP_BUTTON_GPIO": r"\d{0,2}", "SOURCE_NAME": r"[\w .\-]{1,30}", "USBC_AUDIO_CLASS": r"[12]", "USBC_MEDIA_KEYS": r"[01]",
     # Car behaviour (defaults tuned on a Tesla; other cars may want others)
     "CAR_CALLS": r"[01]", "CAR_MIC_MODE": r"call|vr", "SBC_XQ": r"[01]", "WAIT_FOR_AUDIO": r"[01]", "AUDIO_HUB": r"[01]", "HUB_HEALS": r"[01]", "STREAM_HOLD_SEC": r"\d{1,3}", "SMO_VOLUME_MAX": r"[01]", "DEV_TERMINAL": r"[01]", "MESSAGES": r"[01]", "SMO_NOTIFY": r"[01]", "CAR_OFF_DROPS_PHONE": r"[01]", "CAR_OFF_PHONE_DELAY": r"\d{1,4}", "CAR_OFF_REQUIRE_STILL": r"[01]", "PAUSE_ON_CAR_OFF": r"[01]", "PHONE_MEDIA_PRIORITY": r"[01]", "PHONE_MEDIA_DEBOUNCE": r"\d{1,2}", "SOURCE_OVERRIDE": r"media|both|merge|phone|auto",
 }
@@ -988,6 +989,9 @@ ACTIONS = {"pair": act_pair, "pair/cancel": act_pair_cancel, "forget": act_forge
            "wifi/add": act_wifi_add, "wifi/remove": act_wifi_remove,
            "wifi/scan": act_wifi_scan, "wifi/connect": act_wifi_connect,
            "password": act_password, "ssh": act_ssh}
+# Need a page password unless asked from the Pi itself (Handler.risky_refused).
+RISKY = {"update", "xiao-flash", "password", "ssh",
+         "term/open", "term/write", "term/read", "term/resize", "term/close"}
 
 
 # ------------------------------------------------------------- HTTP
@@ -1012,6 +1016,30 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("WWW-Authenticate", 'Basic realm="AuxLink"')
         self.end_headers()
         return False
+
+    def risky_refused(self, name, body=None):
+        """Actions that can run code as root (an update zip, firmware, a shell,
+        the login password, SSH) need a page password. Without one, anyone on
+        the setup Wi-Fi (whose default password is public) or the home network
+        could use them. auxlink-media on the Pi itself (the app link) is
+        trusted, so the app's own updates keep working. Replies 403 and
+        returns True when refused."""
+        if name == "config":
+            # The page saves every setting at once, so only switching the
+            # terminal ON counts - not a save that leaves it as it was - and a
+            # save that sets the page password at the same time is fine.
+            b = body or {}
+            turning_on = (str(b.get("DEV_TERMINAL", "")) == "1"
+                          and auxconf.load().get("DEV_TERMINAL", "0") != "1")
+            if not turning_on or str(b.get("WEB_PASSWORD", "")):
+                return False
+        elif name not in RISKY:
+            return False
+        if auxconf.load().get("WEB_PASSWORD", "") or self.client_address[0] in ("127.0.0.1", "::1"):
+            return False
+        self.reply(403, {"error": "Set a page password first (Settings → Page password): "
+                                  "without one, anyone on the setup Wi-Fi could use this"})
+        return True
 
     def reply(self, code, body, ctype="application/json"):
         data = body if isinstance(body, bytes) else json.dumps(body).encode()
@@ -1070,6 +1098,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self.authorised():
             return
         name = self.path[len("/api/"):] if self.path.startswith("/api/") else ""
+        if name in ("xiao-flash", "update") and self.risky_refused(name):
+            return
         if name == "xiao-flash":   # raw .uf2 upload (empty = the built-in firmware)
             try:
                 n = int(self.headers.get("Content-Length", 0) or 0)
@@ -1092,6 +1122,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             n = int(self.headers.get("Content-Length", 0) or 0)
             body = json.loads(self.rfile.read(n) or b"{}")
+            if self.risky_refused(name, body if isinstance(body, dict) else {}):
+                return
             self.reply(200, fn(body))
         except (ValueError, KeyError) as e:
             self.reply(400, {"error": str(e)})

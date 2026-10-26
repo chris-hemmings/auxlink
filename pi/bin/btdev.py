@@ -9,6 +9,7 @@ between boots, so plain `bluetoothctl connect` may use the wrong dongle.
   btdev.py ADAPTER DEVICE disconnect       drop the link now
   btdev.py ADAPTER DEVICE trust            mark trusted
   btdev.py ADAPTER present                 exit 0 if the adapter exists
+  btdev.py ADAPTER path                    print the adapter's object path (/org/bluez/hciN)
   btdev.py ADAPTER power                   switch the adapter on
   btdev.py ADAPTER alias NAME              set the adapter's Bluetooth name (if different)
 """
@@ -35,6 +36,11 @@ def main():
     ap = adapter_path(bus, sys.argv[1])
     if sys.argv[2] == "present":
         return 0 if ap else 1
+    if sys.argv[2] == "path":          # the adapter's D-Bus object path (common.sh caches it)
+        if not ap:
+            return 1
+        print(ap)
+        return 0
     if sys.argv[2] == "alias" and len(sys.argv) > 3:
         if not ap:
             return 1

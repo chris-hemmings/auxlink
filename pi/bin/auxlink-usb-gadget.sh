@@ -1,10 +1,12 @@
 #!/bin/bash
 # USB-C music source (MUSIC_SOURCE=usbc): make the Pi's USB-C port a USB
 # device for the music source (phone/SMO), with
-#   * a USB sound card (UAC1, 48 kHz stereo) - the music comes in here,
-#     with a mic (mono) carrying the car's cabin mic for voice search,
+#   * a USB sound card (UAC1, 48 kHz stereo; UAC2 with USBC_AUDIO_CLASS=2) -
+#     the music comes in here, with a mic (mono) carrying the car's cabin mic
+#     for voice search,
 #   * a serial port (ACM)  - the now-playing app sends track info / art,
-#   * a media-key keyboard (HID consumer control) - wheel buttons go back.
+#   * optionally (USBC_MEDIA_KEYS=1) a media-key keyboard (HID consumer
+#     control) - wheel buttons go back; Phone Link handles them without it.
 # The USB-C port is also the Pi's power input: in this mode the Pi should be
 # powered externally for reliable use (5 V GPIO pins, or a USB-C power/data
 # splitter); powered by the music device alone it may drop out or restart.
@@ -67,7 +69,7 @@ teardown() {
 
 # ---------- repair ----------
 usb_state() { cat /sys/class/udc/*/state 2>/dev/null | head -1; }
-usb_card() { grep -q "UAC1" /proc/asound/cards 2>/dev/null; }
+usb_card() { grep -qE "UAC[12]" /proc/asound/cards 2>/dev/null; }
 usb_ok() { [ "$(usb_state)" = configured ] && usb_card; }
 wait_ok() {   # up to $1 s for the music device to connect again
   local i; for i in $(seq "$1"); do usb_ok && return 0; sleep 1; done; usb_ok
@@ -151,9 +153,15 @@ if [ -z "$UDC" ]; then
   exit 0
 fi
 # Already up and bound (e.g. after an update): leave it alone, so the music
-# device stays connected.
+# device stays connected. A sound card class change waits for the next reboot.
 if [ -n "$(cat "$G/UDC" 2>/dev/null)" ]; then
   echo "USB-C gadget already up on $(cat "$G/UDC"); left as it is"
+  want=uac${USBC_AUDIO_CLASS:-1}; keys=no; [ -d "$G/functions/hid.usb0" ] && keys=yes
+  if [ ! -d "$G/functions/$want.usb0" ] || { [ "${USBC_MEDIA_KEYS:-0}" = 1 ] && [ $keys = no ]; } ||
+     { [ "${USBC_MEDIA_KEYS:-0}" != 1 ] && [ $keys = yes ]; }; then
+    echo "The USB-C sound card / media keys settings change at the next reboot"
+    event "USB-C sound card settings change at the next reboot"
+  fi
   exit 0
 fi
 teardown
@@ -173,24 +181,56 @@ echo 2 > configs/c.1/MaxPower
 # Sound card: the host plays into it (gadget capture), and records from its
 # mic (gadget playback, mono) - auxlink-media plays the car's cabin mic
 # into that while the host records, for its voice search.
-mkdir -p functions/uac1.usb0
-echo 3 > functions/uac1.usb0/c_chmask
-echo 48000 > functions/uac1.usb0/c_srate
-echo 2 > functions/uac1.usb0/c_ssize
-echo 1 > functions/uac1.usb0/p_chmask
-echo 48000 > functions/uac1.usb0/p_srate
-echo 2 > functions/uac1.usb0/p_ssize
+#
+# Android scores a USB sound card as a headset - and shows its hearing-safety
+# "raise the volume?" warning for headsets - from what the card says it is.
+# UAC1's output is always a "speaker" (0.5 on Android 14+), and a HID
+# interface (the media keys) adds 0.25: 0.75 = headset. So by default there
+# are no media keys (USBC_MEDIA_KEYS=0; Phone Link takes the car's play /
+# pause / next over the serial port and sets the volume itself): 0.5, a plain
+# USB audio device, no warning. Older Android counts a "speaker" alone as a
+# headset; there only USBC_AUDIO_CLASS=2 helps: UAC2 with the output described
+# as a line connector (0x0603), which scores 0 everywhere - but on the SMO it
+# carried silence, so it is opt-in. A kernel without that setting gets UAC1.
+make_uac() {   # $1 = function dir; c_ = what the host plays, p_ = the mic
+  echo 3 > "$1/c_chmask"; echo 48000 > "$1/c_srate"; echo 2 > "$1/c_ssize"
+  echo 1 > "$1/p_chmask"; echo 48000 > "$1/p_srate"; echo 2 > "$1/p_ssize"
+}
+UAC=""
+if [ "${USBC_AUDIO_CLASS:-1}" = 2 ] && mkdir -p functions/uac2.usb0 2>/dev/null; then
+  if [ -e functions/uac2.usb0/p_terminal_type ]; then
+    make_uac functions/uac2.usb0
+    echo 0x0603 > functions/uac2.usb0/p_terminal_type
+    for a in p_mute_present p_volume_present c_mute_present c_volume_present; do
+      [ -e "functions/uac2.usb0/$a" ] && echo 0 > "functions/uac2.usb0/$a"
+    done
+    UAC=uac2.usb0
+  else
+    rmdir functions/uac2.usb0
+    echo "This kernel's UAC2 gadget can't set the terminal type; using UAC1"
+  fi
+fi
+if [ -z "$UAC" ]; then
+  mkdir -p functions/uac1.usb0
+  make_uac functions/uac1.usb0
+  UAC=uac1.usb0
+fi
 
 # Serial port for the now-playing app (shows up as /dev/ttyGS0 here).
 mkdir -p functions/acm.usb0
 
-# Media keys: the same HID consumer-control report as the XIAO.
-mkdir -p functions/hid.usb0
-echo 0 > functions/hid.usb0/protocol
-echo 0 > functions/hid.usb0/subclass
-echo 2 > functions/hid.usb0/report_length
-printf '\x05\x0c\x09\x01\xa1\x01\x15\x00\x26\xff\x03\x19\x00\x2a\xff\x03\x75\x10\x95\x01\x81\x00\xc0' \
-  > functions/hid.usb0/report_desc
+# Media keys (USBC_MEDIA_KEYS=1): the same HID consumer-control report as the
+# XIAO. Off by default - see the sound card above.
+FUNCS="$UAC acm.usb0"; WHAT="sound card (${UAC%%.*}) + serial"
+if [ "${USBC_MEDIA_KEYS:-0}" = 1 ]; then
+  mkdir -p functions/hid.usb0
+  echo 0 > functions/hid.usb0/protocol
+  echo 0 > functions/hid.usb0/subclass
+  echo 2 > functions/hid.usb0/report_length
+  printf '\x05\x0c\x09\x01\xa1\x01\x15\x00\x26\xff\x03\x19\x00\x2a\xff\x03\x75\x10\x95\x01\x81\x00\xc0' \
+    > functions/hid.usb0/report_desc
+  FUNCS="$FUNCS hid.usb0"; WHAT="$WHAT + media keys"
+fi
 
-for f in uac1.usb0 acm.usb0 hid.usb0; do ln -s "functions/$f" configs/c.1/; done
-echo "$UDC" > UDC && echo "USB-C gadget up on $UDC: sound card + serial + media keys"
+for f in $FUNCS; do ln -s "functions/$f" configs/c.1/; done
+echo "$UDC" > UDC && echo "USB-C gadget up on $UDC: $WHAT"

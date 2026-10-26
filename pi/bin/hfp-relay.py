@@ -26,6 +26,7 @@ mic, the car's cabin mic is borrowed (shown to the Tesla as a call) and sent
 Requires PipeWire's own HFP/HSP roles to be disabled, so this script owns HFP.
 Every AT line is logged with its direction for debugging.
 """
+import errno
 import math
 import json
 import os
@@ -270,6 +271,11 @@ class Relay:
         self.sco_phone = None
         self.sco_car = None
         self.sco_watches = []
+        self.sco_car_pending = None        # car audio link still connecting
+        self.sco_car_pending_watch = None
+        self.sco_car_pending_timer = None
+        self.sco_car_retry = None          # timer for the next attempt
+        self.sco_car_err = ""              # last failure logged (no repeats)
         self.in_call = False
         self.caller = ""         # number from +CLIP while ringing
         self.caller_name = ""    # name, when the phone sends one with it
@@ -393,6 +399,9 @@ class Relay:
             self.car_slc = True
             log("Car SLC complete")
             self.write_flag(CAR_SLC_FILE, "1")
+            # The car's link came up mid-call: carry the call audio now.
+            if self.sco_phone and not self.sco_car:
+                self.car_sco_open()
 
     @staticmethod
     def write_flag(path, value):
@@ -958,23 +967,99 @@ class Relay:
         self.sco_close_phone()
         self.sco_phone = conn
         log("Call audio: Oppo -> Pi open")
-        if self.car and self.car_slc:
-            try:
-                c = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_SEQPACKET, socket.BTPROTO_SCO)
-                c.bind(CAR_ADAPTER)
-                c.settimeout(5)
-                c.connect(CAR)
-                self.sco_car = c
-                log("Call audio: Pi -> car open")
-            except OSError as e:
-                log(f"Could not open call audio to the car: {e}")
-                self.sco_car = None
-        for s in (self.sco_phone, self.sco_car):
-            if s:
-                s.setblocking(False)
-                self.sco_watches.append(GLib.io_add_watch(
-                    s.fileno(), GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR, self.sco_pump))
+        conn.setblocking(False)
+        self.sco_watches.append(GLib.io_add_watch(
+            conn.fileno(), GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR, self.sco_pump))
+        self.car_sco_open()
         return True
+
+    # The car's half of the call audio. Opened without blocking (a blocking
+    # connect froze the whole relay, call state and the app's buttons, for up
+    # to 5 s), and retried every second while the phone's half is open: a
+    # single failed attempt used to leave the call silent in the car.
+    def car_sco_open(self):
+        if self.sco_car or self.sco_car_pending or not self.sco_phone:
+            return
+        if not (self.car and self.car_slc):
+            self.car_sco_retry_later()     # the car's link may still come up
+            return
+        try:
+            c = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_SEQPACKET, socket.BTPROTO_SCO)
+            c.bind(CAR_ADAPTER)
+            c.setblocking(False)
+            err = c.connect_ex(CAR)
+        except OSError as e:
+            self.car_sco_fail(str(e))
+            self.car_sco_retry_later()
+            return
+        if err not in (0, errno.EINPROGRESS, errno.EAGAIN):
+            self.car_sco_fail(os.strerror(err))
+            c.close()
+            self.car_sco_retry_later()
+            return
+        self.sco_car_pending = c
+        self.sco_car_pending_watch = GLib.io_add_watch(
+            c.fileno(), GLib.IO_OUT | GLib.IO_HUP | GLib.IO_ERR, self.car_sco_connected)
+        # A connect that never answers: give up on this attempt after 5 s.
+        self.sco_car_pending_timer = GLib.timeout_add_seconds(5, self.car_sco_timeout)
+
+    def car_sco_connected(self, fd, cond):
+        c = self.sco_car_pending
+        if c is None:
+            return False
+        self.car_sco_pending_clear(close=False)
+        try:
+            err = c.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+        except OSError as e:
+            err = e.errno or errno.EIO
+        if err or not self.sco_phone:
+            if err:
+                self.car_sco_fail(os.strerror(err))
+            c.close()
+            self.car_sco_retry_later()
+            return False
+        self.sco_car = c
+        self.sco_car_err = ""
+        log("Call audio: Pi -> car open")
+        self.sco_watches.append(GLib.io_add_watch(
+            c.fileno(), GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR, self.sco_pump))
+        return False
+
+    def car_sco_timeout(self):
+        self.sco_car_pending_timer = None
+        if self.sco_car_pending is not None:
+            self.car_sco_fail("no answer in 5 s")
+            self.car_sco_pending_clear(close=True)
+            self.car_sco_retry_later()
+        return False
+
+    def car_sco_pending_clear(self, close):
+        if self.sco_car_pending_watch is not None:
+            GLib.source_remove(self.sco_car_pending_watch)
+            self.sco_car_pending_watch = None
+        if self.sco_car_pending_timer is not None:
+            GLib.source_remove(self.sco_car_pending_timer)
+            self.sco_car_pending_timer = None
+        if close and self.sco_car_pending is not None:
+            try:
+                self.sco_car_pending.close()
+            except OSError:
+                pass
+        self.sco_car_pending = None
+
+    def car_sco_fail(self, why):
+        if why != self.sco_car_err:      # each new reason once, not every second
+            self.sco_car_err = why
+            log(f"Could not open call audio to the car: {why} (retrying every second)")
+
+    def car_sco_retry_later(self):
+        if self.sco_phone and self.sco_car_retry is None:
+            self.sco_car_retry = GLib.timeout_add_seconds(1, self.car_sco_retry_now)
+
+    def car_sco_retry_now(self):
+        self.sco_car_retry = None
+        self.car_sco_open()
+        return False
 
     def sco_pump(self, fd, cond):
         src = dst = None
@@ -1012,6 +1097,11 @@ class Relay:
         for w in self.sco_watches:
             GLib.source_remove(w)
         self.sco_watches = []
+        self.car_sco_pending_clear(close=True)
+        if self.sco_car_retry is not None:
+            GLib.source_remove(self.sco_car_retry)
+            self.sco_car_retry = None
+        self.sco_car_err = ""
         for s in (self.sco_phone, self.sco_car):
             if s:
                 try:

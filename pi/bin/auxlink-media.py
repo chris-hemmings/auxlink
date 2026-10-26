@@ -116,6 +116,7 @@ def persist_override(value):
         log(f"Cannot save SOURCE_OVERRIDE: {e}")
 PORT = {"usbc": "/dev/ttyGS0", "bluetooth": None}.get(MUSIC_SOURCE, CONF.get("SERIAL_PORT", "/dev/serial0"))
 HID_DEV = "/dev/hidg0"
+HID_SAID = [False]
 # MUSIC_SOURCE=bluetooth: the now-playing app (if installed on the source)
 # connects to this Bluetooth serial service and sends the same JSON lines it
 # sends over USB - which adds album art. While it is connected its info is
@@ -419,7 +420,7 @@ class UsbcMic:
     def card():
         try:
             for line in open("/proc/asound/cards"):
-                if "UAC1" in line and "[" in line:
+                if re.search(r"UAC[12]", line) and "[" in line:
                     return line.split("[", 1)[0].strip()
         except OSError:
             pass
@@ -459,7 +460,7 @@ class UsbcMic:
             line = line.strip()
             if line.startswith("Name: "):
                 name = line[6:]
-            elif line.startswith("alsa.card_name") and "UAC1" in line:
+            elif line.startswith("alsa.card_name") and re.search(r"UAC[12]", line):
                 return name
         return None
 
@@ -511,6 +512,13 @@ def hid_key(cmd):
     """USB-C source: press and release a media key on the gadget keyboard."""
     usage = KEY_USAGE.get(cmd)
     if usage is None:
+        return
+    if not os.path.exists(HID_DEV):
+        # No media keys on the gadget (USBC_MEDIA_KEYS=0, the default, so the
+        # SMO doesn't take the Pi for a headset): Phone Link does it instead.
+        if not HID_SAID[0]:
+            log("No USB media keys (USBC_MEDIA_KEYS=0): car buttons go through Phone Link only")
+            HID_SAID[0] = True
         return
 
     def write(report):
@@ -2560,7 +2568,7 @@ def audio_flow(player):
             except OSError:
                 pass
         try:
-            card = "UAC1" in open("/proc/asound/cards").read().replace("_", "")
+            card = bool(re.search(r"UAC[12]", open("/proc/asound/cards").read()))
         except OSError:
             card = False
         usbc_detail = ("Connected" if state == "configured" else (state or "no USB-C port")) + \
@@ -3132,9 +3140,12 @@ def main():
                 elif "fw" in info:
                     handle_fw(info["fw"])
                 elif info.get("req") == "pi":
-                    app_send({"pi": pi_status()})
-
+                    # All off the main loop: pi_status runs several nmcli
+                    # calls, and this loop also carries the wheel buttons,
+                    # now-playing and the car-mic audio for voice search.
                     def more():
+                        pi = pi_status()
+                        GLib.idle_add(lambda: (app_send({"pi": pi}), False)[-1])
                         bt, flow = bt_status(), audio_flow(player)
                         GLib.idle_add(lambda: (app_send({"bt": bt}), app_send({"flow": flow}), False)[-1])
                     threading.Thread(target=more, daemon=True).start()
