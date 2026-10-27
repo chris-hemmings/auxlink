@@ -276,6 +276,9 @@ class Relay:
         self.sco_car_pending_timer = None
         self.sco_car_retry = None          # timer for the next attempt
         self.sco_car_err = ""              # last failure logged (no repeats)
+        self.sco_car_watch = None          # the open car link's pump watch
+        self.sco_car_reopens = 0           # car link dropped and reopened, this call
+        self.sco_car_tries = 0             # attempts since the car link was last up
         self.in_call = False
         self.caller = ""         # number from +CLIP while ringing
         self.caller_name = ""    # name, when the phone sends one with it
@@ -977,8 +980,17 @@ class Relay:
     # connect froze the whole relay, call state and the app's buttons, for up
     # to 5 s), and retried every second while the phone's half is open: a
     # single failed attempt used to leave the call silent in the car.
+    # Attempts (about one a second) before the phone's link is let go too, so
+    # the call falls back to the phone itself instead of going nowhere.
+    CAR_SCO_TRIES = 10
+
     def car_sco_open(self):
         if self.sco_car or self.sco_car_pending or not self.sco_phone:
+            return
+        self.sco_car_tries += 1
+        if self.sco_car_tries > self.CAR_SCO_TRIES:
+            log("Call audio: the car won't take it; letting the phone keep the call audio")
+            self.sco_close_all()
             return
         if not (self.car and self.car_slc):
             self.car_sco_retry_later()     # the car's link may still come up
@@ -1020,9 +1032,11 @@ class Relay:
             return False
         self.sco_car = c
         self.sco_car_err = ""
+        self.sco_car_tries = 0
         log("Call audio: Pi -> car open")
-        self.sco_watches.append(GLib.io_add_watch(
-            c.fileno(), GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR, self.sco_pump))
+        self.sco_car_watch = GLib.io_add_watch(
+            c.fileno(), GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR, self.sco_pump)
+        self.sco_watches.append(self.sco_car_watch)
         return False
 
     def car_sco_timeout(self):
@@ -1072,19 +1086,26 @@ class Relay:
                 pass
         if src is None:
             return False  # socket already closed; drop this watch
+        side = "phone" if src is self.sco_phone else "car"
+        why = None
         if cond & (GLib.IO_HUP | GLib.IO_ERR):
-            log("Call audio closed")
-            self.sco_close_all()
-            return False
-        try:
-            data = src.recv(1024)
-        except BlockingIOError:
-            return True
-        except OSError:
-            self.sco_close_all()
-            return False
-        if not data:
-            self.sco_close_all()
+            why = self.sco_error(src) or ("hung up" if cond & GLib.IO_HUP else "error")
+        else:
+            try:
+                data = src.recv(1024)
+            except BlockingIOError:
+                return True
+            except OSError as e:
+                why = e.strerror or str(e)
+            else:
+                if not data:
+                    why = "closed"
+        if why is not None:
+            if side == "car" and self.sco_phone is not None:
+                self.car_sco_drop(why)
+            else:
+                log(f"Call audio closed by the {side} ({why})")
+                self.sco_close_all()
             return False
         if dst:
             try:
@@ -1093,10 +1114,49 @@ class Relay:
                 pass  # drop a packet rather than stall
         return True
 
+    @staticmethod
+    def sco_error(sock):
+        try:
+            err = sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+        except OSError as e:
+            err = e.errno or 0
+        return os.strerror(err) if err else ""
+
+    # The car's link dropping used to close the phone's too, so the phone
+    # took the call back to its own earpiece ("Call audio closed" right after
+    # opening, then no sound in the car). Keep the phone's link and reopen the
+    # car's (car_sco_open retries every second), a few times per call.
+    CAR_SCO_REOPENS = 5
+
+    def car_sco_drop(self, why):
+        if self.sco_car_watch is not None:
+            try:
+                self.sco_watches.remove(self.sco_car_watch)
+            except ValueError:
+                pass
+            GLib.source_remove(self.sco_car_watch)
+            self.sco_car_watch = None
+        try:
+            self.sco_car.close()
+        except (OSError, AttributeError):
+            pass
+        self.sco_car = None
+        self.sco_car_reopens += 1
+        if self.sco_car_reopens > self.CAR_SCO_REOPENS:
+            log(f"Call audio to the car dropped again ({why}); letting the phone keep the call audio")
+            self.sco_close_all()
+            return
+        log(f"Call audio to the car dropped ({why}); keeping the phone's and reopening "
+            f"({self.sco_car_reopens} of {self.CAR_SCO_REOPENS})")
+        self.car_sco_retry_later()
+
     def sco_close_all(self):
         for w in self.sco_watches:
             GLib.source_remove(w)
         self.sco_watches = []
+        self.sco_car_watch = None
+        self.sco_car_reopens = 0
+        self.sco_car_tries = 0
         self.car_sco_pending_clear(close=True)
         if self.sco_car_retry is not None:
             GLib.source_remove(self.sco_car_retry)
