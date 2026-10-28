@@ -147,6 +147,17 @@ monitor.bluez.rules = [
 # A phone call, or the car's mic borrowed for voice search (the car is in
 # call mode for that too).
 car_busy() { in_call || [ "$(cat /run/auxlink/mic-active 2>/dev/null)" = 1 ]; }
+# The loop's idle wait, cut short when a call (or the car mic) starts while
+# music streams to the car: the car must see its music stream stop before
+# hfp-relay opens call audio to it (the Tesla ends call audio that arrives
+# while music is still streaming), and hfp-relay waits for exactly that.
+nap() {
+  local i
+  for i in $(seq $(( $1 * 5 ))); do
+    { [ -n "$CAR_LOOP" ] || [ -n "$LOOP" ]; } && car_busy && return
+    sleep 0.2
+  done
+}
 # The phone's own media has taken over the car audio (auxlink-media decides
 # this): stop the SMO loopback so they don't play at once, but DON'T suspend
 # the car's sink - the phone's own stream is using it.
@@ -616,7 +627,7 @@ hub_stream() {
         fi
       fi
     fi
-    sleep 2; return
+    nap 2; return
   fi
 
   if ! hub_linked; then
@@ -659,7 +670,7 @@ hub_stream() {
     hub_silence 0
     LAST_NUDGE=$now; NOT_ACTIVE=0; return
   fi
-  sleep 2
+  nap 2
 }
 
 trap 'stop_loop; stop_meter; unmute_input' EXIT
@@ -1004,5 +1015,5 @@ while true; do
     nudge "$SINK"; LAST_NUDGE=$now; NOT_ACTIVE=0
     continue
   fi
-  sleep 2
+  nap 2
 done

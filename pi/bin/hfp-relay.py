@@ -279,6 +279,8 @@ class Relay:
         self.sco_car_watch = None          # the open car link's pump watch
         self.sco_car_reopens = 0           # car link dropped and reopened, this call
         self.sco_car_tries = 0             # attempts since the car link was last up
+        self.sco_car_wait_since = 0.0      # waiting for the car's music stream to pause
+        self.sco_car_wait_timer = None
         self.in_call = False
         self.caller = ""         # number from +CLIP while ringing
         self.caller_name = ""    # name, when the phone sends one with it
@@ -984,9 +986,46 @@ class Relay:
     # the call falls back to the phone itself instead of going nowhere.
     CAR_SCO_TRIES = 10
 
+    # A phone pauses its music stream before opening call audio; the Tesla
+    # ends call audio opened while music is still streaming to it (btmon:
+    # eSCO up, then "Remote User Terminated Connection" ~20 ms later, with
+    # A2DP packets still going out). auxlink-audio stops the music for the
+    # call, but only on its next pass, so wait for the car's A2DP transport to
+    # leave "active" first - up to A2DP_WAIT s, then try anyway.
+    A2DP_WAIT = 4.0
+
+    def car_a2dp_active(self):
+        dev = "/dev_" + CAR.replace(":", "_")
+        try:
+            om = dbus.Interface(self.bus.get_object(BLUEZ, "/"), "org.freedesktop.DBus.ObjectManager")
+            for path, ifaces in om.GetManagedObjects().items():
+                t = ifaces.get("org.bluez.MediaTransport1")
+                if t and dev + "/" in str(path) and str(t.get("State", "")) == "active":
+                    return True
+        except dbus.DBusException:
+            pass
+        return False
+
+    def car_sco_wait_now(self):
+        self.sco_car_wait_timer = None
+        self.car_sco_open()
+        return False
+
     def car_sco_open(self):
-        if self.sco_car or self.sco_car_pending or not self.sco_phone:
+        if self.sco_car or self.sco_car_pending or not self.sco_phone or self.sco_car_wait_timer:
             return
+        if self.car and self.car_slc and self.car_a2dp_active():
+            now = time.monotonic()
+            if not self.sco_car_wait_since:
+                self.sco_car_wait_since = now
+                log("Call audio: waiting for the car's music stream to pause first")
+            if now - self.sco_car_wait_since < self.A2DP_WAIT:
+                self.sco_car_wait_timer = GLib.timeout_add(150, self.car_sco_wait_now)
+                return
+            log(f"Call audio: the car's music stream is still on after {self.A2DP_WAIT:.0f} s; opening anyway")
+        elif self.sco_car_wait_since:
+            log(f"Call audio: car's music paused after {time.monotonic() - self.sco_car_wait_since:.1f} s")
+        self.sco_car_wait_since = 0.0
         self.sco_car_tries += 1
         if self.sco_car_tries > self.CAR_SCO_TRIES:
             log("Call audio: the car won't take it; letting the phone keep the call audio")
@@ -1157,6 +1196,10 @@ class Relay:
         self.sco_car_watch = None
         self.sco_car_reopens = 0
         self.sco_car_tries = 0
+        self.sco_car_wait_since = 0.0
+        if self.sco_car_wait_timer is not None:
+            GLib.source_remove(self.sco_car_wait_timer)
+            self.sco_car_wait_timer = None
         self.car_sco_pending_clear(close=True)
         if self.sco_car_retry is not None:
             GLib.source_remove(self.sco_car_retry)
