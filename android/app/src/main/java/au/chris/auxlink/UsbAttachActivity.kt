@@ -12,6 +12,9 @@ import android.os.Bundle
 class UsbAttachActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // The Pi's USB-C link appeared (plug-in, or the Pi re-plugging a link
+        // that went quiet): make sure the service that talks to it is running.
+        NowPlayingService.rebindIfDown(this, "USB attached")
         finish()
         overridePendingTransition(0, 0)
     }

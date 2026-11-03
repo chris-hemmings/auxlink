@@ -119,6 +119,22 @@ class NowPlayingService : NotificationListenerService() {
         @Volatile private var allowlistScrubbed = false
         /** The running service, for the app screen's buttons. */
         @Volatile var instance: NowPlayingService? = null
+
+        /** Ask Android to bind the listener again if it isn't running. Android
+         *  can drop a notification listener (memory, an update, Android 15+),
+         *  and nothing brought it back: Phone Link then stayed silent to the
+         *  Pi - no now-playing, no wheel buttons - with the sound still fine.
+         *  Called on USB-C attach (also when the Pi re-plugs a quiet link)
+         *  and when the app screen opens. */
+        fun rebindIfDown(ctx: Context, why: String) {
+            if (instance != null) return
+            try {
+                NotificationListenerService.requestRebind(ComponentName(ctx, NowPlayingService::class.java))
+                Log.i(TAG, "Listener not running ($why): asked Android to rebind it")
+            } catch (e: Exception) {
+                Log.w(TAG, "requestRebind ($why): ${e.message}")
+            }
+        }
         /** True while the app is in the foreground (MainActivity resumed). */
         @Volatile var appForeground = false
         /** The Phone screen's inline call panel, when it's open: given the call
@@ -2005,6 +2021,14 @@ class NowPlayingService : NotificationListenerService() {
         }
         notifLink = null
         synchronized(heldActions) { heldActions.clear() }
+        // Come straight back rather than staying silent until something
+        // restarts the app.
+        try {
+            requestRebind(ComponentName(this, NowPlayingService::class.java))
+            Log.i(TAG, "Listener disconnected by Android: asked to rebind")
+        } catch (e: Exception) {
+            Log.w(TAG, "requestRebind: ${e.message}")
+        }
     }
 
     /** USB if one is plugged in (unchanged behaviour), else Bluetooth. Runs on [io]. */

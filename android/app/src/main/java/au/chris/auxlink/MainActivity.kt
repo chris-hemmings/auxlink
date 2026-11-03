@@ -368,6 +368,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume(); main.post(refresh)
+        NowPlayingService.rebindIfDown(this, "app opened")
         NowPlayingService.appForeground = true
         if (::pages.isInitialized) showTab(tab)
         NowPlayingService.instance?.setAppForeground(true)
