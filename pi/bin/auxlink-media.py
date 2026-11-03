@@ -346,9 +346,48 @@ class UsbcReplug:
     early in its boot; three tries per connection at most."""
     GADGET_UDC = "/sys/kernel/config/usb_gadget/auxlink/UDC"
 
+    # Phone Link answered on this connection, then went quiet (its listener
+    # service dropped, or the link stalled): no now-playing, no wheel buttons,
+    # while the sound plays on. After QUIET_AFTER s, re-plug - which makes the
+    # SMO open Phone Link's USB handler, and that rebinds a dead service - at
+    # most QUIET_TRIES times a quiet spell, QUIET_GAP s apart (each re-plug
+    # drops the sound for a second or two).
+    QUIET_AFTER = 60
+    QUIET_TRIES = 3
+    QUIET_GAP = 300
+
     def __init__(self):
         self.up_since = None
         self.tries = 0
+        self.quiet_since = None      # when Phone Link went quiet (None = talking)
+        self.quiet_tries = 0
+        self.quiet_replug_at = 0.0
+
+    def replug(self, name):
+        with open(self.GADGET_UDC, "w") as f:
+            f.write("\n")
+        time.sleep(0.8)
+        with open(self.GADGET_UDC, "w") as f:
+            f.write(name)
+        self.up_since = None
+
+    def check_quiet(self, name, now):
+        last = VOLUME["last_line"]
+        if now - last < self.QUIET_AFTER:
+            if self.quiet_since is not None:
+                log(f"Phone Link is talking again (quiet for {int(last - self.quiet_since)} s)")
+                self.quiet_since = None
+                self.quiet_tries = 0
+            return
+        if self.quiet_since is None:
+            self.quiet_since = last
+            log(f"Phone Link went quiet {int(now - last)} s ago: no now-playing or wheel buttons until it's back")
+        if self.quiet_tries >= self.QUIET_TRIES or now - self.quiet_replug_at < self.QUIET_GAP:
+            return
+        self.quiet_tries += 1
+        self.quiet_replug_at = now
+        log(f"USB-C: re-plugging so the SMO restarts Phone Link (try {self.quiet_tries} of {self.QUIET_TRIES})")
+        self.replug(name)
 
     @staticmethod
     def udc():
@@ -374,11 +413,21 @@ class UsbcReplug:
         if state != "configured":
             if self.up_since is not None and state in ("not attached", ""):
                 self.tries = 0          # unplugged: a new connection starts over
+                self.quiet_since, self.quiet_tries = None, 0
             self.up_since = None
             return
         if self.up_since is None:
             self.up_since = now
-        if VOLUME["last_line"] >= self.up_since or self.tries >= 3:
+        if VOLUME["last_line"] >= self.up_since:
+            self.check_quiet(name, now)
+            return
+        if self.quiet_since is not None:
+            # Re-plugged for a quiet Phone Link: keep watching that spell (its
+            # tries and spacing) rather than the "never answered" ones below.
+            if now - self.up_since >= self.QUIET_AFTER:
+                self.check_quiet(name, now)
+            return
+        if self.tries >= 3:
             return
         wait = 15 if self.tries == 0 else 30
         if now - self.up_since < wait:
@@ -386,12 +435,7 @@ class UsbcReplug:
         self.tries += 1
         log(f"USB-C: no word from the AuxLink app; replugging so Android gives it the link "
             f"(try {self.tries} of 3)")
-        with open(self.GADGET_UDC, "w") as f:
-            f.write("\n")
-        time.sleep(0.8)
-        with open(self.GADGET_UDC, "w") as f:
-            f.write(name)
-        self.up_since = None
+        self.replug(name)
 
 
 class UsbcMic:
