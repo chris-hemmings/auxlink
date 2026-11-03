@@ -13,14 +13,18 @@ is being used.
 """
 import base64
 import glob
+import hashlib
+import hmac
 import json
 import os
 import re
+import secrets
 import socket
 import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, "/usr/local/lib/auxlink")
@@ -29,6 +33,68 @@ import auxconf  # noqa: E402
 import dbus  # noqa: E402
 
 INDEX = "/usr/local/share/auxlink/index.html"
+
+# ---------- Page login (with a page password set) ----------
+# A form on the page, not the browser's Basic-auth box: the phone's "Sign in
+# to AuxLink-setup" window (the captive portal) can't show that box and only
+# said "ERR_HTTP_RESPONSE_CODE_FAILURE". Logging in sets a cookie signed with
+# a key kept on the Pi, so it survives reboots (the Pi starts with the car);
+# it lasts SESSION_DAYS and changing the password signs everyone out. Basic
+# auth still works (auxlink-media uses it for the app's requests).
+SESSION_KEY_FILE = "/var/lib/auxlink/web-session.key"
+SESSION_DAYS = 30
+COOKIE = "auxlink_login"
+_SESSION_KEY = []
+
+
+def session_key():
+    if not _SESSION_KEY:
+        try:
+            k = open(SESSION_KEY_FILE, "rb").read()
+        except OSError:
+            k = b""
+        if len(k) < 32:
+            k = secrets.token_bytes(32)
+            os.makedirs(os.path.dirname(SESSION_KEY_FILE), exist_ok=True)
+            fd = os.open(SESSION_KEY_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "wb") as f:
+                f.write(k)
+        _SESSION_KEY.append(k)
+    return _SESSION_KEY[0]
+
+
+def session_sig(exp, pw):
+    return hmac.new(session_key(), f"{exp}|{pw}".encode(), hashlib.sha256).hexdigest()
+
+
+def session_cookie(pw):
+    exp = int(time.time()) + SESSION_DAYS * 86400
+    return (f"{COOKIE}={exp}.{session_sig(exp, pw)}; Max-Age={SESSION_DAYS * 86400}; "
+            "Path=/; HttpOnly; SameSite=Lax")
+
+
+def session_ok(value, pw):
+    try:
+        exp_s, sig = value.split(".", 1)
+        exp = int(exp_s)
+    except ValueError:
+        return False
+    return exp > time.time() and hmac.compare_digest(sig, session_sig(exp, pw))
+
+
+LOGIN_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>AuxLink setup</title>
+<style>body{margin:0;font:16px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+background:#0f1115;color:#e7e9ee;display:flex;min-height:100vh;align-items:center;justify-content:center}
+form{background:#181b22;border:1px solid #2a2f3a;border-radius:12px;padding:20px;width:min(340px,90vw)}
+h1{font-size:20px;margin:0 0 4px}p{color:#8b93a3;margin:0 0 14px}
+input{width:100%;box-sizing:border-box;padding:10px;border-radius:8px;border:1px solid #2a2f3a;
+background:#0f1115;color:#e7e9ee;font:inherit;margin-bottom:12px}
+button{width:100%;padding:10px;border:0;border-radius:8px;background:#4f8cff;color:#fff;font:inherit}
+.err{color:#ff6b6b}</style></head><body>
+<form method="post" action="/login"><h1>AuxLink setup</h1><p>Enter the page password.</p>
+%ERR%<input type="password" name="password" autofocus autocomplete="current-password" aria-label="Page password">
+<button type="submit">Open the setup page</button></form></body></html>"""
 WINDOW_FILE = "/run/auxlink/pair.json"
 CALL_FILE = "/run/auxlink/call"
 AP_NAME = "auxlink-setup"
@@ -1002,20 +1068,52 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def authorised(self):
+        """True if no page password is set, or this request is logged in.
+        Otherwise answers it: the login form for a page, 401 for the API (no
+        browser login box - the page sends people to the form instead)."""
         pw = auxconf.load().get("WEB_PASSWORD", "")
         if not pw:
             return True
         h = self.headers.get("Authorization", "")
         if h.startswith("Basic "):
             try:
-                if base64.b64decode(h[6:]).decode().split(":", 1)[1] == pw:
+                if hmac.compare_digest(base64.b64decode(h[6:]).decode().split(":", 1)[1], pw):
                     return True
-            except (ValueError, IndexError):
+            except (ValueError, IndexError, UnicodeDecodeError):
                 pass
-        self.send_response(401)
-        self.send_header("WWW-Authenticate", 'Basic realm="AuxLink"')
-        self.end_headers()
+        for part in (self.headers.get("Cookie") or "").split(";"):
+            k, _, v = part.strip().partition("=")
+            if k == COOKIE and session_ok(v, pw):
+                return True
+        if self.command == "GET" and not self.path.startswith("/api/"):
+            self.login_page()
+        else:
+            self.reply(401, {"error": "Log in to the setup page first"})
         return False
+
+    def login_page(self, err=""):
+        html = LOGIN_PAGE.replace("%ERR%", f'<p class="err">{err}</p>' if err else "")
+        self.reply(200, html.encode(), "text/html; charset=utf-8")
+
+    def do_login(self):
+        """POST /login from the form."""
+        try:
+            n = min(int(self.headers.get("Content-Length", 0) or 0), 4096)
+        except ValueError:
+            n = 0
+        form = urllib.parse.parse_qs(self.rfile.read(n).decode("utf-8", "replace"))
+        given = (form.get("password") or [""])[0]
+        pw = auxconf.load().get("WEB_PASSWORD", "")
+        if pw and not hmac.compare_digest(given, pw):
+            time.sleep(1)                 # slows down guessing
+            return self.login_page("Wrong password.")
+        self.send_response(303)
+        self.send_header("Location", "/")
+        if pw:
+            self.send_header("Set-Cookie", session_cookie(pw))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def risky_refused(self, name, body=None):
         """Actions that can run code as root (an update zip, firmware, a shell,
@@ -1041,9 +1139,11 @@ class Handler(BaseHTTPRequestHandler):
                                   "without one, anyone on the setup Wi-Fi could use this"})
         return True
 
-    def reply(self, code, body, ctype="application/json"):
+    def reply(self, code, body, ctype="application/json", headers=()):
         data = body if isinstance(body, bytes) else json.dumps(body).encode()
         self.send_response(code)
+        for k, v in headers:
+            self.send_header(k, v)
         self.send_header("Content-Type", ctype)
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(data)))
@@ -1095,6 +1195,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         STATE["last_hit"] = time.monotonic()
+        if self.path == "/login":
+            return self.do_login()
         if not self.authorised():
             return
         name = self.path[len("/api/"):] if self.path.startswith("/api/") else ""
@@ -1124,7 +1226,11 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(n) or b"{}")
             if self.risky_refused(name, body if isinstance(body, dict) else {}):
                 return
-            self.reply(200, fn(body))
+            result = fn(body)
+            # Setting the page password from the page: keep this browser logged
+            # in with it, rather than locking it out mid-session.
+            newpw = str(body.get("WEB_PASSWORD", "")) if name == "config" and isinstance(body, dict) else ""
+            self.reply(200, result, headers=[("Set-Cookie", session_cookie(newpw))] if newpw else ())
         except (ValueError, KeyError) as e:
             self.reply(400, {"error": str(e)})
         except dbus.DBusException as e:
