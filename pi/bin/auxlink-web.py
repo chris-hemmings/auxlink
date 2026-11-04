@@ -12,6 +12,11 @@ http://auxlink.local on that network instead). It stays on while the page
 is being used.
 """
 import base64
+import faulthandler
+import signal as _sig
+# The debug log (auxlink-debug) sends SIGUSR1 when this service seems stuck:
+# every thread's stack goes to the journal, showing where it is blocked.
+faulthandler.register(_sig.SIGUSR1, all_threads=True)
 import glob
 import hashlib
 import hmac
@@ -19,9 +24,11 @@ import json
 import os
 import re
 import secrets
+import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -109,7 +116,7 @@ EDITABLE = {
     "SETUP_WIFI_MINUTES": r"\d{1,3}", "WEB_PASSWORD": r"[^\s'\"$`\\]{0,63}", "WIFI_OFF_ON_CAR_DISCONNECT": r"[01]",
     "SETUP_BUTTON_GPIO": r"\d{0,2}", "SOURCE_NAME": r"[\w .\-]{1,30}", "USBC_AUDIO_CLASS": r"[12]", "USBC_MEDIA_KEYS": r"[01]",
     # Car behaviour (defaults tuned on a Tesla; other cars may want others)
-    "CAR_CALLS": r"[01]", "CAR_MIC_MODE": r"call|vr", "SBC_XQ": r"[01]", "WAIT_FOR_AUDIO": r"[01]", "AUDIO_HUB": r"[01]", "HUB_HEALS": r"[01]", "STREAM_HOLD_SEC": r"\d{1,3}", "SMO_VOLUME_MAX": r"[01]", "DEV_TERMINAL": r"[01]", "MESSAGES": r"[01]", "SMO_NOTIFY": r"[01]", "CAR_OFF_DROPS_PHONE": r"[01]", "CAR_OFF_PHONE_DELAY": r"\d{1,4}", "CAR_OFF_REQUIRE_STILL": r"[01]", "PAUSE_ON_CAR_OFF": r"[01]", "PHONE_MEDIA_PRIORITY": r"[01]", "PHONE_MEDIA_DEBOUNCE": r"\d{1,2}", "SOURCE_OVERRIDE": r"media|both|merge|phone|auto",
+    "CAR_CALLS": r"[01]", "CAR_MIC_MODE": r"call|vr", "SBC_XQ": r"[01]", "WAIT_FOR_AUDIO": r"[01]", "AUDIO_HUB": r"[01]", "HUB_HEALS": r"[01]", "STREAM_HOLD_SEC": r"\d{1,3}", "SMO_VOLUME_MAX": r"[01]", "DEV_TERMINAL": r"[01]", "DEBUG_LOG": r"[01]", "DEBUG_MAX_MB": r"\d{2,4}", "MESSAGES": r"[01]", "SMO_NOTIFY": r"[01]", "CAR_OFF_DROPS_PHONE": r"[01]", "CAR_OFF_PHONE_DELAY": r"\d{1,4}", "CAR_OFF_REQUIRE_STILL": r"[01]", "PAUSE_ON_CAR_OFF": r"[01]", "PHONE_MEDIA_PRIORITY": r"[01]", "PHONE_MEDIA_DEBOUNCE": r"\d{1,2}", "SOURCE_OVERRIDE": r"media|both|merge|phone|auto",
 }
 ROLE_KEYS = {"car": ("CAR", "CAR_ADAPTER"), "phone": ("PHONE", "PHONE_ADAPTER"),
              "source": ("SOURCE", "SOURCE_ADAPTER")}
@@ -584,6 +591,61 @@ def act_xiao_flash(data):
 # A login shell for the page (Settings → Development terminal), like SSH:
 # the Pi login user, not root, so sudo asks for the password. Off by default,
 # refused while the default Pi password is still set, closed after 15 min idle.
+DEBUG_DIR = "/var/log/auxlink-debug"
+DEBUG_LOCK = threading.Lock()
+
+
+def debug_on():
+    return auxconf.load().get("DEBUG_LOG", "0") == "1"
+
+
+def debug_bundle():
+    """One .tar.gz with everything for "Download debug logs": the debug log's
+    files, this and the previous boot's whole journal (a restart is what
+    clears these problems, so the previous boot is where they are), the
+    state right now, recent events, the update log, and the settings with
+    the passwords blanked. Returns its path (the caller deletes it)."""
+    work = tempfile.mkdtemp(prefix="auxlink-debug-", dir="/var/tmp")
+
+    def save(name, text):
+        with open(os.path.join(work, name), "w", encoding="utf-8", errors="replace") as f:
+            f.write(text if text.endswith("\n") else text + "\n")
+
+    def cmd(*args, timeout=120):
+        try:
+            r = subprocess.run(list(args), capture_output=True, text=True, timeout=timeout)
+            return r.stdout + (r.stderr if r.returncode else "")
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return f"<{e}>"
+    save("journal-this-boot.log", cmd("journalctl", "-b", "0", "-o", "short-precise", "--no-pager"))
+    save("journal-previous-boot.log", cmd("journalctl", "-b", "-1", "-o", "short-precise", "--no-pager"))
+    save("boots.txt", cmd("journalctl", "--list-boots", "--no-pager"))
+    save("state-now.txt", cmd("/usr/local/bin/auxlink-debug.py", "snapshot", timeout=90))
+    save("kernel-now.txt", cmd("dmesg", "-T"))
+    try:
+        save("recent-events.txt", open(auxconf.EVENTS).read())
+    except OSError:
+        pass
+    try:
+        save("update.log", open(UPDATE_LOG).read())
+    except OSError:
+        pass
+    conf = []
+    for line in open(auxconf.PATH):
+        k = line.split("=", 1)[0].strip()
+        conf.append(f"{k}=<hidden>\n" if "PASS" in k and "=" in line and line.split("=", 1)[1].strip()
+                    else line)
+    save("settings.txt", "".join(conf))
+    save("version.txt", f"{version()}\n{cmd('uname', '-a')}")
+    out = os.path.join("/var/tmp", f"auxlink-debug-{socket.gethostname()}-{time.strftime('%Y%m%d-%H%M%S')}.tar.gz")
+    args = ["tar", "czf", out, "-C", work, "."]
+    if os.path.isdir(DEBUG_DIR):
+        args += ["-C", os.path.dirname(DEBUG_DIR), os.path.basename(DEBUG_DIR)]
+    subprocess.run(args, capture_output=True, timeout=300)
+    shutil.rmtree(work, ignore_errors=True)
+    return out
+
+
 XTERM_DIR = "/usr/local/share/auxlink/xterm"
 TERM_IDLE = 15 * 60
 TERMS = {}                      # id -> session
@@ -1065,7 +1127,45 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "auxlink"
 
     def log_message(self, fmt, *args):
-        pass
+        # In debug mode every request is logged as it finishes (and as it
+        # starts, in debug_start): a hung one shows as a start with no end.
+        if debug_on():
+            print(f"web: {self.client_address[0]} {fmt % args}", file=sys.stderr, flush=True)
+
+    def debug_start(self):
+        if debug_on():
+            print(f"web: {self.client_address[0]} start {self.command} {self.path}", file=sys.stderr, flush=True)
+
+    def send_debug_bundle(self):
+        if not auxconf.load().get("WEB_PASSWORD", "") and self.client_address[0] not in ("127.0.0.1", "::1"):
+            return self.reply(403, {"error": "Set a page password first (Settings → Page password): "
+                                             "the logs hold phone numbers and messages"})
+        if not DEBUG_LOCK.acquire(blocking=False):
+            return self.reply(409, {"error": "a debug download is already being made"})
+        path = None
+        try:
+            path = debug_bundle()
+            size = os.path.getsize(path)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/gzip")
+            self.send_header("Content-Disposition", f'attachment; filename="{os.path.basename(path)}"')
+            self.send_header("Content-Length", str(size))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            with open(path, "rb") as f:
+                shutil.copyfileobj(f, self.wfile, 65536)
+        except (OSError, subprocess.SubprocessError) as e:
+            try:
+                self.reply(500, {"error": f"could not make the debug download: {e}"})
+            except OSError:
+                pass
+        finally:
+            DEBUG_LOCK.release()
+            if path:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
 
     def authorised(self):
         """True if no page password is set, or this request is logged in.
@@ -1162,6 +1262,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         STATE["last_hit"] = time.monotonic()
+        self.debug_start()
         if STATE.get("ap") and self.foreign_host() and not self.path.startswith("/api/"):
             # Phones see this instead of their "internet ok" answer and open
             # the setup page by themselves ("Sign in to network").
@@ -1189,12 +1290,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(500, b"index.html missing", "text/plain")
         if self.path == "/api/state":
             return self.reply(200, state())
+        if self.path == "/api/debug-logs":
+            return self.send_debug_bundle()
         if self.path.startswith("/api/logs/"):
             return self.reply(200, {"text": logs(self.path.rsplit("/", 1)[-1])})
         self.reply(404, {"error": "not found"})
 
     def do_POST(self):
         STATE["last_hit"] = time.monotonic()
+        self.debug_start()
         if self.path == "/login":
             return self.do_login()
         if not self.authorised():

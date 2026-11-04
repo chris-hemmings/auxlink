@@ -1,0 +1,16 @@
+[Unit]
+Description=AuxLink: debug log (DEBUG_LOG=1) - everything, for "Download debug logs"
+# Independent of bluetoothd and the other services on purpose: it must keep
+# recording while they are the ones misbehaving.
+After=local-fs.target
+
+[Service]
+ExecStart=/usr/local/bin/auxlink-debug.py
+Restart=always
+RestartSec=5
+# Recording, not running the car: give way to everything else.
+Nice=10
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target

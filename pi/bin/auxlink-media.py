@@ -18,6 +18,11 @@
   source starting to record on it is the request, and the car's mic is
   played into it. (A Bluetooth source is handled by hfp-relay alone.)
 """
+import faulthandler
+import signal as _sig
+# The debug log (auxlink-debug) sends SIGUSR1 when this service seems stuck:
+# every thread's stack goes to the journal, showing where it is blocked.
+faulthandler.register(_sig.SIGUSR1, all_threads=True)
 import array
 import base64
 import glob
@@ -284,6 +289,7 @@ BT_KEYS = None     # set in main() for MUSIC_SOURCE=bluetooth
 # (~23%); the car's own volume is what people use. So on a new connection the
 # XIAO presses "volume up" until it is at the top. SMO_VOLUME_MAX=0 turns it off.
 VOLUME = {"last_line": 0.0, "last_max": 0.0}
+APP_SEEN_AT = [0.0]   # last /run/auxlink/app-seen touch (debug log)
 
 
 def smo_volume_max(why):
@@ -3165,6 +3171,14 @@ def main():
                 if now - VOLUME["last_line"] > 20:
                     smo_volume_max("the SMO connected")
                 VOLUME["last_line"] = now
+                if now - APP_SEEN_AT[0] > 5:
+                    # For the debug log: when Phone Link last spoke.
+                    APP_SEEN_AT[0] = now
+                    try:
+                        with open("/run/auxlink/app-seen", "w"):
+                            pass
+                    except OSError:
+                        pass
                 # USB/BT (re)linked: deliver notifs that arrived during the gap.
                 if APP_PENDING:
                     GLib.idle_add(flush_app_pending)
