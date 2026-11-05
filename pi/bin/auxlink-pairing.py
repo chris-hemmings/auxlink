@@ -400,6 +400,15 @@ class Pairing:
             if not path:
                 continue
             a = objs[path]["org.bluez.Adapter1"]
+            # The car is off and the phone is to stay off the Pi: auxlink-
+            # reconnect switches the phone's adapter off so the phone can't
+            # keep reconnecting by itself. Powering it back on here (every
+            # few seconds) undid that. Leave it off - unless a phone pairing
+            # window is open.
+            if ({r for r, _ in entries} == {"phone"} and not self.window_open("phone")
+                    and self.conf.get("CAR_OFF_DROPS_PHONE", "0") == "1"
+                    and os.path.exists("/run/auxlink/car-off")):
+                continue
             visible = False
             devs = []
             for role, target in entries:

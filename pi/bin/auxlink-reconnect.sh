@@ -217,9 +217,15 @@ while true; do
         echo "Car off: phone disconnected"
       fi
       # Checked every pass: a bluetoothd restart switches adapters back on.
-      if bt_is_powered "$PHONE_ADAPTER"; then
-        if $BT "$PHONE_ADAPTER" power off >/dev/null 2>&1 && [ "$phone_adapter_off" != yes ]; then
-          echo "Car off: phone adapter switched off until the car returns (so the phone can't reconnect)"
+      # Not when a Bluetooth music source shares the adapter (it would go too).
+      if { [ "${MUSIC_SOURCE:-wired}" != bluetooth ] || [ "${SOURCE_ADAPTER^^}" != "${PHONE_ADAPTER^^}" ]; } &&
+         bt_is_powered "$PHONE_ADAPTER"; then
+        if $BT "$PHONE_ADAPTER" power off >/dev/null 2>&1; then
+          if [ "$phone_adapter_off" != yes ]; then
+            echo "Car off: phone adapter switched off until the car returns (so the phone can't reconnect)"
+          elif [ "$BT_FAST" = 1 ]; then
+            echo "Car off: something switched the phone adapter back on; off again"
+          fi
         fi
         phone_adapter_off=yes
       fi
