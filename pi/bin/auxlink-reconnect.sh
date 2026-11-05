@@ -15,13 +15,20 @@ while [ -z "$CAR" ] || [ -z "$CAR_ADAPTER" ]; do sleep 5; . /etc/auxlink.conf; d
 
 car_was=no; phone_was=no; phone_warned=no; car_err=; source_was=no; source_next=0
 # Drop the phone a while after the CAR's Bluetooth goes (i.e. the car turned
-# off), and bring it back when the car returns. car_seen stops this firing
-# before the car has ever connected (e.g. right after boot). The flag file,
-# emptied at boot, tells the phone section to stay disconnected.
+# off), and bring it back when the car returns. Right after the Pi starts it
+# waits CAR_BOOT_WAIT s for the car to connect first (car_seen) - but no
+# longer: the Pi restarts while the car sleeps (standby power cut on and off
+# while charging), the car never connected, and the phone stayed on the Pi.
+# The flag file, emptied at boot, tells the phone section to stay disconnected.
 CAR_OFF_FLAG=/run/auxlink/car-off
 CAR_CONN_FLAG=/run/auxlink/car-connected   # "1" while the car is connected (read by auxlink-web)
 MOVING_FILE=/run/auxlink/moving
 car_seen=no; car_down_since=0
+CAR_BOOT_WAIT=120
+# Seconds since boot: the Pi's clock jumps (no RTC: it starts days behind and
+# is set later), which threw out timings taken with date.
+uptime_s() { cut -d. -f1 /proc/uptime; }
+started_up=$(uptime_s)
 
 # True if the SMO app says the vehicle is moving, from a FRESH report (the app
 # sends it every ~10 s). No file, a stale file, or "0" -> not moving, so the
@@ -122,16 +129,22 @@ while true; do
     now=$(date +%s)
     # Car gone long enough (and it had been connected): drop the phone. Leave a
     # flag so the phone section keeps it down until the car returns.
-    if [ "${CAR_OFF_DROPS_PHONE:-0}" = 1 ] && [ "$car_seen" = yes ]; then
+    up=$(uptime_s)
+    if [ "${CAR_OFF_DROPS_PHONE:-0}" = 1 ] &&
+       { [ "$car_seen" = yes ] || [ $((up - started_up)) -ge "$CAR_BOOT_WAIT" ]; }; then
       if [ "${CAR_OFF_REQUIRE_STILL:-1}" = 1 ] && moving_now; then
         # Car's Bluetooth is gone but the vehicle is still moving (a Bluetooth
         # blip, not the car turning off): hold off, keep the phone.
         car_down_since=0
       else
-        [ "$car_down_since" = 0 ] && car_down_since=$now
-        if [ ! -f "$CAR_OFF_FLAG" ] && [ $((now - car_down_since)) -ge "${CAR_OFF_PHONE_DELAY:-30}" ]; then
+        [ "$car_down_since" = 0 ] && car_down_since=$up
+        if [ ! -f "$CAR_OFF_FLAG" ] && [ $((up - car_down_since)) -ge "${CAR_OFF_PHONE_DELAY:-30}" ]; then
           touch "$CAR_OFF_FLAG"
-          echo "Car gone ${CAR_OFF_PHONE_DELAY:-30}s (and stationary); dropping the phone until it returns"
+          if [ "$car_seen" = yes ]; then
+            echo "Car gone ${CAR_OFF_PHONE_DELAY:-30}s (and stationary); dropping the phone until it returns"
+          else
+            echo "Car not connected ${CAR_BOOT_WAIT}s after the Pi started (and stationary); keeping the phone off until it connects"
+          fi
         fi
       fi
     fi
