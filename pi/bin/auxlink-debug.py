@@ -277,7 +277,7 @@ def dump_stacks(unit, why, ev):
              f"listening :80 -> {run(['sh', '-c', 'ss -ltnp | grep -w :80 || echo nobody'])}")
     try:
         os.kill(pid, signal.SIGUSR1)
-        ev.write(f"STACKS {unit}: asked it to print its threads to the journal (look for 'Thread 0x')")
+        ev.write(f"STACKS {unit}: asked it to print its threads to the journal (look for 'most recent call first')")
     except OSError as e:
         ev.write(f"STACKS {unit}: {e}")
 
