@@ -2052,9 +2052,22 @@ class NowPlayingService : NotificationListenerService() {
             sessions?.getActiveSessions(ComponentName(this, NowPlayingService::class.java))
         } catch (e: SecurityException) { null } ?: emptyList()
         val playing = { c: MediaController? -> c?.playbackState?.state == PlaybackState.STATE_PLAYING }
-        val best = controller?.takeIf { cur -> playing(cur) && list.any { it.sessionToken == cur.sessionToken } }
+        // Some source apps keep an active, PLAYING media session that carries
+        // NO metadata and holds the media button, so it sorts first in the
+        // active list (e.g. ScreenMate's Android Auto wrapper on the SMO,
+        // alongside the real Spotify session). Following it sends the car empty
+        // now-playing and flappy play states. So prefer a session that actually
+        // has a title, and only fall back to a metadata-less one if nothing
+        // better is available.
+        val hasMeta = { c: MediaController? ->
+            !c?.metadata?.getString(MediaMetadata.METADATA_KEY_TITLE).isNullOrBlank() }
+        val inList = { c: MediaController? -> list.any { it.sessionToken == c?.sessionToken } }
+        val best = controller?.takeIf { cur -> playing(cur) && hasMeta(cur) && inList(cur) }
+            ?: list.firstOrNull { playing(it) && hasMeta(it) }
+            ?: list.firstOrNull { hasMeta(it) }
+            ?: controller?.takeIf { cur -> playing(cur) && inList(cur) }
             ?: list.firstOrNull { playing(it) }
-            ?: controller?.takeIf { cur -> list.any { it.sessionToken == cur.sessionToken } }
+            ?: controller?.takeIf { cur -> inList(cur) }
             ?: list.firstOrNull()
         if (best?.sessionToken != controller?.sessionToken) {
             controller?.unregisterCallback(callback)
