@@ -10,7 +10,7 @@ between boots, so plain `bluetoothctl connect` may use the wrong dongle.
   btdev.py ADAPTER DEVICE trust            mark trusted
   btdev.py ADAPTER present                 exit 0 if the adapter exists
   btdev.py ADAPTER path                    print the adapter's object path (/org/bluez/hciN)
-  btdev.py ADAPTER power                   switch the adapter on
+  btdev.py ADAPTER power [off]             switch the adapter on (or off)
   btdev.py ADAPTER alias NAME              set the adapter's Bluetooth name (if different)
 """
 import sys
@@ -52,8 +52,9 @@ def main():
     if sys.argv[2] == "power":
         if not ap:
             return 1
+        on = not (len(sys.argv) > 3 and sys.argv[3] == "off")
         p = dbus.Interface(bus.get_object(BLUEZ, ap), "org.freedesktop.DBus.Properties")
-        p.Set("org.bluez.Adapter1", "Powered", dbus.Boolean(True))
+        p.Set("org.bluez.Adapter1", "Powered", dbus.Boolean(on))
         return 0
     if not ap:
         print(f"adapter {sys.argv[1]} not found", file=sys.stderr)

@@ -26,6 +26,11 @@ mic, the car's cabin mic is borrowed (shown to the Tesla as a call) and sent
 Requires PipeWire's own HFP/HSP roles to be disabled, so this script owns HFP.
 Every AT line is logged with its direction for debugging.
 """
+import faulthandler
+import signal as _sig
+# The debug log (auxlink-debug) sends SIGUSR1 when this service seems stuck:
+# every thread's stack goes to the journal, showing where it is blocked.
+faulthandler.register(_sig.SIGUSR1, all_threads=True)
 import errno
 import math
 import json

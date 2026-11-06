@@ -73,6 +73,10 @@ bt_power() {   # switch adapter $1 on (only calls btdev.py if it is off)
   fi
   $BT "$1" power
 }
+bt_is_powered() {   # adapter $1 is switched on (unknown counts as on)
+  [ "$BT_FAST" = 1 ] && bt_apath "$1" || return 0
+  [ "$(timeout 5 busctl get-property org.bluez "$BT_AP" org.bluez.Adapter1 Powered 2>/dev/null)" != "b false" ]
+}
 bt_alias() {   # name adapter $1 $2 (only calls btdev.py if it differs)
   if [ "$BT_FAST" = 1 ] && bt_apath "$1" &&
      [ "$(timeout 5 busctl get-property org.bluez "$BT_AP" org.bluez.Adapter1 Alias 2>/dev/null)" = "s \"$2\"" ]; then

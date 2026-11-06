@@ -18,6 +18,11 @@
   source starting to record on it is the request, and the car's mic is
   played into it. (A Bluetooth source is handled by hfp-relay alone.)
 """
+import faulthandler
+import signal as _sig
+# The debug log (auxlink-debug) sends SIGUSR1 when this service seems stuck:
+# every thread's stack goes to the journal, showing where it is blocked.
+faulthandler.register(_sig.SIGUSR1, all_threads=True)
 import array
 import base64
 import glob
@@ -284,6 +289,7 @@ BT_KEYS = None     # set in main() for MUSIC_SOURCE=bluetooth
 # (~23%); the car's own volume is what people use. So on a new connection the
 # XIAO presses "volume up" until it is at the top. SMO_VOLUME_MAX=0 turns it off.
 VOLUME = {"last_line": 0.0, "last_max": 0.0}
+APP_SEEN_AT = [0.0]   # last /run/auxlink/app-seen touch (debug log)
 
 
 def smo_volume_max(why):
@@ -331,111 +337,10 @@ def usbc_repair(force=False):
 
 
 # Last USB-C recovery note for Status (manual Re-plug / Check and fix only).
-# Automatic "silent while playing → force re-plug" was removed: on some head
-# units a soft UDC toggle is not a real unplug and made a flaky link worse.
+# Nothing re-plugs USB-C automatically: a soft UDC toggle isn't a real unplug
+# on some head units, made a flaky link worse, and never brought a stopped
+# Phone Link back. The Pi just keeps the link up and keeps listening.
 USBC_SILENT = {"note": "", "note_at": 0.0}
-
-
-class UsbcReplug:
-    """MUSIC_SOURCE=usbc: Android hands the app the Pi's USB-C side (its
-    "Always" choice) only when it sees it being plugged in. Connected while
-    the music device boots, the app never gets its link and no line arrives
-    (the app sends at least every 5 s once it has it). So if nothing has
-    arrived 15 s after the host configured the gadget, switch the gadget off
-    and on: Android sees a fresh plug-in. Again after 30 s if that came too
-    early in its boot; three tries per connection at most."""
-    GADGET_UDC = "/sys/kernel/config/usb_gadget/auxlink/UDC"
-
-    # Phone Link answered on this connection, then went quiet (its listener
-    # service dropped, or the link stalled): no now-playing, no wheel buttons,
-    # while the sound plays on. After QUIET_AFTER s, re-plug - which makes the
-    # SMO open Phone Link's USB handler, and that rebinds a dead service - at
-    # most QUIET_TRIES times a quiet spell, QUIET_GAP s apart (each re-plug
-    # drops the sound for a second or two).
-    QUIET_AFTER = 60
-    QUIET_TRIES = 3
-    QUIET_GAP = 300
-
-    def __init__(self):
-        self.up_since = None
-        self.tries = 0
-        self.quiet_since = None      # when Phone Link went quiet (None = talking)
-        self.quiet_tries = 0
-        self.quiet_replug_at = 0.0
-
-    def replug(self, name):
-        with open(self.GADGET_UDC, "w") as f:
-            f.write("\n")
-        time.sleep(0.8)
-        with open(self.GADGET_UDC, "w") as f:
-            f.write(name)
-        self.up_since = None
-
-    def check_quiet(self, name, now):
-        last = VOLUME["last_line"]
-        if now - last < self.QUIET_AFTER:
-            if self.quiet_since is not None:
-                log(f"Phone Link is talking again (quiet for {int(last - self.quiet_since)} s)")
-                self.quiet_since = None
-                self.quiet_tries = 0
-            return
-        if self.quiet_since is None:
-            self.quiet_since = last
-            log(f"Phone Link went quiet {int(now - last)} s ago: no now-playing or wheel buttons until it's back")
-        if self.quiet_tries >= self.QUIET_TRIES or now - self.quiet_replug_at < self.QUIET_GAP:
-            return
-        self.quiet_tries += 1
-        self.quiet_replug_at = now
-        log(f"USB-C: re-plugging so the SMO restarts Phone Link (try {self.quiet_tries} of {self.QUIET_TRIES})")
-        self.replug(name)
-
-    @staticmethod
-    def udc():
-        try:
-            return os.listdir("/sys/class/udc")[0]
-        except (OSError, IndexError):
-            return None
-
-    def tick(self):
-        try:
-            self.check()
-        except Exception as e:   # never stop the timer
-            log(f"USB-C replug check failed: {e}")
-        return True
-
-    def check(self):
-        name = self.udc()
-        try:
-            state = open(f"/sys/class/udc/{name}/state").read().strip() if name else ""
-        except OSError:
-            state = ""
-        now = time.time()
-        if state != "configured":
-            if self.up_since is not None and state in ("not attached", ""):
-                self.tries = 0          # unplugged: a new connection starts over
-                self.quiet_since, self.quiet_tries = None, 0
-            self.up_since = None
-            return
-        if self.up_since is None:
-            self.up_since = now
-        if VOLUME["last_line"] >= self.up_since:
-            self.check_quiet(name, now)
-            return
-        if self.quiet_since is not None:
-            # Re-plugged for a quiet Phone Link: keep watching that spell (its
-            # tries and spacing) rather than the "never answered" ones below.
-            if now - self.up_since >= self.QUIET_AFTER:
-                self.check_quiet(name, now)
-            return
-        if self.tries >= 3:
-            return
-        wait = 15 if self.tries == 0 else 30
-        if now - self.up_since < wait:
-            return
-        self.tries += 1
-        log(f"USB-C: no word from the AuxLink app; replugging so Android gives it the link "
-            f"(try {self.tries} of 3)")
-        self.replug(name)
 
 
 class UsbcMic:
@@ -1340,8 +1245,6 @@ class Player(dbus.service.Object):
         quick = (MUSIC_SOURCE != "bluetooth"
                  and time.monotonic() - getattr(self, "car_paused_at", -99) < 8)
         if what == "play" and (self.status == "Playing" or quick) and not self.in_call:
-            if MUSIC_SOURCE == "usbc" and quick:
-                usbc_repair()
             self.kick_audio()
         if what == "play":
             self.paused_for_call = False if not self.in_call else self.paused_for_call
@@ -3072,8 +2975,9 @@ def main():
 
     GLib.timeout_add(250, mic_watchdog)
 
-    if MUSIC_SOURCE == "usbc":
-        GLib.timeout_add(1000, UsbcReplug().tick)
+    # USB-C stays plugged in, whatever Phone Link is doing: nothing here
+    # re-plugs it. The serial port is read (and reopened every 3 s if it
+    # drops) all the time, so the moment Phone Link sends anything, it works.
 
     if usbc_mic:
         def usbc_mic_poll():
@@ -3165,6 +3069,14 @@ def main():
                 if now - VOLUME["last_line"] > 20:
                     smo_volume_max("the SMO connected")
                 VOLUME["last_line"] = now
+                if now - APP_SEEN_AT[0] > 5:
+                    # For the debug log: when Phone Link last spoke.
+                    APP_SEEN_AT[0] = now
+                    try:
+                        with open("/run/auxlink/app-seen", "w"):
+                            pass
+                    except OSError:
+                        pass
                 # USB/BT (re)linked: deliver notifs that arrived during the gap.
                 if APP_PENDING:
                     GLib.idle_add(flush_app_pending)

@@ -15,13 +15,22 @@ while [ -z "$CAR" ] || [ -z "$CAR_ADAPTER" ]; do sleep 5; . /etc/auxlink.conf; d
 
 car_was=no; phone_was=no; phone_warned=no; car_err=; source_was=no; source_next=0
 # Drop the phone a while after the CAR's Bluetooth goes (i.e. the car turned
-# off), and bring it back when the car returns. car_seen stops this firing
-# before the car has ever connected (e.g. right after boot). The flag file,
-# emptied at boot, tells the phone section to stay disconnected.
+# off), and bring it back when the car returns. The rule: the phone is on the
+# Pi only once the car has connected. So the Pi also starts with the phone off
+# (flag set below): it restarts while the car sleeps (standby power cut on and
+# off while charging), and the phone had connected and stayed then. The flag
+# file tells the phone section (and auxlink-pairing) to keep the phone's
+# adapter off; the car connecting removes it.
 CAR_OFF_FLAG=/run/auxlink/car-off
 CAR_CONN_FLAG=/run/auxlink/car-connected   # "1" while the car is connected (read by auxlink-web)
 MOVING_FILE=/run/auxlink/moving
 car_seen=no; car_down_since=0
+if [ "${CAR_OFF_DROPS_PHONE:-0}" = 1 ] && [ "$PHONE_ENABLED" = 1 ]; then
+  mkdir -p /run/auxlink; touch "$CAR_OFF_FLAG"   # until the car connects (the car section removes it)
+fi
+# Seconds since boot: the Pi's clock jumps (no RTC: it starts days behind and
+# is set later), which threw out timings taken with date.
+uptime_s() { cut -d. -f1 /proc/uptime; }
 
 # True if the SMO app says the vehicle is moving, from a FRESH report (the app
 # sends it every ~10 s). No file, a stale file, or "0" -> not moving, so the
@@ -44,6 +53,7 @@ car_next=$(( $(date +%s) + CAR_FIRST_WAIT )); car_wait=$CAR_MIN_WAIT
 PHONE_MIN_WAIT=30; PHONE_MAX_WAIT=300
 phone_wait=$PHONE_MIN_WAIT
 missing=0; restarts=0; phone_next=0
+phone_adapter_off=no   # switched off by us while the car is away
 
 while true; do
   if pairing_active; then sleep 2; continue; fi   # hands off during pairing
@@ -85,10 +95,15 @@ while true; do
     missing=0; restarts=0
   fi
 
-  # Keep both adapters on, with fixed names (a reset can leave "auxlink #2").
+  # Keep both adapters on, with fixed names (a reset can leave "auxlink #2") -
+  # except the phone's while the car is off (see the phone section).
   bt_power "$CAR_ADAPTER" >/dev/null 2>&1
   bt_alias "$CAR_ADAPTER" "$CAR_NAME" 2>/dev/null
-  if [ "$PHONE_ENABLED" = 1 ]; then
+  if [ "$PHONE_ENABLED" = 1 ] && ! { [ "${CAR_OFF_DROPS_PHONE:-0}" = 1 ] && [ -f "$CAR_OFF_FLAG" ]; }; then
+    if [ "$phone_adapter_off" = yes ]; then
+      echo "Phone adapter back on (the car is back); the phone can reconnect"
+      phone_adapter_off=no
+    fi
     bt_power "$PHONE_ADAPTER" >/dev/null 2>&1
     bt_alias "$PHONE_ADAPTER" "$PHONE_NAME" 2>/dev/null
   fi
@@ -102,20 +117,29 @@ while true; do
     car_was=yes; car_seen=yes; car_down_since=0
     echo 1 > "$CAR_CONN_FLAG" 2>/dev/null
     # Car is back: let the phone reconnect (the phone section does the connect).
-    if [ -f "$CAR_OFF_FLAG" ]; then rm -f "$CAR_OFF_FLAG"; echo "Car back; reconnecting the phone"; fi
+    if [ -f "$CAR_OFF_FLAG" ]; then
+      rm -f "$CAR_OFF_FLAG"; echo "Car back; reconnecting the phone"
+      # On now, so the phone section's reconnect below finds it up.
+      if [ "$phone_adapter_off" = yes ]; then
+        bt_power "$PHONE_ADAPTER" >/dev/null 2>&1
+        echo "Phone adapter back on (the car is back); the phone can reconnect"
+        phone_adapter_off=no
+      fi
+    fi
   else
     echo 0 > "$CAR_CONN_FLAG" 2>/dev/null
     now=$(date +%s)
     # Car gone long enough (and it had been connected): drop the phone. Leave a
     # flag so the phone section keeps it down until the car returns.
+    up=$(uptime_s)
     if [ "${CAR_OFF_DROPS_PHONE:-0}" = 1 ] && [ "$car_seen" = yes ]; then
       if [ "${CAR_OFF_REQUIRE_STILL:-1}" = 1 ] && moving_now; then
         # Car's Bluetooth is gone but the vehicle is still moving (a Bluetooth
         # blip, not the car turning off): hold off, keep the phone.
         car_down_since=0
       else
-        [ "$car_down_since" = 0 ] && car_down_since=$now
-        if [ ! -f "$CAR_OFF_FLAG" ] && [ $((now - car_down_since)) -ge "${CAR_OFF_PHONE_DELAY:-30}" ]; then
+        [ "$car_down_since" = 0 ] && car_down_since=$up
+        if [ ! -f "$CAR_OFF_FLAG" ] && [ $((up - car_down_since)) -ge "${CAR_OFF_PHONE_DELAY:-30}" ]; then
           touch "$CAR_OFF_FLAG"
           echo "Car gone ${CAR_OFF_PHONE_DELAY:-30}s (and stationary); dropping the phone until it returns"
         fi
@@ -177,13 +201,31 @@ while true; do
   fi
 
   # --- Phone (every ~30 s; phones normally reconnect by themselves too) ---
-  # Car off (flag set, feature on): keep the phone disconnected - don't dial it
-  # back, and drop it again if something reconnected it - until the car returns
-  # (the car section removes the flag).
+  # Car off (flag set, feature on): keep the phone off the Pi until the car
+  # returns (the car section removes the flag). Disconnecting alone didn't
+  # hold: the phone reconnects to a known car kit by itself, the next pass
+  # dropped it again, and so on every 10-40 s - and each reconnect during a
+  # call moved the call's audio to the car kit, with no car there to play it.
+  # So the phone adapter is switched off: nothing left to reconnect to.
   if [ "$PHONE_ENABLED" = 1 ] && [ "${CAR_OFF_DROPS_PHONE:-0}" = 1 ] && [ -f "$CAR_OFF_FLAG" ]; then
-    if bt_present "$PHONE_ADAPTER" 2>/dev/null && bt_connected "$PHONE_ADAPTER" "$PHONE" 2>/dev/null; then
-      $BT "$PHONE_ADAPTER" "$PHONE" disconnect >/dev/null 2>&1
-      [ "$phone_was" = yes ] && echo "Car off: phone disconnected"
+    if bt_present "$PHONE_ADAPTER" 2>/dev/null; then
+      if bt_connected "$PHONE_ADAPTER" "$PHONE" 2>/dev/null; then
+        $BT "$PHONE_ADAPTER" "$PHONE" disconnect >/dev/null 2>&1
+        echo "Car off: phone disconnected"
+      fi
+      # Checked every pass: a bluetoothd restart switches adapters back on.
+      # Not when a Bluetooth music source shares the adapter (it would go too).
+      if { [ "${MUSIC_SOURCE:-wired}" != bluetooth ] || [ "${SOURCE_ADAPTER^^}" != "${PHONE_ADAPTER^^}" ]; } &&
+         bt_is_powered "$PHONE_ADAPTER"; then
+        if $BT "$PHONE_ADAPTER" power off >/dev/null 2>&1; then
+          if [ "$phone_adapter_off" != yes ]; then
+            echo "Car off: phone adapter switched off until the car returns (so the phone can't reconnect)"
+          elif [ "$BT_FAST" = 1 ]; then
+            echo "Car off: something switched the phone adapter back on; off again"
+          fi
+        fi
+        phone_adapter_off=yes
+      fi
     fi
     phone_was=no
   elif [ "$PHONE_ENABLED" = 1 ] && bt_present "$PHONE_ADAPTER" 2>/dev/null; then
