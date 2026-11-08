@@ -449,6 +449,13 @@ def watch_store():
             if m["map"] in seen:
                 continue
             seen.add(m["map"])
+            # Only texts that arrived live. The inbox catch-up when the phone
+            # reconnects (notify=False: texts that came in while it was off the
+            # Pi - now whenever the car is away) and texts already read on the
+            # phone were announced too, so the car popped up old, read texts.
+            # They are still in the car's message list.
+            if m.get("notify") is False or m.get("read"):
+                continue
             if NOTIFY["on"]:
                 ok = MNS.new_message(m["map"])
                 log(f"Told the car about a new text ({m['map']}): {'ok' if ok else 'failed'}")
