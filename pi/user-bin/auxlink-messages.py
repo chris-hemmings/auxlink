@@ -319,8 +319,14 @@ class Messages:
             mas.SetFolder("/telecom/msg")
             listing = self.list_folder(mas, "inbox", LIST_COUNT)
             new = 0
+            by_handle = {m.get("handle"): m for m in self.messages}
             for handle, props in listing:
                 if self.known(handle):
+                    # Read on the phone since: so the car shows it as read too
+                    # (live texts are stored unread and were never updated).
+                    m = by_handle.get(handle)
+                    if m is not None and bool(props.get("Read", False)) and not m.get("read"):
+                        m["read"] = True
                     continue
                 # Backfill only: these already exist on the phone. Do not
                 # pop them on the head unit (same idea as ignoring the shade
