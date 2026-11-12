@@ -32,6 +32,12 @@ fi
 # is set later), which threw out timings taken with date.
 uptime_s() { cut -d. -f1 /proc/uptime; }
 
+# A phone pairing window is open (auxlink-pairing's /run/auxlink/pair.json):
+# the phone adapter must stay on and visible for it, car or no car.
+phone_pairing_window() {
+  python3 -c 'import json,sys,time; w=json.load(open("/run/auxlink/pair.json")); sys.exit(0 if w.get("role")=="phone" and w.get("until",0)>time.time() else 1)' 2>/dev/null
+}
+
 # True if the SMO app says the vehicle is moving, from a FRESH report (the app
 # sends it every ~10 s). No file, a stale file, or "0" -> not moving, so the
 # guard is simply ignored when location isn't available (Bluetooth-only).
@@ -207,7 +213,13 @@ while true; do
   # dropped it again, and so on every 10-40 s - and each reconnect during a
   # call moved the call's audio to the car kit, with no car there to play it.
   # So the phone adapter is switched off: nothing left to reconnect to.
-  if [ "$PHONE_ENABLED" = 1 ] && [ "${CAR_OFF_DROPS_PHONE:-0}" = 1 ] && [ -f "$CAR_OFF_FLAG" ]; then
+  if [ "$PHONE_ENABLED" = 1 ] && [ "${CAR_OFF_DROPS_PHONE:-0}" = 1 ] && [ -f "$CAR_OFF_FLAG" ] &&
+     [ -f /run/auxlink/pair.json ] && phone_pairing_window; then
+    # Pairing a phone while the car is away: leave the adapter to auxlink-
+    # pairing (this loop switching it off every pass fought the window).
+    [ "$phone_adapter_off" = yes ] && echo "Phone pairing window open: phone adapter left on for it"
+    phone_adapter_off=no
+  elif [ "$PHONE_ENABLED" = 1 ] && [ "${CAR_OFF_DROPS_PHONE:-0}" = 1 ] && [ -f "$CAR_OFF_FLAG" ]; then
     if bt_present "$PHONE_ADAPTER" 2>/dev/null; then
       if bt_connected "$PHONE_ADAPTER" "$PHONE" 2>/dev/null; then
         $BT "$PHONE_ADAPTER" "$PHONE" disconnect >/dev/null 2>&1
