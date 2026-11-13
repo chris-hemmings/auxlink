@@ -375,6 +375,7 @@ class NowPlayingService : NotificationListenerService() {
                     }
                     main.postDelayed({
                         lastLine = ""; artSentId = ""; push()
+                        RootAdb.maybeGrant(this@NowPlayingService, "plugged in", now = true) { usbGranted() }
                     }, 2600)
                 }
                 else -> { lastLine = ""; artSentId = ""; push() } // permission granted: resend
@@ -2031,10 +2032,18 @@ class NowPlayingService : NotificationListenerService() {
         }
     }
 
+    /** RootAdb gave us the USB permission (its own thread): resend everything. */
+    private fun usbGranted() = main.post { resendAll() }
+
+    /** Forget what was sent and send it all again (main thread). */
+    fun resendAll() { lastLine = ""; artSentId = ""; push() }
+
     /** USB if one is plugged in (unchanged behaviour), else Bluetooth. Runs on [io]. */
     private fun sendLine(line: String): Boolean {
         if (forwarderOnly) return false
         val ok = if (link.findDevice() != null) {
+            // No USB permission (head units that forget "Always"): try root adb.
+            if (!link.permitted()) RootAdb.maybeGrant(this, "sending") { usbGranted() }
             bt.close()
             link.send(line).also { if (it) linkKind = "USB" }
         } else {

@@ -40,3 +40,8 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
 }
+
+dependencies {
+    // Talking to the head unit's own (root) adb on 127.0.0.1:5555 - RootAdb.kt.
+    implementation("dev.mobile:dadb:1.2.10")
+}

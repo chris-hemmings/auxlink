@@ -369,6 +369,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume(); main.post(refresh)
         NowPlayingService.rebindIfDown(this, "app opened")
+        RootAdb.maybeGrant(this, "app opened", now = true) { NowPlayingService.instance?.let { s -> main.post { s.resendAll() } } }
         NowPlayingService.appForeground = true
         if (::pages.isInitialized) showTab(tab)
         NowPlayingService.instance?.setAppForeground(true)
@@ -1738,7 +1739,8 @@ class MainActivity : Activity() {
                 ". Track info and car buttons are working.", good)
             !running -> Triple("Starting…", "Phone Link is starting in the background.", warn)
             usb != null && !UsbLink(this).permitted() -> Triple("Waiting for USB access",
-                "Tap Allow next to USB access below.", warn)
+                "Tap Allow next to USB access below." +
+                    RootAdb.status.let { if (it.isEmpty()) "" else "\nAutomatic (root adb): $it" }, warn)
             else -> Triple("Not connected", "Plug this device into the Pi's USB-C port (or the XIAO). " +
                 "With the Bluetooth music source, connect to AuxLink-music.", bad)
         }
