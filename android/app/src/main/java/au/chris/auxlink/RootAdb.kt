@@ -39,6 +39,11 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Once it works, it also makes sure (only if not already so) notification
  * access is on, battery optimisation is off and WRITE_SECURE_SETTINGS (the
  * no-volume-warning switch) is granted.
+ *
+ * Volume: when the Pi asks for full volume and Android's hearing-safety
+ * limiter holds it back (or the no-warning permission is missing), the same
+ * root adb switches the limiter off at once and the volume goes to 100% -
+ * see [volumeMax]. Without root adb the normal pop-up flow is unchanged.
  */
 object RootAdb {
     private const val TAG = "SmoRootAdb"
@@ -122,59 +127,129 @@ object RootAdb {
 
     private fun Dadb.sh(cmd: String): String = shell(cmd).allOutput.trim()
 
-    private fun grant(ctx: Context, why: String): Boolean {
-        Log.i(TAG, "No USB permission ($why): trying root adb on $HOST:$PORT")
+    /** One adb session at a time (USB grant and volume can both want one). */
+    private val lock = Any()
+
+    /**
+     * Connects to the head unit's adb and makes sure it is root. Null (with
+     * [status] saying why) if adb isn't reachable, Phone Link's key isn't
+     * allowed yet, or adb won't run as root. The caller closes it.
+     */
+    private fun rootShell(ctx: Context): Dadb? {
         val kp = try { keys(ctx) } catch (e: Exception) {
-            status = "couldn't make an adb key"; Log.w(TAG, "adb key: ${e.message}"); return false
+            status = "couldn't make an adb key"; Log.w(TAG, "adb key: ${e.message}"); return null
         }
         var d = try { connect(kp).also { it.sh("true") } } catch (e: Exception) {
             status = "adb on this device isn't reachable or Phone Link isn't allowed yet " +
                 "(tick Always allow on the USB debugging prompt)"
             Log.i(TAG, "adb connect: ${e.message}")
-            return false
+            return null
         }
         try {
-            if (d.sh("id -u") != "0") {
-                Log.i(TAG, "adb isn't root: asking it to restart as root")
-                try { d.root() } catch (e: Exception) { Log.i(TAG, "adb root: ${e.message}") }
+            if (d.sh("id -u") == "0") return d
+            Log.i(TAG, "adb isn't root: asking it to restart as root")
+            try { d.root() } catch (e: Exception) { Log.i(TAG, "adb root: ${e.message}") }
+            try { d.close() } catch (_: Exception) {}
+            // adbd restarts: give it up to ~10 s to come back.
+            for (i in 1..10) {
+                SystemClock.sleep(1000)
+                try {
+                    d = connect(kp)
+                    if (d.sh("id -u") == "0") return d
+                } catch (_: Exception) {}
                 try { d.close() } catch (_: Exception) {}
-                // adbd restarts: give it up to ~10 s to come back.
-                var root = false
-                for (i in 1..10) {
-                    SystemClock.sleep(1000)
-                    try {
-                        d = connect(kp)
-                        if (d.sh("id -u") == "0") { root = true; break }
-                    } catch (_: Exception) {}
-                    try { d.close() } catch (_: Exception) {}
-                }
-                if (!root) {
-                    status = "adb isn't root (turn on Allow rooted debugging)"
-                    Log.i(TAG, status)
-                    return false
-                }
             }
-            val apk = ctx.applicationInfo.sourceDir
+        } catch (e: Exception) {
+            try { d.close() } catch (_: Exception) {}
+            status = "root adb failed: ${e.message}"
+            Log.w(TAG, status)
+            return null
+        }
+        status = "adb isn't root (turn on Allow rooted debugging)"
+        Log.i(TAG, status)
+        return null
+    }
+
+    /** Runs [RootHelper] as root with [args]; its output. */
+    private fun helper(ctx: Context, d: Dadb, args: String): String {
+        // Run from a copy in /data/local/tmp (what adb's shell can always
+        // read); the installed APK itself if the copy fails.
+        val apk = ctx.applicationInfo.sourceDir
+        val tmp = "/data/local/tmp/auxlink-helper.apk"
+        return d.sh("cp '$apk' $tmp 2>/dev/null && chmod 644 $tmp && C=$tmp || C='$apk'; " +
+            "CLASSPATH=\$C app_process /system/bin au.chris.auxlink.RootHelper $args")
+    }
+
+    private fun grant(ctx: Context, why: String): Boolean = synchronized(lock) {
+        Log.i(TAG, "No USB permission ($why): trying root adb on $HOST:$PORT")
+        val d = rootShell(ctx) ?: return false
+        try {
             val uid = ctx.applicationInfo.uid
-            // Run from a copy in /data/local/tmp (what adb's shell can always
-            // read); the installed APK itself if the copy fails.
-            val tmp = "/data/local/tmp/auxlink-helper.apk"
-            val out = d.sh("cp '$apk' $tmp 2>/dev/null && chmod 644 $tmp && C=$tmp || C='$apk'; " +
-                "CLASSPATH=\$C app_process /system/bin au.chris.auxlink.RootHelper " +
-                "grant %04x %04x,%04x $uid".format(UsbLink.VID, UsbLink.PID, UsbLink.PID_PI))
+            val out = helper(ctx, d, "grant %04x %04x,%04x $uid".format(UsbLink.VID, UsbLink.PID, UsbLink.PID_PI))
             Log.i(TAG, "helper: $out")
             val ok = out.lines().any { it.startsWith("OK granted") && !it.endsWith(" 0") } &&
                 UsbLink(ctx).permitted()
             status = if (ok) "USB access granted automatically (root adb)" else "root adb: $out"
             if (ok && !extrasDone) extras(ctx, d)
-            return ok
+            ok
         } catch (e: Exception) {
             status = "root adb failed: ${e.message}"
             Log.w(TAG, status)
-            return false
+            false
         } finally {
             try { d.close() } catch (_: Exception) {}
         }
+    }
+
+    private val volBusy = AtomicBoolean(false)
+    @Volatile private var volNextTry = 0L
+
+    /** Whether a root volume fix is worth trying now (adb on, not just failed). */
+    fun canTryVolume(ctx: Context) =
+        adbOn(ctx) && SystemClock.elapsedRealtime() >= volNextTry && !volBusy.get()
+
+    /**
+     * Full media volume with root's help, in the background: switches off
+     * Android's hearing-safety limiter right now (what tapping OK on its
+     * warning does - no reboot needed), marks it disabled for good
+     * (audio_safe_volume_state = 1, read at start-up) and grants Phone Link
+     * WRITE_SECURE_SETTINGS so it keeps it that way itself. [onDone](true)
+     * then sets the volume (from the helper's thread). False: root adb isn't
+     * available; the normal way carries on. After a failure, waits 10 min
+     * before trying again (so a head unit without root adb isn't asked at
+     * every connect).
+     */
+    fun volumeMax(ctx: Context, onDone: (Boolean) -> Unit) {
+        val app = ctx.applicationContext
+        if (!adbOn(app) || !volBusy.compareAndSet(false, true)) { onDone(false); return }
+        Thread {
+            var ok = false
+            try {
+                synchronized(lock) {
+                    val d = rootShell(app)
+                    if (d != null) try {
+                        val out = helper(app, d, "volmax")
+                        Log.i(TAG, "volume helper: $out")
+                        Log.i(TAG, "safe volume setting: " +
+                            d.sh("settings put global audio_safe_volume_state 1 && echo ok"))
+                        if (app.checkSelfPermission("android.permission.WRITE_SECURE_SETTINGS") !=
+                            PackageManager.PERMISSION_GRANTED) {
+                            Log.i(TAG, "secure settings: " +
+                                d.sh("pm grant ${app.packageName} android.permission.WRITE_SECURE_SETTINGS"))
+                        }
+                        ok = out.lines().any { it.startsWith("OK") }
+                    } finally {
+                        try { d.close() } catch (_: Exception) {}
+                    }
+                }
+            } catch (e: Throwable) {
+                Log.w(TAG, "root volume: ${e.message}")
+            } finally {
+                volNextTry = if (ok) 0L else SystemClock.elapsedRealtime() + 600_000L
+                volBusy.set(false)
+            }
+            onDone(ok)
+        }.apply { isDaemon = true; name = "root-adb-vol" }.start()
     }
 
     /** Settings Phone Link otherwise needs a person (or a computer) for. Only touches what's off. */

@@ -28,6 +28,14 @@ Developer options, **USB debugging** on and, on Screenmate OS 1.1.0b+,
 3. While it's there it also turns on notification access, turns off battery
    optimisation and grants the no-volume-warning permission, if any of
    those are off.
+4. Full volume: when the Pi asks for 100% media volume (each time the link
+   connects), root adb switches off Android's hearing-safety limiter on the
+   spot (`RootHelper volmax` - what tapping OK on the warning does), marks
+   it off for good and grants the no-volume-warning permission, then sets
+   100%. It runs first while that permission is missing, and again only if
+   the limiter still holds the volume back. With USB debugging on, this
+   also applies to head units that already have USB access (so the
+   "Allow USB debugging?" prompt can appear once there too).
 
 Without USB debugging (or without root) none of this runs and Phone Link
 behaves exactly as before. Code: `RootAdb.kt`, `RootHelper.java`.

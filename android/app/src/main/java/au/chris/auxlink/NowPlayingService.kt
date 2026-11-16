@@ -696,6 +696,19 @@ class NowPlayingService : NotificationListenerService() {
     }
 
     fun volumeMax(personAsked: Boolean = false) {
+        // Root adb on the head unit: without the no-warning permission the
+        // limiter may hold the volume back, so let root switch it off first
+        // (and grant the permission, so later boots don't need this) - then
+        // there's no warning at all. Without root adb this skips straight on.
+        if (!personAsked && checkSelfPermission("android.permission.WRITE_SECURE_SETTINGS") !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED && RootAdb.canTryVolume(this)) {
+            RootAdb.volumeMax(this) { main.post { volumeMaxNow(false) } }
+            return
+        }
+        volumeMaxNow(personAsked)
+    }
+
+    private fun volumeMaxNow(personAsked: Boolean) {
         keepVolumeWarningOff()
         try {
             val am = getSystemService(android.media.AudioManager::class.java)
@@ -714,23 +727,37 @@ class NowPlayingService : NotificationListenerService() {
                 volumeWatchUntil = System.currentTimeMillis() + 60000
                 registerVolumeWatch()
             } else {
-                // Blocked by the warning (which can vanish before anyone taps it):
-                // ask in a pop-up of our own that stays until tapped.
+                // Held back by the warning: root adb if there, else our own pop-up.
                 main.postDelayed({
-                    if (am.getStreamVolume(stream) < max) {
-                        textPopup.show(
-                            "Phone Link",
-                            "Volume limited by Android",
-                            "Android's hearing-safety warning held the volume back. " +
-                                "Tap here, then OK, for full volume.",
-                            stayMs = 60000,
-                        ) { volumeMax(true) }
+                    if (am.getStreamVolume(stream) < max && RootAdb.canTryVolume(this)) {
+                        // Still held back: root adb (if there) switches the
+                        // limiter off now; the pop-up only if that can't.
+                        RootAdb.volumeMax(this) { ok ->
+                            main.post {
+                                if (ok) am.setStreamVolume(stream, max, 0)
+                                if (am.getStreamVolume(stream) < max) volumeLimitedPopup()
+                            }
+                        }
+                    } else if (am.getStreamVolume(stream) < max) {
+                        volumeLimitedPopup()
                     }
                 }, 2500)
             }
         } catch (e: Exception) {
             Log.w(TAG, "volume: ${e.message}")
         }
+    }
+
+    /** Blocked by Android's warning (which can vanish before anyone taps it):
+     *  ask in a pop-up of our own that stays until tapped. */
+    private fun volumeLimitedPopup() {
+        textPopup.show(
+            "Phone Link",
+            "Volume limited by Android",
+            "Android's hearing-safety warning held the volume back. " +
+                "Tap here, then OK, for full volume.",
+            stayMs = 60000,
+        ) { volumeMax(true) }
     }
 
     private var volumeWatchUntil = 0L

@@ -19,16 +19,26 @@ import java.lang.reflect.Method;
  * permission). The grant lasts until the device is unplugged; the app asks
  * again at the next plug-in.
  *
+ *   ... RootHelper volmax
+ *
+ * Switches off Android's hearing-safety ("safe media volume") limiter right
+ * now - what tapping OK on its warning does - so the app's own volume set
+ * goes to 100%. (The audio service lets root do this too.)
+ *
  * Plain Java, no app classes, no Context: it runs in a bare app_process.
- * Prints one result line: "OK granted N" or "ERR ...".
+ * Prints one result line: "OK ..." or "ERR ...".
  */
 public final class RootHelper {
     private RootHelper() {}
 
     public static void main(String[] args) {
         try {
+            if (args.length >= 1 && "volmax".equals(args[0])) {
+                volmax();
+                return;
+            }
             if (args.length < 4 || !"grant".equals(args[0])) {
-                System.out.println("ERR usage: grant <vid-hex> <pid-hex,pid-hex> <uid>");
+                System.out.println("ERR usage: grant <vid-hex> <pid-hex,pid-hex> <uid> | volmax");
                 return;
             }
             int vid = Integer.parseInt(args[1], 16);
@@ -64,5 +74,24 @@ public final class RootHelper {
             Throwable c = t.getCause() != null ? t.getCause() : t;
             System.out.println("ERR " + c.getClass().getSimpleName() + ": " + c.getMessage());
         }
+    }
+
+    /** IAudioService.disableSafeMediaVolume(callingPackage): the warning's OK. */
+    private static void volmax() throws Exception {
+        Class<?> sm = Class.forName("android.os.ServiceManager");
+        IBinder b = (IBinder) sm.getMethod("getService", String.class).invoke(null, "audio");
+        if (b == null) { System.out.println("ERR no audio service"); return; }
+        Object audio = Class.forName("android.media.IAudioService$Stub")
+                .getMethod("asInterface", IBinder.class).invoke(null, b);
+        for (Method m : audio.getClass().getMethods()) {
+            if (!m.getName().equals("disableSafeMediaVolume")) continue;
+            Class<?>[] p = m.getParameterTypes();
+            if (p.length == 1 && p[0] == String.class) m.invoke(audio, "com.android.systemui");
+            else if (p.length == 0) m.invoke(audio);
+            else continue;
+            System.out.println("OK safe volume off");
+            return;
+        }
+        System.out.println("ERR no disableSafeMediaVolume on this Android");
     }
 }
