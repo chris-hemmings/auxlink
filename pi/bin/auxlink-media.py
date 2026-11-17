@@ -297,7 +297,19 @@ def smo_volume_max(why):
         return
     if time.time() - VOLUME["last_max"] < 60:
         return
+    if (MUSIC_SOURCE == "usbc" and FD is not None and APP_CTL.get("ver", 0) < 2
+            and not os.path.exists(HID_DEV)):
+        # Phone Link hasn't said yet that it sets the volume itself: after the
+        # Pi starts, its first line can be a notification or artwork (no
+        # "ctl"), and with no media keys on the gadget a key-press fallback
+        # does nothing - the SMO stayed at its low start-up volume. Hold the
+        # request; the first line carrying "ctl" sends it (line reader).
+        if "pending" not in VOLUME:
+            log(f"SMO volume to 100% ({why}): waiting for Phone Link to say hello")
+        VOLUME["pending"] = (why, time.time())
+        return
     VOLUME["last_max"] = time.time()
+    VOLUME.pop("pending", None)
     if MUSIC_SOURCE == "usbc" and FD is not None and APP_CTL.get("ver", 0) >= 2:
         # Phone Link sets the volume itself, in one go. (Key presses stop at
         # Android's "safe listening" warning, and confirming it then applies
@@ -3068,6 +3080,12 @@ def main():
                         pass
                 if now - VOLUME["last_line"] > 20:
                     smo_volume_max("the SMO connected")
+                elif info.get("ctl") and "pending" in VOLUME:
+                    # A held "volume max" (see smo_volume_max): Phone Link has
+                    # now said it can do it. Only if the request is recent.
+                    why, at = VOLUME.pop("pending")
+                    if now - at < 120:
+                        smo_volume_max(why)
                 VOLUME["last_line"] = now
                 if now - APP_SEEN_AT[0] > 5:
                     # For the debug log: when Phone Link last spoke.
